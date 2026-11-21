@@ -673,12 +673,13 @@ the hub and wherever the player dies. The owner wants places to rest along the w
 The owner's wording was "safe hubs like a quick mouse"; this entry reads it as a
 small house or rest stop. Confirm that reading (see open questions).
 
-**Depends on:** [] _(pairs with FR1: a safe stop is where the lava gives the player
-a breather; FR27's map shows each stop as a landmark; FR17's shells could be spent
+**Depends on:** [] _(pairs with FR1, built: a safe stop is where the doctor's curse
+gives the player a breather; FR27's map shows each stop as a landmark; FR17's shells could be spent
 here)_
 
 **Motivation.** Once the player leaves the hub there's no let-up: flasks, monsters
-and (with FR1) the lava, all the way up. A safe stop every so often gives the run a
+and the doctor's curse (FR1), which closes in whenever they stop moving, all the
+way up. A safe stop every so often gives the run a
 rhythm (push, rest, push), a place to heal before a Tide Titan, and a goal a little
 way ahead that's closer than the castle.
 
@@ -703,7 +704,11 @@ way ahead that's closer than the castle.
   `Well`). Optionally a keeper NPC who talks through the dialogue bank
   (`assets/dialogue.json`), the way Professor Pebble does.
 - **What makes it safe.** Inside a stop's span: no encounters spawn, the player
-  can't be damaged, and (with FR1) the lava pauses or slows. Resting there heals:
+  can't be damaged, and the curse eases. `Curse::tick` already decides by the
+  player's `y` (rising on the road, lifting at `HUB_LIFT_PER_S` in the hub), so a
+  stop's span can either pause the curse or lift it the way the hub does. That
+  makes a stop the one place up the road where standing still doesn't bring the
+  fever on. Resting there heals:
   either a full `Health::refill` on arrival, or a slow heal while the player stands
   in the clearing (one door per rule, invariant 6).
 - **Optional extras** (the owner picks): a checkpoint so dying restarts at the last
@@ -724,9 +729,12 @@ way ahead that's closer than the castle.
   heal only once per stop per run?
 - **Checkpoint?** Does dying send the player back to the last stop, or still to the
   hub?
-- **Can the player linger forever?** If FR1's lava pauses at a stop, the player can
-  stand there indefinitely. Is that fine, or does the lava keep creeping (slower) so
-  the stop is a breather, not a hiding place?
+- **What does a stop do to the curse?** Pause it, lift it like the hub
+  (0.05/s, about 20 s from full to clear), or only slow its rise?
+- **Can the player linger forever?** On the road the curse fills in 45 s of standing
+  still (`FULL_AFTER_S`). If a stop pauses or lifts it, the player can stand there
+  indefinitely, as they already can in the hub. Is that fine, or does the curse keep
+  rising there, just slower, so the stop is a breather, not a hiding place?
 - **A keeper?** Is there someone at each stop (one recurring character, or a
   different one each time), or is it an empty house?
 
@@ -735,14 +743,15 @@ way ahead that's closer than the castle.
 - [ ] Safe stops appear along the road at fixed distances, the same every run.
 - [ ] Each stop is a clearing off the road with a small house and props, and the
   fence and walkable width open onto it smoothly.
-- [ ] No encounter zone, flask or (with FR1) lava threatens the player inside a stop.
+- [ ] No encounter zone or flask threatens the player inside a stop, and the curse
+  behaves there as decided above (covered by a `game/curse.rs` test).
 - [ ] Resting at a stop heals as decided above, through `Health`.
 - [ ] Placement is covered by a test: stops are deterministic, on the road, never
   share a chunk with a flask or a zone, and never sit next to a zone.
 - [ ] A dev event (for example `tostop`) snaps the player next to the first stop so
   it can be checked by screenshot.
-- [ ] `docs/ARCHITECTURE.md` (*World model* table, invariant 4, the new `decor`
-  kinds, the dev event) is updated.
+- [ ] `docs/ARCHITECTURE.md` (*World model* table, invariant 4, the curse's rule
+  at a stop, the new `decor` kinds, the dev event) is updated.
 
 ---
 
