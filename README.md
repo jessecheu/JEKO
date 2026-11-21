@@ -32,6 +32,10 @@ src/
   lib.rs                 shared library (so src/main.rs and src/bin/gen_content.rs can both use it)
   main.rs                game entry point / macroquad loop
   config.rs               reads CEREBRAS_API_KEY / CEREBRAS_MODEL / CEREBRAS_BASE_URL from .env; instance_name() labels the checkout
+  content/
+    mod.rs                content events, the roster of loaded spec monsters, where the content dir is (JEKO_CONTENT_DIR)
+    monster_spec.rs       a monster as JSON data: parse + validate (clamped, unit-tested), stats from a tier table
+    watcher.rs            background thread that rescans content/monsters/*.json and hot-reloads edits
   llm/
     cerebras_client.rs    OpenAI-compatible chat-completions call to Cerebras, async wrapper
     task_gen.rs           prompt templates + JSON extraction helpers
@@ -47,7 +51,8 @@ src/
     flicker.rs            reusable flicker look (spawn ghost, damage blink), honours "reduce flashing"
     health.rs             player HP in half-hearts (damage/heal/refill, clamped, unit-tested)
     curse.rs              the doctor's curse: a fever that starts on the road, worsens while you linger, drains hearts at full
-    monster.rs            monster roster (stats, rarity by distance) + per-monster drawing and animations
+    monster.rs            monster roster (stats, rarity by distance), Species (built-in or spec) + per-monster drawing and animations
+    monster_rig.rs        draws any JSON-defined monster from its body shape, parts, eyes and accessory
     battle.rs             wild-encounter battle: transition, phases, battle-view drawing (moonlit clearing)
     dialogue.rs           NPC dialogue with typewriter reveal (Professor Pebble in the hub)
     task_trigger.rs        state machine: Idle -> Loading -> Active -> Resolved
@@ -64,6 +69,8 @@ src/
     token_panel.rs           model + API address, latest tokens/sec, per-request speed graph, token totals
   bin/
     gen_content.rs          offline batch generator for NPC dialogue (not called at runtime)
+content/
+  monsters/*.json          monsters defined as data, loaded at runtime and hot-reloaded while the game runs
 assets/
   tasks_fallback.json      hand-written fallback math tasks (used if no API key, or the live call fails)
   dialogue.json            NPC flavor lines; Professor Pebble says one after the hub tutorial. Regenerate with gen_content
@@ -122,13 +129,22 @@ hunting required.
    Dev aids: `JEKO_SHOT=out.png:120` saves a screenshot at frame 120 and
    exits; `JEKO_DEV=jelly@150,wrong@270` fires scripted events (`hurt`,
    `kill`, `restart`, `jump`, `roll`, `shoot`, `stun`, `cheer`, `spent`, `pause`, `settings`,
-   battles `pinch`/`jelly`/`puff`/`coco`/`gull`/`wyrm`/`titan`, `right`/
+   battles `pinch`/`jelly`/`puff`/`coco`/`gull`/`wyrm`/`titan`, `battle:<id>`
+   for a monster from `content/monsters/`, `right`/
    `wrong` answers through the real submit path, `e` presses E, and
    teleports `toflask`/`tozone`/`toblocker`/`topebble`, `nohud` hides the side panels,
    `calm` turns on reduce flashing, `curse`/`cursefull` set the curse to
    the fever stage or full) at those frames, stepping a
    fixed 1/60 s per frame. At the shot it prints a `STATE ...` line of run
    state to stderr.
+
+   Monsters as data: each file in `content/monsters/` is a monster (body shape,
+   colours, eyes, parts, an idle and an attack, a `tier` 1–4 and a `special`).
+   Edit one while the game runs and it updates within a second, even mid-battle;
+   a broken edit is reported in a toast and the last good version stays. Try
+   `JEKO_DEV=battle:mossmunch@5 make run`, then edit
+   `content/monsters/mossmunch.json`. `JEKO_CONTENT_DIR` points the game at
+   another folder.
 
 Optional: `direnv allow` (if you use direnv) picks up `.envrc` so the shell
 activates automatically on `cd`, without typing `nix develop` or prefixing
@@ -138,8 +154,8 @@ every command with `make`.
 
 Two clones of this repo (say `~/Development/JEKO` and `~/Development/JEKO2`) can
 be built and run at the same time without touching each other. Each folder has
-its own `target/`, `.env`, `.direnv/` dev shell and git branch, and the game has
-no ports, save files or other shared state (assets are compiled in).
+its own `target/`, `.env`, `.direnv/` dev shell, `content/` and git branch, and the
+game has no ports, save files or other shared state (assets are compiled in).
 
 - **Telling them apart.** The window title ends in the instance name, e.g.
   `JEKO — Math Quest [JEKO2]`, and the game prints `jeko instance JEKO2 (built

@@ -1,0 +1,18 @@
+{
+  "id": "bramblehog",
+  "name": "Bramblehog",
+  "blurb": "A ball of thorns that gets pricklier with every wrong answer.",
+  "fact": "A hedgehog has about five thousand spines on its back.",
+  "theme": { "subject": "math", "topic": "multiplication" },
+  "body": { "shape": "spiky_ball", "w": 44, "h": 44 },
+  "palette": { "main": "#9a6b4a", "accent": "#5e8f3e", "belly": "#e6c9a3" },
+  "eyes": { "count": 2, "size": 4.0, "stalks": false, "look": "grumpy" },
+  "parts": [
+    { "kind": "leg", "count": 2, "size": 0.9, "side": "both" }
+  ],
+  "accessory": "helmet",
+  "idle": "scuttle",
+  "attack": "spin",
+  "tier": 3,
+  "special": "grows"
+}

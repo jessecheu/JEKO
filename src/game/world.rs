@@ -827,7 +827,7 @@ fn draw_blocker(view: &View, zone: &EncounterZone, t: f32) {
     gfx::ellipse(ground + vec2(4.0, 2.0), 30.0 * scale, 8.0 * scale, SHADOW);
     monster::draw(
         &zone.canvas,
-        zone.kind,
+        &monster::Species::Builtin(zone.kind),
         ground,
         scale,
         Pose::Idle,

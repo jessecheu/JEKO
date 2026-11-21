@@ -1,11 +1,17 @@
 //! The monster roster (FR10): who can turn up in an encounter, how tough
 //! they are, and how each one is drawn and animated. All original beach
 //! creatures, drawn with the same flat primitives as the rest of the world.
+//! Monsters defined by a JSON spec (FR21) share the canvas and poses here
+//! and are drawn by `monster_rig`.
 
 use super::gfx::{self, INK};
+use super::monster_rig;
+use crate::content::monster_spec::Special;
+use crate::content::MonsterSpec;
 use macroquad::prelude::*;
 use std::cell::OnceCell;
 use std::f32::consts::{PI, TAU};
+use std::sync::Arc;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MonsterKind {
@@ -27,28 +33,32 @@ pub enum MonsterKind {
     TideTitan,
 }
 
-/// Gameplay numbers for one kind of monster.
-#[derive(Clone, Copy, Debug)]
-pub struct MonsterInfo {
-    pub name: &'static str,
-    /// Correct answers needed to defeat it.
-    pub hits: u32,
-    /// Half-hearts a hit takes off the player.
-    pub damage: u32,
-    /// Its attack stuns the player for this long (seconds), if at all.
-    pub stun_s: f32,
-    /// Every wrong answer adds a half-heart to its damage.
-    pub grows: bool,
-    /// Its first hit steals the player's hat until it's beaten.
-    pub steals_hat: bool,
-    /// Only appears at milestones, never as a random encounter.
-    pub boss: bool,
-    /// The earliest distance up the road it can appear.
-    pub min_m: u32,
-    /// Added to the question difficulty when fighting it.
-    pub difficulty_bias: u32,
-    /// XP for each correct answer against it.
-    pub xp_per_hit: u32,
+pub use crate::content::MonsterInfo;
+
+/// Which monster a battle is against (FR21): one of the hand-drawn roster,
+/// or one defined by a JSON spec in the content dir.
+#[derive(Clone, Debug)]
+pub enum Species {
+    Builtin(MonsterKind),
+    Spec(Arc<MonsterSpec>),
+}
+
+impl Species {
+    /// Its gameplay numbers. A spec's come from its tier (see
+    /// `MonsterSpec::info`).
+    pub fn info(&self) -> MonsterInfo {
+        match self {
+            Species::Builtin(k) => k.info(),
+            Species::Spec(s) => s.info(),
+        }
+    }
+
+    pub fn name(&self) -> &str {
+        match self {
+            Species::Builtin(k) => k.name(),
+            Species::Spec(s) => &s.name,
+        }
+    }
 }
 
 impl MonsterKind {
@@ -62,10 +72,21 @@ impl MonsterKind {
         MonsterKind::TideTitan,
     ];
 
+    pub fn name(self) -> &'static str {
+        match self {
+            MonsterKind::Pinchling => "Pinchling",
+            MonsterKind::Jellyglow => "Jellyglow",
+            MonsterKind::Puffspike => "Puffspike",
+            MonsterKind::CocoKnight => "Coco Knight",
+            MonsterKind::GullBandit => "Gull Bandit",
+            MonsterKind::DuneWyrm => "Dune Wyrm",
+            MonsterKind::TideTitan => "Tide Titan",
+        }
+    }
+
     pub fn info(self) -> MonsterInfo {
         match self {
             MonsterKind::Pinchling => MonsterInfo {
-                name: "Pinchling",
                 hits: 1,
                 damage: 1,
                 stun_s: 0.0,
@@ -77,7 +98,6 @@ impl MonsterKind {
                 boss: false,
             },
             MonsterKind::Jellyglow => MonsterInfo {
-                name: "Jellyglow",
                 hits: 1,
                 damage: 1,
                 stun_s: 2.5,
@@ -89,7 +109,6 @@ impl MonsterKind {
                 boss: false,
             },
             MonsterKind::Puffspike => MonsterInfo {
-                name: "Puffspike",
                 hits: 2,
                 damage: 1,
                 stun_s: 0.0,
@@ -101,7 +120,6 @@ impl MonsterKind {
                 boss: false,
             },
             MonsterKind::CocoKnight => MonsterInfo {
-                name: "Coco Knight",
                 hits: 3,
                 damage: 2,
                 stun_s: 2.0,
@@ -113,7 +131,6 @@ impl MonsterKind {
                 boss: false,
             },
             MonsterKind::GullBandit => MonsterInfo {
-                name: "Gull Bandit",
                 hits: 2,
                 damage: 1,
                 stun_s: 0.0,
@@ -125,7 +142,6 @@ impl MonsterKind {
                 boss: false,
             },
             MonsterKind::DuneWyrm => MonsterInfo {
-                name: "Dune Wyrm",
                 hits: 3,
                 damage: 2,
                 stun_s: 0.0,
@@ -137,7 +153,6 @@ impl MonsterKind {
                 boss: false,
             },
             MonsterKind::TideTitan => MonsterInfo {
-                name: "Tide Titan",
                 hits: 4,
                 damage: 2,
                 stun_s: 0.0,
@@ -213,13 +228,15 @@ impl Default for MonsterCanvas {
     }
 }
 
-/// Draws `kind` standing at screen point `ground`, `scale` times its
+/// Draws `species` standing at screen point `ground`, `scale` times its
 /// natural size. `lunge` is where its attack reaches toward (the player),
-/// relative to `ground`. `grown` puffs up a Puffspike.
+/// relative to `ground`. `grown` is the wrong answers so far: it puffs up
+/// a Puffspike (or a spec with the grows special), and once it's above 0 a
+/// hat thief wears the player's hat.
 #[allow(clippy::too_many_arguments)]
 pub fn draw(
     canvas: &MonsterCanvas,
-    kind: MonsterKind,
+    species: &Species,
     ground: Vec2,
     scale: f32,
     pose: Pose,
@@ -231,7 +248,7 @@ pub fn draw(
     let ease = |u: f32| 1.0 - (1.0 - u).powi(3);
     let (mut offset, mut sx, mut sy, mut rot, mut tint) =
         (Vec2::ZERO, 1.0f32, 1.0f32, 0.0f32, WHITE);
-    let (mut atk, mut hurt) = (0.0f32, 0.0f32);
+    let (mut atk, mut atk_u, mut hurt) = (0.0f32, 0.0f32, 0.0f32);
     match pose {
         Pose::Idle => {}
         Pose::Intro(u) => {
@@ -243,6 +260,7 @@ pub fn draw(
         }
         Pose::Attack(u) => {
             atk = (u * PI).sin();
+            atk_u = u;
             offset = lunge * atk.powf(0.7) * 0.75;
         }
         Pose::Hurt(u) => {
@@ -286,14 +304,18 @@ pub fn draw(
         6.0,
         Color::new(0.0, 0.0, 0.0, 0.22),
     );
-    match kind {
-        MonsterKind::Pinchling => draw_pinchling(o, t, atk, hurt),
-        MonsterKind::Jellyglow => draw_jellyglow(o, t, atk, hurt),
-        MonsterKind::Puffspike => draw_puffspike(o, t, atk, hurt, grown),
-        MonsterKind::CocoKnight => draw_coco_knight(o, t, atk, hurt),
-        MonsterKind::GullBandit => draw_gull_bandit(o, t, atk, hurt, grown > 0),
-        MonsterKind::DuneWyrm => draw_dune_wyrm(o, t, atk, hurt),
-        MonsterKind::TideTitan => draw_tide_titan(o, t, atk, hurt),
+    match species {
+        Species::Builtin(MonsterKind::Pinchling) => draw_pinchling(o, t, atk, hurt),
+        Species::Builtin(MonsterKind::Jellyglow) => draw_jellyglow(o, t, atk, hurt),
+        Species::Builtin(MonsterKind::Puffspike) => draw_puffspike(o, t, atk, hurt, grown),
+        Species::Builtin(MonsterKind::CocoKnight) => draw_coco_knight(o, t, atk, hurt),
+        Species::Builtin(MonsterKind::GullBandit) => draw_gull_bandit(o, t, atk, hurt, grown > 0),
+        Species::Builtin(MonsterKind::DuneWyrm) => draw_dune_wyrm(o, t, atk, hurt),
+        Species::Builtin(MonsterKind::TideTitan) => draw_tide_titan(o, t, atk, hurt),
+        Species::Spec(spec) => {
+            let has_hat = spec.special == Special::StealsHat && grown > 0;
+            monster_rig::draw_spec(o, spec, t, atk, atk_u, hurt, grown, has_hat);
+        }
     }
     set_default_camera();
 
@@ -579,7 +601,7 @@ fn draw_coco_knight(o: Vec2, t: f32, atk: f32, hurt: f32) {
 }
 
 /// The player's straw hat, for the Gull Bandit to wear once it's stolen.
-fn stolen_hat(c: Vec2, tilt: f32) {
+pub(super) fn stolen_hat(c: Vec2, tilt: f32) {
     let straw = Color::new(0.97, 0.84, 0.48, 1.0);
     gfx::ellipse_rot(c, 13.0, 4.0, tilt, straw);
     gfx::ellipse(c + vec2(0.0, -4.0), 7.0, 5.0, straw);
