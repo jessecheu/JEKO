@@ -49,6 +49,7 @@ src/
   game/
     world.rs              endless cobbled road, camera view, chunked scenery, potion-flask triggers, encounter zones and road-blocking monsters, lake/ground/road drawing, light pools, mist, bats and fireflies
     decor.rs              forest props (pines, gravestones, pumpkins, cottages, lampposts...) and the hub camp — per-chunk generation + drawing
+    map.rs                the discovery map: furthest point reached and the landmarks behind it (FR27)
     manor.rs              the gothic manor backdrop across the lake (and on the battle horizon), its lightning, bats
     gfx.rs                shared drawing helpers (night palette, ink outline, shadows, ribbons, stars, glows, vignette, potion flask)
     player.rs             WASD/arrow movement along the path, speed multiplier from upgrades and Shift sprint, player sprite, jump/roll/shoot
@@ -73,6 +74,8 @@ src/
     hud.rs                  progress bar + streak + upgrade list + unlock toast
     goalpost_panel.rs        the goalpost badge at the top centre: a circle that unrolls into "name · N m"
     field_guide_panel.rs     the field guide (G): a card per monster, filled in once beaten
+    map_panel.rs            the map (M): discovered road, landmarks, fog
+    minimap.rs              the always-on minimap, top right
     settings_panel.rs        settings modal (O): panel toggles, reduce flashing, controls reference
     game_over_panel.rs       Game Over screen: run stats, try again
     dialogue_panel.rs        NPC dialogue box
@@ -122,7 +125,7 @@ hunting required.
    screen (run it dry and you're winded until it refills). Walk up to a glowing
    potion flask and an **E** key prompt floats over it; press E to
    open its task (you stay put until it's answered). Press E again to jump
-   into the answer field, type the number, and hit Enter. No mouse needed
+   into the answer field, type the number, and hit Enter. **M** opens the map of the road you've walked (the world pauses). No mouse needed
    (clicking the field and Submit still works). **Space** jumps,
    **Ctrl** rolls (3 in a row, then a short wait) and **F** shoots an arrow from your bow (all cosmetic for
    now; in a battle, a right answer is shown as a bow shot). **P** pauses,

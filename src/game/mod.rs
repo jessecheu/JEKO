@@ -9,6 +9,7 @@ pub mod gfx;
 pub mod goalpost;
 pub mod health;
 pub mod manor;
+pub mod map;
 pub mod monster;
 pub mod monster_rig;
 pub mod player;
@@ -53,6 +54,8 @@ const CAMERA_FOLLOW: f32 = 6.0;
 pub const INTERACT_KEY: KeyCode = KeyCode::E;
 /// Toggles the pause (FR6).
 pub const PAUSE_KEY: KeyCode = KeyCode::P;
+/// Opens and closes the discovery map (FR27); Esc also closes it.
+pub const MAP_KEY: KeyCode = KeyCode::M;
 /// Opens and closes the settings modal (FR7); Esc also closes it.
 pub const SETTINGS_KEY: KeyCode = KeyCode::O;
 /// Opens and closes the field guide (FR22); Esc also closes it.
@@ -64,6 +67,8 @@ pub const GUIDE_KEY: KeyCode = KeyCode::G;
 pub struct Settings {
     pub show_token_panel: bool,
     pub show_hud: bool,
+    /// The small map in the top right corner (FR27).
+    pub show_minimap: bool,
     /// Swaps flicker effects (spawn, damage) for a steady tint.
     pub reduce_flashing: bool,
 }
@@ -73,6 +78,7 @@ impl Default for Settings {
         Self {
             show_token_panel: true,
             show_hud: true,
+            show_minimap: true,
             reduce_flashing: false,
         }
     }
@@ -112,6 +118,11 @@ pub struct Game {
     pub guide_open: bool,
     /// Cards for the monsters beaten so far this session.
     pub guide: field_guide::FieldGuide,
+    /// The discovery map is open (FR27). It freezes the world like the
+    /// settings modal, and only opens when nothing else has the screen.
+    pub map_open: bool,
+    /// How far up the road the player has been (FR27).
+    pub discovery: map::Discovery,
     pub settings: Settings,
     /// Player HP (FR13).
     pub health: Health,
@@ -249,6 +260,8 @@ impl Game {
             settings_open: false,
             guide_open: false,
             guide: Default::default(),
+            map_open: false,
+            discovery: map::Discovery::new(),
             settings: Settings::default(),
             health: Health::default(),
             curse: Curse::new(),
@@ -388,7 +401,7 @@ impl Game {
     /// True while the world is frozen: paused with P or the settings
     /// modal is open.
     pub fn is_paused(&self) -> bool {
-        self.paused || self.settings_open || self.guide_open
+        self.paused || self.settings_open || self.guide_open || self.map_open
     }
 
     /// Every field guide card, found or not, for the panel.
@@ -406,6 +419,25 @@ impl Game {
         ((world::ROAD_START_Y - self.player.pos.y).max(0.0) / world::PX_PER_METER) as u32
     }
 
+    /// The map opens from the road only: not during a flask problem, a
+    /// battle, a dialogue or while settings are up.
+    fn can_open_map(&self) -> bool {
+        !self.settings_open
+            && !self.guide_open
+            && self.battle.is_none()
+            && self.dialogue.is_none()
+            && matches!(
+                self.trigger_state,
+                TriggerState::Idle | TriggerState::Resolved { .. }
+            )
+    }
+
+    /// What the map panel draws this frame.
+    pub fn map_view(&self) -> map::MapView {
+        self.discovery
+            .snapshot(&self.world, self.player.pos.y, self.player.pos.x)
+    }
+
     pub fn update(&mut self, dt: f32) {
         self.poll_content();
         if let Some(t) = &mut self.game_over {
@@ -421,7 +453,13 @@ impl Game {
         }
 
         if !self.typing {
-            if is_key_pressed(SETTINGS_KEY)
+            if self.map_open {
+                if is_key_pressed(MAP_KEY) || is_key_pressed(KeyCode::Escape) {
+                    self.map_open = false;
+                }
+            } else if is_key_pressed(MAP_KEY) && self.can_open_map() {
+                self.map_open = true;
+            } else if is_key_pressed(SETTINGS_KEY)
                 || (self.settings_open && is_key_pressed(KeyCode::Escape))
             {
                 self.settings_open = !self.settings_open;
@@ -502,6 +540,7 @@ impl Game {
                 return;
             }
         }
+        self.discovery.note(self.player.pos.y);
 
         let target = camera_target(self.player.pos.y);
         self.cam_y += (target - self.cam_y) * (1.0 - (-dt * CAMERA_FOLLOW).exp());
@@ -860,6 +899,7 @@ impl Game {
         self.game_over = Some(0.0);
         self.paused = false;
         self.settings_open = false;
+        self.map_open = false;
         self.best_distance_m = self.best_distance_m.max(self.distance_m());
         if let Some(i) = self.active_spot.take() {
             self.world.spots[i].state = SpotState::Missed;
@@ -888,6 +928,8 @@ impl Game {
         self.paused = false;
         self.settings_open = false;
         self.guide_open = false;
+        self.map_open = false;
+        self.discovery = map::Discovery::new();
         self.health = Health::default();
         self.curse = Curse::new();
         self.run = RunStats::default();
@@ -1120,13 +1162,22 @@ impl Game {
                     self.guide.unlock(&Species::Builtin(*k));
                 }
             }
+            "map" => self.map_open = true,
+            // 120 m up the road, discovered, for a shot of a filled-in map.
+            "far" => {
+                let y = world::ROAD_START_Y - 120.0 * world::PX_PER_METER;
+                self.world.ensure_generated(y - world::CHUNK_H);
+                self.player.pos = vec2(world::path_center(y), y);
+                self.discovery.note(y);
+            }
             "calm" => self.settings.reduce_flashing = true,
             // The curse (FR1) at the fever stage, and at full.
             "curse" => self.curse.force(0.75),
             "cursefull" => self.curse.force(1.0),
-            // Hides both side panels, so a screenshot shows the whole world.
+            // Hides the side panels, so a screenshot shows the whole world.
             "nohud" => {
                 self.settings.show_hud = false;
+                self.settings.show_minimap = false;
                 self.settings.show_token_panel = false;
             }
             _ => eprintln!("JEKO_DEV: unknown event {name}"),
@@ -1623,7 +1674,7 @@ impl Game {
         }
         let (w, h) = (screen_width(), screen_height());
         draw_rectangle(0.0, 0.0, w, h, Color::new(0.0, 0.0, 0.0, 0.5));
-        if self.settings_open {
+        if self.settings_open || self.map_open {
             // The modal says what's going on; the dim alone is enough.
             return;
         }

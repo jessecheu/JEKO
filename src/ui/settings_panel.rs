@@ -11,6 +11,7 @@ const CONTROLS: &[(&str, &str)] = &[
     ("Ctrl", "Roll (3 charges)"),
     ("F", "Shoot an arrow"),
     ("G", "Field guide"),
+    ("M", "Map (Esc or M closes)"),
     ("P", "Pause"),
     ("O / Esc", "Settings"),
 ];
@@ -25,6 +26,7 @@ pub fn draw(ctx: &egui::Context, settings: &mut Settings, open: &mut bool, guide
         .show(ctx, |ui| {
             ui.heading("Display");
             ui.checkbox(&mut settings.show_hud, "Show progress panel");
+            ui.checkbox(&mut settings.show_minimap, "Show minimap");
             ui.checkbox(&mut settings.show_token_panel, "Show token usage panel");
             ui.checkbox(
                 &mut settings.reduce_flashing,
