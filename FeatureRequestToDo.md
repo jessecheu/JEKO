@@ -2,7 +2,7 @@
 type: Feature Request
 title: JEKO — Feature Requests
 description: Concrete, actionable feature requests for JEKO (Math Quest) — work that is scoped and wanted but not yet built. Each entry states the motivation, a proposed approach, and what "done" looks like. Maintained as the shared agent todo list.
-tags: [feature-request, backlog, gameplay, urgency, lava, monsters, battle, education, minigames, pets, controls, pause, settings, health, death, art-direction, spawn, tooling, ci-cd, dagger, content-generation, hot-reload, live-content, villain, story, live-dialogue, setting, forest, manor, map, exploration, regions, village, castle, rest-stops, road, obstacles, agents, openclaw]
+tags: [feature-request, backlog, gameplay, urgency, lava, monsters, battle, education, minigames, pets, controls, pause, settings, health, death, art-direction, spawn, tooling, ci-cd, dagger, content-generation, hot-reload, live-content, villain, story, live-dialogue, setting, forest, manor, map, exploration, regions, village, castle, rest-stops, road, obstacles, agents, openclaw, hud, goalposts]
 timestamp: 2026-11-21
 ---
 
@@ -36,7 +36,7 @@ Entries are grouped by area. Numbering is stable; don't renumber when one is rem
 
 ## Numbering
 
-**The next free number is FR31**; bump it when you file one. Numbers are never
+**The next free number is FR32**; bump it when you file one. Numbers are never
 reused or renumbered when an entry is removed. Take the next number, not the first gap.
 
 ---
@@ -868,6 +868,94 @@ and gives the player something to steer around.
 - [ ] The hub and the gate look and play as they do today.
 - [ ] `docs/ARCHITECTURE.md` (*World model*: path geometry, the camera, the new
   placement and collision; *Rendering*: the fence) is updated.
+
+---
+
+# UI — the HUD
+
+**Goal:** always show the player the next goalpost, so the walk has a "just a bit
+further" pull. Today the only sense of progress is the `Distance: N m` line in the
+Progress panel (`ui/hud.rs`, `draw`). Nothing says what is coming up or how far away it is.
+
+## FR31. A goalpost tracker at the top centre: what's next and how far
+
+**Status.** **Not started.** Requested by the owner; the approach is suggested only.
+
+**Depends on:** [] _(useful on its own with today's milestones, flasks, encounter
+zones and Tide Titans. It grows with FR28's stops, FR29's obstacles and FR27's
+village and castle: each new placed thing is one more kind of goalpost)_
+
+**Motivation.** The road is endless and every stretch looks alike, so the player can't
+tell how close the next thing is. A small tracker at the top centre that names the
+next goalpost and counts down the metres to it gives the player a short-range goal
+to walk towards, alongside the long-range ones (the castle, the next level).
+
+**What the owner asked for.**
+
+- At the top middle of the screen, show which milestone, obstacle or encounter is
+  about to start.
+- When it appears, it should start as a circle.
+- Show how many metres are left until the obstacle or milestone starts.
+- The point is to mark goalposts.
+
+**Proposed approach.** *(suggested, not decided)*
+
+- **What counts as a goalpost.** Everything is already placed by pure per-chunk
+  functions (invariant 3), so the next one can be found by scanning chunks north
+  of the player, without touching `World`'s state:
+  - the 50 m milestone stones (`decor.rs`, the "Milestones every 50 m" loop)
+  - the Tide Titan at each 500 m (`world::encounter_for_chunk`, `BOSS_EVERY_M`)
+  - wild encounter zones (`encounter_for_chunk`), skipping zones already `cleared`
+  - potion flasks (`spot_for_chunk`), skipping solved ones
+  - later: FR28 safe stops, FR29 obstacles, FR27's village and castle
+  A small `world::next_goalpost(y) -> Option<Goalpost { kind, y, label }>` (or
+  the next few) keeps this in one place, unit-testable. Milestones and the Titan
+  probably rank above a plain flask, so the tracker isn't always "flask in 12 m".
+  The owner picks which kinds show (see open questions).
+- **How it looks.** A badge anchored `CENTER_TOP`. When a new goalpost becomes the
+  target, it pops in as a **circle** holding the goalpost's icon (a milestone stone,
+  a fern patch, the Titan's silhouette, a flask, a house), then unrolls sideways into
+  a pill with the label and the countdown: `⬤ Tide Titan · 38 m`. A ring around
+  the circle could fill as the distance closes, and pulse when it's under about 10 m.
+  When the player reaches it, the badge shows "Now!" or the name briefly, then closes
+  back into a circle and pops out before the next one appears.
+- **Metres.** From the player's y to the goalpost's y, `/ PX_PER_METER`, rounded
+  up so it reaches 0 m on arrival, not before. With FR29's winding road, straight-line
+  y still reads fine.
+- **Where it's drawn.** Either as egui (next to `ui::hud::draw_toast`) or in world
+  draw code like `skills::draw_bar` if the circle animation is easier in macroquad.
+  The toast is also `CENTER_TOP`, so one of them moves (the toast drops below the
+  tracker, or the tracker hides while a toast is up).
+- **When it hides.** In a battle (like the Progress panel), while a problem is
+  open, and in the hub before the gate (or it shows "The road: 0 m" pointing at the
+  gate). Whether `show_hud` hides it too is the owner's call.
+
+**Open questions.**
+
+- **"Start with a circle"**: is the reading above right (it pops in as a circle and
+  then opens into a label)? Or should it *stay* a circle, such as a ring that fills up
+  as you get closer with the metres in the middle?
+- **Which goalposts show?** Every 50 m milestone, or only the bigger ones (100 m,
+  500 m)? Every flask and fern patch, or only bosses, stops and obstacles?
+- **One at a time or a short queue?** Just the next goalpost, or the next two or three
+  in a row (`Flask 12 m · Stop 140 m · Titan 380 m`)?
+- **Does "Show progress panel" hide it too**, or is it always on like the toast?
+- **Should the distance line in the Progress panel stay** once this exists?
+
+**Acceptance criteria.**
+
+- [ ] A tracker at the top centre names the next goalpost and the metres left to it,
+  and the count goes down as the player walks north.
+- [ ] A new goalpost appears as a circle first, then shows its label, as decided
+  above, and the change between goalposts is animated, not a jump.
+- [ ] Milestones, the Tide Titan and encounter zones are tracked. Cleared zones and
+  solved flasks are skipped. FR28, FR29 and FR27 things are added when those land.
+- [ ] The tracker and the toast never overlap.
+- [ ] It hides in battles and while a problem is open.
+- [ ] `next_goalpost` is unit-tested: deterministic, always north of the player, never
+  a cleared or solved one, and the right one ranks first.
+- [ ] `docs/ARCHITECTURE.md` (*Progression and the UI layer*: the new panel and what
+  it reads; *World model*, if a lookahead function is added) is updated.
 
 ---
 
