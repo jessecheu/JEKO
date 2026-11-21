@@ -585,7 +585,7 @@ the owner, and update this section if it goes ahead.
    the same fallback.
 3. **The world is a pure function of `y` and the chunk index.** Generation uses only
    seeded `StdRng` or `gfx::hash01`, never `thread_rng`, so it's the same every run and
-   the placement tests stay meaningful. New placed things (lava, blockers, cages,
+   the placement tests stay meaningful. New placed things (blockers, cages,
    shells) should follow `spot_for_chunk` / `encounter_for_chunk` and get a
    determinism test.
 4. **The hub is a safe zone.** Nothing hostile spawns south of `ROAD_SOUTH_END`
@@ -617,7 +617,7 @@ still to make:
   new answer type through the prompt, the parser, `task_panel` and `submit_answer`.
 - **One thread and one HTTP client per request**, with no cancellation or retry. That's
   fine at one request at a time; it should be revisited if requests ever overlap or prefetch.
-- **No lava or road blockers yet** (FR1, FR2). Encounter zones are the only hostile
+- **No curse or road blockers yet** (FR1, FR2). Encounter zones are the only hostile
   placement, and nothing pushes the player forward.
 - **The difficulty cap is 5** and comes from level plus monster bias only. It doesn't
   rise with distance.

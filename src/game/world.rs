@@ -38,7 +38,7 @@ pub const ROAD_SOUTH_END: f32 = 150.0;
 /// measured from here, not from the spawn point.
 pub const ROAD_START_Y: f32 = ROAD_SOUTH_END;
 /// The spawn hub: open, free-roam ground south of the gate, down to here.
-/// A safe zone: no lava or monsters are ever placed south of the gate.
+/// A safe zone: no monsters are ever placed south of the gate.
 pub const HUB_SOUTH: f32 = ROAD_SOUTH_END + 760.0;
 /// Over this stretch south of the gate the walkable width eases from the
 /// road's to the hub's, so the hub funnels smoothly onto the road.

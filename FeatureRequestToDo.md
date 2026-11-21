@@ -2,7 +2,7 @@
 type: Feature Request
 title: JEKO — Feature Requests
 description: Concrete, actionable feature requests for JEKO (Math Quest) — work that is scoped and wanted but not yet built. Each entry states the motivation, a proposed approach, and what "done" looks like. Maintained as the shared agent todo list.
-tags: [feature-request, backlog, gameplay, urgency, lava, monsters, battle, education, minigames, pets, controls, pause, settings, health, death, art-direction, spawn, tooling, ci-cd, dagger, content-generation, hot-reload, live-content, villain, story, live-dialogue, setting, forest, manor, map, exploration, regions, village, castle, rest-stops, road, obstacles, agents, openclaw, hud, goalposts]
+tags: [feature-request, backlog, gameplay, urgency, curse, sickness, monsters, battle, education, minigames, pets, controls, pause, settings, health, death, art-direction, spawn, tooling, ci-cd, dagger, content-generation, hot-reload, live-content, villain, story, live-dialogue, setting, forest, manor, map, exploration, regions, village, castle, rest-stops, road, obstacles, agents, openclaw, hud, goalposts]
 timestamp: 2026-11-21
 ---
 
@@ -46,42 +46,74 @@ reused or renumbered when an entry is removed. Take the next number, not the fir
 **Goal:** make the player feel urgency so they keep moving up the road.
 Today nothing pushes the player: they can stand still, and the only stops are the
 potion-flask problems (`src/game/mod.rs` freezes the player while a problem
-is `Loading` or `Active`). FR1 pushes from behind; FR2 and FR3 block the way ahead.
+is `Loading` or `Active`). FR1 wears the player down while they linger; FR2 and FR3 block the way ahead.
 
-## FR1. Rising lava from the bottom of the road
+## FR1. The doctor's curse: a sickness that sets in once the player is on the road
 
-**Status.** **Not started.**
+**Status.** **Not started.** Reworked from "rising lava" to a curse that fits the dark
+forest (owner, 2026-11-21). The curse must only begin once the player steps onto the
+road, past the iron gate.
 
-**Depends on:** [] _(pairs with FR2 — the lava is the pressure that makes a blocking monster matter)_
+**Depends on:** [] _(pairs with FR2: the curse is what makes a blocking monster cost
+something; pairs with FR23: the curse is the mad scientist's doing)_
 
-**Motivation.** The player can stand still forever. A front that keeps advancing up
-the road behind them means they can't, and gives every stop (a flask, a
-monster) a cost.
+**Motivation.** The player can stand still forever. A curse that keeps worsening while
+they dawdle on the road means they can't, and gives every stop (a flask, a monster) a
+cost. It's a status on the hero rather than a wall of something chasing them, so it
+suits a haunted wood better than lava did.
 
-**Proposed approach.** *(suggested, not decided)* Keep a world-space lava front
-`lava_y` on `Game`, starting a little south of `world::PLAYER_START_Y` and moving
-north (towards smaller `y`, since `distance_m` grows as `y` falls) every `update`.
-Draw everything south of it as lava over the road and ground in `World::draw_ground` /
-`draw_road`. Ramp its speed with distance or `progression.level`. Decide what
-the lava does while the player is frozen at a problem (see open questions): if it
-keeps full speed, slow model responses punish the player, which works against the
-README's "the problem should appear fast enough that it doesn't break movement flow".
+**Proposed approach.** *(suggested, not decided)*
+
+- **When it starts.** `Game` holds `curse: Option<Curse>`, `None` at spawn. The first
+  frame the player is north of the gate (`!world::in_hub(player.pos.y)`, past
+  `ROAD_SOUTH_END`) sets it to `Some`. Until then nothing ticks, so the hub tutorial
+  and Professor Pebble are unhurried, and the hub stays a safe zone
+  (*Invariants* 4). `reset()` sets it back to `None`, so each run starts clean in the hub.
+- **How it grows.** `Curse { level: f32 }` runs 0.0 to 1.0. It rises at a slow
+  steady rate every `update` while the player is on the road. Reaching new ground
+  pushes it back: each metre beyond the run's furthest `distance_m` takes a little
+  off, so a player who keeps walking stays roughly level and one who stops sickens.
+  A correct flask cleanses a chunk of it, so questions are relief, not only a stop.
+  The rate can ramp with distance or `progression.level`.
+- **What it does, in stages.** Shown, not just counted:
+  - *Low:* a sickly green tinge creeping into the edges of the screen (`gfx::vignette`
+    tinted toward `LAB_GREEN`) and the odd green wisp off the hero.
+  - *Middle:* the vignette closes in so the player sees less of the road ahead, and
+    movement slows a little (a factor in `Player::update`'s speed, next to
+    `speed_multiplier()`).
+  - *Full:* it drains health, half a heart every few seconds, through
+    `damage_player` (*Invariants* 6), so death comes through the existing game-over
+    flow rather than a new one.
+- **HUD.** A small curse meter beside the hearts, so the player can see it coming
+  before the screen does.
+- **During a problem or battle.** Suggested: the curse holds still while a question is
+  `Loading`, so a slow Cerebras reply never punishes the player (the README's "the
+  problem should appear fast enough that it doesn't break movement flow"), and either
+  holds or creeps slowly while it's `Active` (open question below).
 
 **Open questions.**
 
-- What happens when the lava reaches the player — game over and restart, knock back
-  to the last solved flask, or lose the streak?
-- Does the lava pause, slow, or keep going while a problem or battle is open?
-- *(raised by FR24)* The world is a dark forest now. Is it still lava, or something
-  that fits the woods, such as a creeping fog, rising swamp water, or one of the mad
-  scientist's spills?
+- Is it a curse (the doctor's hex), a sickness (a spreading blight or fever), or both
+  framed as one? This sets the wording, colours and any flavour lines.
+- What happens at a full curse: a health drain until death (suggested above), instant
+  game over, or knock back to the gate and lose the streak?
+- Does the curse pause, slow, or keep going while a problem or battle is open?
+- If the player walks back south into the hub, does the curse stop, slowly lift, or
+  keep going? Letting the hub heal it makes the hub a refuge, but invites camping.
+- Should a correct flask cleanse some of it (suggested), or only progress up the road?
 
 **Acceptance criteria.**
 
-- [ ] The road behind the player fills with lava that keeps advancing, so the
-  player can't stand still and has to keep going.
-- [ ] The lava reaching the player has a defined outcome (per the open question above).
-- [ ] The lava's behaviour during an open problem/battle is defined and implemented.
+- [ ] Nothing happens while the player is in the hub at the start of a run; the curse
+  begins only once they first step onto the road past the gate, and a test covers it.
+- [ ] The curse worsens over time on the road and is held back by moving forward, so
+  the player can't stand still and has to keep going.
+- [ ] Its stages are visible on screen (the green vignette and the HUD meter), not only
+  as a number.
+- [ ] A full curse has a defined outcome (per the open question above), and any damage
+  goes through `damage_player`.
+- [ ] The curse's behaviour during an open problem/battle is defined and implemented.
+- [ ] `reset()` clears it, so a new run starts uncursed in the hub.
 
 ---
 
@@ -91,8 +123,8 @@ README's "the problem should appear fast enough that it doesn't break movement f
 
 **Depends on:** [] _(FR3 makes the battle itself; until FR3 lands, a placeholder interaction can clear a monster)_
 
-**Motivation.** The lava (FR1) pushes from behind; a monster on the road ahead is
-something the player has to deal with *now*, with the lava coming.
+**Motivation.** The curse (FR1) worsens while the player lingers; a monster on the road
+ahead is something the player has to deal with *now*, with the curse taking hold.
 
 **Proposed approach.** *(suggested, not decided)* Spawn monsters per chunk the way
 flasks are (`spot_for_chunk` in `src/game/world.rs`), so placement stays
@@ -131,7 +163,7 @@ until the player answers correctly.
 bank (`assets/tasks_fallback.json`), and the answer panel (`src/ui/task_panel.rs`).
 A correct answer defeats the monster, unblocks the road, and awards XP through
 `progression.record_correct`. On a wrong answer the monster stays and the player
-retries with a fresh question after the cooldown, while the lava keeps its pressure.
+retries with a fresh question after the cooldown, while the curse keeps its pressure.
 
 **Open questions.**
 
@@ -201,7 +233,7 @@ its "help" is animation. It never changes XP, speed, answers or battle outcomes.
   along? How often?
 - What happens on a failed or abandoned puzzle — retry right away, a cooldown like
   the flasks, or the cage is gone?
-- Does the lion survive a lava game-over/restart (FR1)? Nothing is saved between
+- Does the lion survive a curse game-over/restart (FR1)? Nothing is saved between
   runs today.
 
 **Acceptance criteria.**
