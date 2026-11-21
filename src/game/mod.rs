@@ -1,5 +1,6 @@
 pub mod battle;
 pub mod bow;
+pub mod curse;
 pub mod decor;
 pub mod dialogue;
 pub mod flicker;
@@ -16,6 +17,7 @@ use crate::llm::cerebras_client::CerebrasClient;
 use crate::llm::MathTask;
 use crate::progression::Progression;
 use battle::{Battle, Phase};
+use curse::Curse;
 use flicker::FlickerKind;
 use health::Health;
 use macroquad::prelude::*;
@@ -97,6 +99,9 @@ pub struct Game {
     pub settings: Settings,
     /// Player HP (FR13).
     pub health: Health,
+    /// The doctor's curse (FR1): dormant until the player first steps onto
+    /// the road.
+    pub curse: Curse,
     pub run: RunStats,
     /// Best distance this session (not saved between launches).
     pub best_distance_m: u32,
@@ -159,6 +164,7 @@ impl Game {
             settings_open: false,
             settings: Settings::default(),
             health: Health::default(),
+            curse: Curse::new(),
             run: RunStats::default(),
             best_distance_m: 0,
             game_over: None,
@@ -263,9 +269,15 @@ impl Game {
         } else {
             self.player.update(
                 dt,
-                self.progression.speed_multiplier(),
+                self.progression.speed_multiplier() * self.curse.speed_factor(),
                 world::clamp_to_path,
             );
+            // The curse holds still while a question is loading or open
+            // (owner, FR1), like the player.
+            self.tick_curse(dt);
+            if self.game_over.is_some() {
+                return;
+            }
         }
 
         let target = camera_target(self.player.pos.y);
@@ -305,6 +317,25 @@ impl Game {
                 self.trigger_state = TriggerState::Idle;
             }
         }
+    }
+
+    /// Advances the curse (FR1) and acts on what it reports: a toast as it
+    /// takes hold or worsens, half a heart at full.
+    fn tick_curse(&mut self, dt: f32) {
+        use curse::{Stage, Tick};
+        let line = match self.curse.tick(dt, self.player.pos.y) {
+            Tick::Nothing => return,
+            Tick::Started => "The doctor's curse takes hold... keep moving!",
+            Tick::Worsened(Stage::Clear) => return,
+            Tick::Worsened(Stage::Cursed) => "A fever creeps in. New ground holds it back.",
+            Tick::Worsened(Stage::Fever) => "The fever slows you. Press on, or solve a flask!",
+            Tick::Worsened(Stage::Burning) => "The fever burns! You're losing hearts.",
+            Tick::Drain => {
+                self.damage_player(1, None);
+                return;
+            }
+        };
+        self.toast = Some((line.into(), 3.0));
     }
 
     /// Opens Professor Pebble's conversation: the hub tutorial, then one of
@@ -536,6 +567,7 @@ impl Game {
         self.paused = false;
         self.settings_open = false;
         self.health = Health::default();
+        self.curse = Curse::new();
         self.run = RunStats::default();
         self.game_over = None;
         self.shake = 0.0;
@@ -560,7 +592,7 @@ impl Game {
         format!(
             "STATE hp={}/{} level={} xp={} streak={} dist={}m flasks={} beaten={} \
              zones_cleared={} battle={:?} trigger={} dialogue={} game_over={} hat_stolen={} \
-             arrows={}",
+             arrows={} curse={:.2}",
             self.health.current,
             self.health.max,
             self.progression.level,
@@ -576,6 +608,7 @@ impl Game {
             self.game_over.is_some(),
             self.player.hat_stolen,
             self.player.arrows.len(),
+            self.curse.level,
         )
     }
 
@@ -658,6 +691,9 @@ impl Game {
             "pause" => self.paused = true,
             "settings" => self.settings_open = true,
             "calm" => self.settings.reduce_flashing = true,
+            // The curse (FR1) at the fever stage, and at full.
+            "curse" => self.curse.force(0.75),
+            "cursefull" => self.curse.force(1.0),
             // Hides both side panels, so a screenshot shows the whole world.
             "nohud" => {
                 self.settings.show_hud = false;
@@ -724,6 +760,8 @@ impl Game {
             let gained = self.progression.lifetime_xp - xp_before;
             self.player.cheer();
             self.item_get = Some((0.0, format!("+{gained} XP!")));
+            // A right answer also eases the fever (FR1).
+            self.curse.cleanse(curse::FLASK_CLEANSE);
         } else {
             self.progression.record_incorrect();
             // Provisional (FR13 open question): a wrong flask answer
@@ -810,8 +848,20 @@ impl Game {
         // The night (FR24): mist over everything, then the screen darkens
         // away from the player, then bats and fireflies on top.
         self.world.draw_mist(&view, t);
+        let lifted =
+            view.to_screen(self.player.pos) - vec2(0.0, world::ground_lift(self.player.pos.y));
+        curse::draw_wisps(lifted, self.curse.level, t);
+        // The fever (FR1) closes the dark in around the player, and tints
+        // the edges green.
+        let fever = ((self.curse.level - curse::SLOW_FROM) / (1.0 - curse::SLOW_FROM)).max(0.0);
         let foot = view.to_screen(self.player.pos) - vec2(0.0, 30.0);
-        gfx::vignette(foot, NIGHT_CLEAR_R, NIGHT_DARK_R, NIGHT_STRENGTH);
+        gfx::vignette(
+            foot,
+            NIGHT_CLEAR_R * (1.0 - 0.4 * fever),
+            NIGHT_DARK_R * (1.0 - 0.3 * fever),
+            NIGHT_STRENGTH + 0.2 * fever,
+        );
+        curse::draw_tint(foot, self.curse.level, t, rf);
         self.world.draw_overhead(&view, t, rf);
 
         // Last, so the prompt is never hidden behind a tree or a bat.
@@ -850,11 +900,15 @@ impl Game {
         }
     }
 
-    /// HP is always on screen, whatever the HUD setting.
+    /// HP is always on screen, whatever the HUD setting, and so is the
+    /// curse meter under it once the curse has started (FR1).
     fn draw_hearts(&self) {
         for i in 0..self.health.hearts() {
             let fill = self.health.current.saturating_sub(i * 2).min(2);
             gfx::heart(vec2(28.0 + i as f32 * 30.0, 28.0), 24.0, fill);
+        }
+        if self.curse.started {
+            curse::draw_meter(vec2(16.0, 50.0), self.curse.level);
         }
     }
 

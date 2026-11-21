@@ -18,6 +18,8 @@ timestamp: 2026-11-21
 > scenery, potion flask and monster zone is a pure function of the chunk index, so the
 > road is endless, the same every run, and unit-testable. The setting is a dark forest
 > at night (FR24), with the mad scientist's manor drawn as a backdrop across the lake.
+> Once the player steps onto the road, the doctor's curse (FR1) worsens while they
+> linger, which is what keeps them moving.
 
 This doc is **descriptive**. It says what the code is today, checked against the source
 on the date in the frontmatter. It isn't a roadmap: planned and open work lives in
@@ -100,6 +102,7 @@ The layering holds today, and new code should keep it:
 | `game/bow.rs` | The bow: the shot's timing (`aim`, `SHOOT_S`, `RELEASE_S`), drawing the bow slung and held and an arrow (`draw_arrow`), and `Arrow`, a cosmetic projectile that arcs, then sticks in the ground or splashes in the lake. |
 | `game/flicker.rs` | `Flicker` / `FlickerKind` (spawn ghost, damage blink). It turns elapsed time into a `Look` (tint and alpha) and honours reduce flashing. |
 | `game/health.rs` | `Health`, counted in half-hearts: damage, heal, refill, clamped. |
+| `game/curse.rs` | `Curse` (FR1): the curse level and its rules (`tick` returns a `Tick` for `Game` to act on, `cleanse`, `speed_factor`), its `Stage`s, and its drawing (`draw_tint`, `draw_wisps`, `draw_meter`). |
 | `game/monster.rs` | The `MonsterKind` roster, `MonsterInfo` stats, distance-weighted `pick`, and per-monster drawing and animation. |
 | `game/battle.rs` | `Battle` and its `Phase`s, the iris transition, and the battle-view drawing. |
 | `game/dialogue.rs` | `Dialogue` (typewriter reveal), the `PEBBLE_TUTORIAL` lines, and `load_bank()` for `assets/dialogue.json`. |
@@ -140,7 +143,7 @@ Two consequences of this order:
 ## 4. `Game`: state owner and modes (`game/mod.rs`)
 
 Everything that changes during a run is a field on `Game`, or is owned by one: `player`,
-`world`, `progression`, `health`, `trigger_state`, `battle`, `dialogue`, `settings`,
+`world`, `progression`, `health`, `curse`, `trigger_state`, `battle`, `dialogue`, `settings`,
 `run` stats, the camera (`cam_y`, `shake`), toasts, and the game clock `time`. The UI
 gets it by reference. Nothing else holds gameplay state.
 
@@ -161,7 +164,11 @@ The road frame, in order:
 
 1. **Busy check.** While `trigger_state` is `Loading` or `Active`, the player is held
    (`player.stop`). Each flask is a checkpoint, so a fast model means a short stop.
-2. Otherwise `player.update(dt, progression.speed_multiplier(), world::clamp_to_path)`.
+2. Otherwise `player.update(dt, progression.speed_multiplier() × curse.speed_factor(),
+   world::clamp_to_path)`, then `tick_curse(dt)` (§9). If the curse's drain killed
+   the player, the frame ends here. The curse is ticked only on this branch, so it
+   holds still while a question is loading or open, in a battle, in a dialogue and
+   while paused.
 3. The camera eases toward the player (anchor 0.66 of screen height, rate `1 − e^(−6·dt)`).
    `world.ensure_generated` keeps one chunk past the top of the screen generated.
 4. `trigger_state.poll(&fallback_tasks)`.
@@ -181,7 +188,8 @@ to change each rule:
 - `Game::request_task(bias)` is the only way a question starts (§5).
 - `Game::submit_answer()` is the only way an answer is judged, for flasks and battles alike.
 - `Game::reset()` starts a new run without relaunching. It keeps the client, the
-  fallback bank, the settings and `best_distance_m`. Everything else is rebuilt, and
+  fallback bank, the settings and `best_distance_m`. Everything else is rebuilt (the
+  curse goes back to dormant), and
   dropping `trigger_state` abandons any request in flight.
 
 **The game clock.** `Game.time` advances only on unpaused frames, and every animation
@@ -249,7 +257,7 @@ randomness in the game). The game must stay fully playable with no key and no ne
 
 | | Correct | Wrong |
 |---|---|---|
-| **Flask** | `record_correct(20)` (times the streak multiplier). Heals ½ heart, or refills on a level-up. Cheer pose and a "+N XP!" banner. The spot is marked `Solved`. | `record_incorrect()` resets the streak. `damage_player(2, None)` costs 1 heart. The spot is marked `Missed`. |
+| **Flask** | `record_correct(20)` (times the streak multiplier). Heals ½ heart, or refills on a level-up. Cleanses 0.25 of the curse. Cheer pose and a "+N XP!" banner. The spot is marked `Solved`. | `record_incorrect()` resets the streak. `damage_player(2, None)` costs 1 heart. The spot is marked `Missed`. |
 | **Battle** | `record_correct(xp_per_hit)`; a level-up refills. Phase → `PlayerAttack`. | `record_incorrect()`. Phase → `MonsterAttack`, whose blow does the damage. |
 
 A stunned player's submit is refused with a toast. Input that won't parse as a number
@@ -345,15 +353,21 @@ The night (FR24) comes from a dark palette, pools of light, and a vignette.
    of them and in front of one south of them. The sort is stable and arrows go in
    after the player, so a fresh arrow draws over the archer.
 6. `world.draw_mist`: faint drifting mist banks.
-7. `gfx::vignette` around the player's feet: clear within 190 px, fading to half of
+7. The curse's wisps rising off the hero (`curse::draw_wisps`, more as it worsens).
+   Then `gfx::vignette` around the player's feet: clear within 190 px, fading to half of
    `NIGHT` by 620 px (`NIGHT_CLEAR_R`, `NIGHT_DARK_R`, `NIGHT_STRENGTH` in
    `game/mod.rs`). It darkens the edges without hiding anything near the player.
+   Past the fever stage the curse closes it in (clear radius down to 60%, strength up
+   to 0.7). Then `curse::draw_tint`, a sickly green ring closing in from the screen
+   edges with the curse level, which pulses at full unless reduce flashing is on.
 8. `world.draw_overhead`: bats crossing the screen and fireflies over the ground,
    on top of the darkness.
 9. Key prompts (E) over the flask or NPC in reach, drawn last so they're never hidden.
-10. The item-get burst and banner, then the hearts, which are always shown whatever the
-   HUD setting, then the skill bar (`skills::draw_bar`) at the bottom centre, hidden
-   while the dialogue box (also bottom centre) is open and after death. If a battle is starting, the iris transition is drawn on top.
+10. The item-get burst and banner, then the hearts and, once the curse has started,
+   the curse meter under them (`curse::draw_meter`, with a tick where the fever starts).
+   Both are always shown whatever the HUD setting. Then the skill bar (`skills::draw_bar`)
+   at the bottom centre, hidden while the dialogue box (also bottom centre) is open and
+   after death. If a battle is starting, the iris transition is drawn on top.
 
 While `battle.scene_visible()`, the battle view replaces all of this
 (`Battle::draw_scene`, then hearts, then the transition). Its backdrop
@@ -379,7 +393,8 @@ shot matches the screen.
 
 **Accessibility.** `Settings.reduce_flashing` swaps both flickers for a steady tint
 and turns off the hit shake. The battle transition and item-get burst also honour it,
-the manor's lightning becomes a steady pale glow (in both views), the fireflies stop
+the manor's lightning becomes a steady pale glow (in both views), the full curse's
+tint stops pulsing, the fireflies stop
 pulsing, and the battle sky's stars stop twinkling. Any new flash, blink or shake must
 check it.
 
@@ -438,8 +453,9 @@ roster by distance: Pinchlings thin out, and the tough ones grow common further 
 ## 9. Player, health and effects
 
 - **Movement** (`Player::update`): WASD or the arrow keys at `base_speed` 140 px/s
-  times `progression.speed_multiplier()`, times `SPRINT_MULTIPLIER` (1.6) while Shift
-  is held, the player is moving and `Stamina::can_sprint`, then the `constrain` closure. The walk
+  times `progression.speed_multiplier()` and the curse's `speed_factor()`, times
+  `SPRINT_MULTIPLIER` (1.6) while Shift is held, the player is moving and
+  `Stamina::can_sprint`, then the `constrain` closure. The walk
   cycle advances by the distance actually moved, so it stops against the railing. A
   stun or the cheer pose blocks movement. `Player::stop(dt)` holds the player in place
   but keeps effects ticking.
@@ -469,6 +485,18 @@ roster by distance: Pinchlings thin out, and the tough ones grow common further 
 - **Flicker** (`game/flicker.rs`). The spawn `Ghost` lasts 2 s and doubles as spawn
   protection. The hurt `Damage` blink lasts 1 s. Either one being active is what makes
   `damage_player` ignore hits.
+- **The curse** (`game/curse.rs`, FR1). The doctor's curse, felt as a fever. It's
+  dormant until the first frame the player is north of the gate
+  (`!world::in_hub(y)`), when it starts at 0 with a toast. From then, while `Game`
+  ticks it (see §4), on the road it rises `1/FULL_AFTER_S` (45 s) per second, ramped
+  up to ×1.5 (`RAMP_MAX`) by 2,000 m, and each metre of new ground (north of the
+  furthest point this run) takes off `RELIEF_PER_M` (0.006), so walking at base speed
+  holds it level or better. In the hub it lifts by `HUB_LIFT_PER_S` (0.05/s). A correct
+  flask cleanses `FLASK_CLEANSE` (0.25). Stages: *Cursed* from 0.2, *Fever* from
+  `SLOW_FROM` (0.5), where speed eases down to `SLOWEST` (×0.85) at full, and
+  *Burning* at 1.0, where it drains half a heart every `DRAIN_EVERY_S` (3 s) through
+  `damage_player`. Each stage toasts once on the way up, and the toasts can play again
+  once it has lifted back to clear.
 - **Health** (`game/health.rs`). 5 hearts, stored as 10 half-hearts and clamped at both
   ends. Heals: ½ heart for a correct flask, a full refill on a level-up. Death sets
   `game_over = Some(0.0)`, clears pause and settings, records `best_distance_m`, and
@@ -542,7 +570,8 @@ driving the window:
   stamina, to show the skill bar recovering), `restart`, `pause`, `settings`, battles
   (`pinch`, `jelly`, `puff`, `coco`, `gull`, `wyrm`, `titan`), answers through the
   real submit path (`right`, `wrong`), `e` (press E), teleports (`toflask`,
-  `tozone`, `topebble`), and display settings: `nohud` (hide both side panels, so
+  `tozone`, `topebble`), the curse (`curse` at 0.75, the fever stage; `cursefull`
+  at 1.0), and display settings: `nohud` (hide both side panels, so
   a shot shows the whole world) and `calm` (turn on reduce flashing).
 - With either variable set, the loop steps a fixed 1/60 s, so a run is repeatable
   frame by frame. Without an API key, questions come straight from the fallback
@@ -558,6 +587,7 @@ driving the window:
 | `llm/usage.rs` (5) | Provider-timed vs round-trip speed, zero time ignored, no usage block, the capped history. |
 | `game/bow.rs` (2) | The shot draws, then releases, then lowers. An arrow flies the way it was loosed, comes down a believable distance away, then goes away. |
 | `game/health.rs` (4) | Starts full; damage, heal and refill clamping. |
+| `game/curse.rs` (8) | Nothing happens in the hub before the road. It starts the first time the player is past the gate. Standing still fills it, then drains on the interval. Walking north holds it back, even at the far end of the ramp. Old ground gives no relief. The hub lifts it. Stage toasts replay only after it clears. Cleanse and speed clamp. |
 | `game/skills.rs` (5) | Three rolls then a lockout that refills all; a spent charge trickles back; sprinting drains and running dry winds; stamina waits, then recovers, and winded ends at the threshold; a short break doesn't refill. |
 | `game/dialogue.rs` (2) | The bank has Professor Pebble; the typewriter reveals, then advances, then closes. |
 | `ui/token_panel.rs` (1) | Token counts read `1,284` below 10,000, then `12.9K` / `4.2M`. |
@@ -589,7 +619,8 @@ the owner, and update this section if it goes ahead.
    shells) should follow `spot_for_chunk` / `encounter_for_chunk` and get a
    determinism test.
 4. **The hub is a safe zone.** Nothing hostile spawns south of `ROAD_SOUTH_END`
-   (chunk `k < 1`).
+   (chunk `k < 1`), the curse doesn't start until the player first leaves it, and it
+   lifts there rather than growing.
 5. **`Game` owns run state, and panels are views.** UI functions take what they need
    and return events. They don't keep gameplay state of their own.
 6. **One door per rule.** HP changes go through `damage_player`, `Health::heal` and
@@ -617,14 +648,14 @@ still to make:
   new answer type through the prompt, the parser, `task_panel` and `submit_answer`.
 - **One thread and one HTTP client per request**, with no cancellation or retry. That's
   fine at one request at a time; it should be revisited if requests ever overlap or prefetch.
-- **No curse or road blockers yet** (FR1, FR2). Encounter zones are the only hostile
-  placement, and nothing pushes the player forward.
+- **No road blockers yet** (FR2). Encounter zones are the only hostile placement.
+  The curse (FR1) pushes the player forward but nothing blocks the way.
 - **The difficulty cap is 5** and comes from level plus monster bias only. It doesn't
   rise with distance.
 - **The hero and the monsters still dress for the beach.** FR24 changed the world
   but not the characters: the hero wears a straw sun hat and swim shorts, and the
   roster is crabs, jellyfish, pufferfish, coconuts, gulls, a sand worm and a Tide
   Titan. Restyling them is FR25.
-- **The settled-for-now defaults** from FR5–FR15, FR20 and FR24 are listed for the owner in FR16.
+- **The settled-for-now defaults** from FR1, FR5–FR15, FR20 and FR24 are listed for the owner in FR16.
 
 See [FeatureRequestToDo.md](../FeatureRequestToDo.md) for the backlog.

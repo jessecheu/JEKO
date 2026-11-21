@@ -44,78 +44,8 @@ reused or renumbered when an entry is removed. Take the next number, not the fir
 # Gameplay — urgency
 
 **Goal:** make the player feel urgency so they keep moving up the road.
-Today nothing pushes the player: they can stand still, and the only stops are the
-potion-flask problems (`src/game/mod.rs` freezes the player while a problem
-is `Loading` or `Active`). FR1 wears the player down while they linger; FR2 and FR3 block the way ahead.
-
-## FR1. The doctor's curse: a sickness that sets in once the player is on the road
-
-**Status.** **Not started.** Reworked from "rising lava" to a curse that fits the dark
-forest (owner, 2026-11-21). The curse must only begin once the player steps onto the
-road, past the iron gate.
-
-**Depends on:** [] _(pairs with FR2: the curse is what makes a blocking monster cost
-something; pairs with FR23: the curse is the mad scientist's doing)_
-
-**Motivation.** The player can stand still forever. A curse that keeps worsening while
-they dawdle on the road means they can't, and gives every stop (a flask, a monster) a
-cost. It's a status on the hero rather than a wall of something chasing them, so it
-suits a haunted wood better than lava did.
-
-**Proposed approach.** *(suggested, not decided)*
-
-- **When it starts.** `Game` holds `curse: Option<Curse>`, `None` at spawn. The first
-  frame the player is north of the gate (`!world::in_hub(player.pos.y)`, past
-  `ROAD_SOUTH_END`) sets it to `Some`. Until then nothing ticks, so the hub tutorial
-  and Professor Pebble are unhurried, and the hub stays a safe zone
-  (*Invariants* 4). `reset()` sets it back to `None`, so each run starts clean in the hub.
-- **How it grows.** `Curse { level: f32 }` runs 0.0 to 1.0. It rises at a slow
-  steady rate every `update` while the player is on the road. Reaching new ground
-  pushes it back: each metre beyond the run's furthest `distance_m` takes a little
-  off, so a player who keeps walking stays roughly level and one who stops sickens.
-  A correct flask cleanses a chunk of it, so questions are relief, not only a stop.
-  The rate can ramp with distance or `progression.level`.
-- **What it does, in stages.** Shown, not just counted:
-  - *Low:* a sickly green tinge creeping into the edges of the screen (`gfx::vignette`
-    tinted toward `LAB_GREEN`) and the odd green wisp off the hero.
-  - *Middle:* the vignette closes in so the player sees less of the road ahead, and
-    movement slows a little (a factor in `Player::update`'s speed, next to
-    `speed_multiplier()`).
-  - *Full:* it drains health, half a heart every few seconds, through
-    `damage_player` (*Invariants* 6), so death comes through the existing game-over
-    flow rather than a new one.
-- **HUD.** A small curse meter beside the hearts, so the player can see it coming
-  before the screen does.
-- **During a problem or battle.** Suggested: the curse holds still while a question is
-  `Loading`, so a slow Cerebras reply never punishes the player (the README's "the
-  problem should appear fast enough that it doesn't break movement flow"), and either
-  holds or creeps slowly while it's `Active` (open question below).
-
-**Open questions.**
-
-- Is it a curse (the doctor's hex), a sickness (a spreading blight or fever), or both
-  framed as one? This sets the wording, colours and any flavour lines.
-- What happens at a full curse: a health drain until death (suggested above), instant
-  game over, or knock back to the gate and lose the streak?
-- Does the curse pause, slow, or keep going while a problem or battle is open?
-- If the player walks back south into the hub, does the curse stop, slowly lift, or
-  keep going? Letting the hub heal it makes the hub a refuge, but invites camping.
-- Should a correct flask cleanse some of it (suggested), or only progress up the road?
-
-**Acceptance criteria.**
-
-- [ ] Nothing happens while the player is in the hub at the start of a run; the curse
-  begins only once they first step onto the road past the gate, and a test covers it.
-- [ ] The curse worsens over time on the road and is held back by moving forward, so
-  the player can't stand still and has to keep going.
-- [ ] Its stages are visible on screen (the green vignette and the HUD meter), not only
-  as a number.
-- [ ] A full curse has a defined outcome (per the open question above), and any damage
-  goes through `damage_player`.
-- [ ] The curse's behaviour during an open problem/battle is defined and implemented.
-- [ ] `reset()` clears it, so a new run starts uncursed in the hub.
-
----
+The doctor's curse (FR1, built) now wears the player down while they linger on the
+road. FR2 and FR3 block the way ahead.
 
 ## FR2. Monsters blocking the road ahead
 
@@ -258,7 +188,7 @@ its "help" is animation. It never changes XP, speed, answers or battle outcomes.
 (see [Completed](#completed)), each on a provisional answer so the work could
 land; this entry keeps the questions so they are answered, not settled silently.
 
-## FR16. Confirm the provisional answers from FR5–FR15, FR20, FR24 and FR26
+## FR16. Confirm the provisional answers from FR1, FR5–FR15, FR20, FR24 and FR26
 
 **Status.** **Waiting on the owner.** Every default below is live in the code.
 Tick an item once the owner confirms it, or replace it with the owner's answer
@@ -266,11 +196,18 @@ and file the change as its own FR if it needs code.
 
 **Depends on:** [] _(answers here may spawn small follow-up FRs)_
 
-**Motivation.** FR5–FR15 were built in one pass, and FR20, FR24 and FR26 later on their own. Their open questions are the
+**Motivation.** FR5–FR15 were built in one pass, and FR1, FR20, FR24 and FR26 later on their own. Their open questions are the
 owner's to answer, so each was given a reasonable, easily changed default and
 recorded here.
 
 **Decisions to confirm** (question, then the provisional answer in the code):
+
+- [ ] **FR1** The owner chose the framing (both: the doctor's curse, felt as a
+  fever), a health drain at full, a full pause while a question or battle is open,
+  and a slow lift in the hub. Still provisional: does a correct flask cleanse some
+  of it? *Yes, 0.25.* The numbers? *Full after 45 s standing still near the gate,
+  rising up to ×1.5 by 2,000 m; each metre of new ground lifts 0.006; the hub lifts
+  0.05/s; slows from 0.5 down to ×0.85 at full; at full, ½ heart every 3 s.*
 
 - [ ] **FR5** Jump/roll while standing still? *Yes.* Roll as a dodge later? *Not now;
   the roll has a defined start/end (`Action::Roll { t }`) so one can hook in.*
@@ -1517,6 +1454,16 @@ monsters for tomorrow").
 
 When an entry is fully built, delete it above and add one line here, newest
 first: `FR<n> — title — date — why it closed (commit)`. Its number stays retired.
+
+- FR1 — The doctor's curse: a sickness that sets in once the player is on the road —
+  2026-11-21 — reworked from rising lava at the owner's request; owner chose the
+  framing (curse felt as a fever), a health drain at full, a full pause during
+  questions and battles, and a slow lift in the hub. Built as `game/curse.rs`
+  (8 tests): dormant until the player first passes the gate, rises over time and is
+  held back by new ground, cleansed by a correct flask, slows the player past the
+  fever stage and drains ½ heart every 3 s at full through `damage_player`; a green
+  tint and closing vignette, wisps off the hero, a curse meter under the hearts,
+  stage toasts, dev events `curse`/`cursefull`. Remaining provisional numbers are in FR16
 
 - FR26 — Skill bar with roll charges and sprint stamina — 2026-11-21 — requested
   directly by the owner and built in one pass: `game/skills.rs` (`RollCharges`: 3
