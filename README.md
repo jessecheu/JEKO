@@ -42,6 +42,7 @@ src/
     manor.rs              the gothic manor backdrop across the lake (and on the battle horizon), its lightning, bats
     gfx.rs                shared drawing helpers (night palette, ink outline, shadows, ribbons, stars, glows, vignette, potion flask)
     player.rs             WASD/arrow movement along the path, speed multiplier from upgrades and Shift sprint, player sprite, jump/roll/shoot
+    skills.rs             roll charges and sprint stamina, and the skill bar at the bottom centre
     bow.rs                the bow: shot timing, bow and arrow drawing, cosmetic arrows that arc and stick where they land
     flicker.rs            reusable flicker look (spawn ghost, damage blink), honours "reduce flashing"
     health.rs             player HP in half-hearts (damage/heal/refill, clamped, unit-tested)
@@ -96,12 +97,13 @@ hunting required.
    `test`, `gen-content`, `nix-build`).
 3. Controls: W/Up walks up the road (the map scrolls with you, forever),
    A/D or Left/Right steer across it, S/Down backs up; hold **Shift** to
-   sprint. Walk up to a glowing
+   sprint, which drains the stamina meter on the skill bar at the bottom of the
+   screen (run it dry and you're winded until it refills). Walk up to a glowing
    potion flask and an **E** key prompt floats over it; press E to
    open its task (you stay put until it's answered). Press E again to jump
    into the answer field, type the number, and hit Enter. No mouse needed
    (clicking the field and Submit still works). **Space** jumps,
-   **Ctrl** rolls and **F** shoots an arrow from your bow (all cosmetic for
+   **Ctrl** rolls (3 in a row, then a short wait) and **F** shoots an arrow from your bow (all cosmetic for
    now; in a battle, a right answer is shown as a bow shot). **P** pauses,
    and **O** opens settings
    (O or Esc closes them).
@@ -113,7 +115,7 @@ hunting required.
 
    Dev aids: `JEKO_SHOT=out.png:120` saves a screenshot at frame 120 and
    exits; `JEKO_DEV=jelly@150,wrong@270` fires scripted events (`hurt`,
-   `kill`, `restart`, `jump`, `roll`, `shoot`, `stun`, `cheer`, `pause`, `settings`,
+   `kill`, `restart`, `jump`, `roll`, `shoot`, `stun`, `cheer`, `spent`, `pause`, `settings`,
    battles `pinch`/`jelly`/`puff`/`coco`/`gull`/`wyrm`/`titan`, `right`/
    `wrong` answers through the real submit path, `e` presses E, and
    teleports `toflask`/`tozone`/`topebble`, `nohud` hides the side panels,

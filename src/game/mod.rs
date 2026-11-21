@@ -8,6 +8,7 @@ pub mod health;
 pub mod manor;
 pub mod monster;
 pub mod player;
+pub mod skills;
 pub mod task_trigger;
 pub mod world;
 
@@ -596,6 +597,12 @@ impl Game {
                 }
             }
             "shoot" => self.player.shoot(),
+            // Spends every roll charge and the stamina (FR26), for a shot
+            // of the skill bar recovering.
+            "spent" => {
+                while self.player.skills.roll.try_use() {}
+                self.player.skills.stamina.exhaust();
+            }
             "restart" => self.reset(),
             "pinch" => self.start_battle(MonsterKind::Pinchling, None),
             "jelly" => self.start_battle(MonsterKind::Jellyglow, None),
@@ -829,6 +836,14 @@ impl Game {
         }
 
         self.draw_hearts();
+        // Bottom centre, where the dialogue box also sits.
+        if self.dialogue.is_none() && self.game_over.is_none() {
+            skills::draw_bar(
+                &self.player.skills,
+                matches!(self.player.action, player::Action::Roll { .. }),
+                t,
+            );
+        }
         if let Some(b) = &self.battle {
             let at = view.to_screen(self.player.pos) - vec2(0.0, 24.0);
             b.draw_transition(at, rf);

@@ -36,7 +36,7 @@ Entries are grouped by area. Numbering is stable; don't renumber when one is rem
 
 ## Numbering
 
-**The next free number is FR26**; bump it when you file one. Numbers are never
+**The next free number is FR27**; bump it when you file one. Numbers are never
 reused or renumbered when an entry is removed. Take the next number, not the first gap.
 
 ---
@@ -226,7 +226,7 @@ its "help" is animation. It never changes XP, speed, answers or battle outcomes.
 (see [Completed](#completed)), each on a provisional answer so the work could
 land; this entry keeps the questions so they are answered, not settled silently.
 
-## FR16. Confirm the provisional answers from FR5–FR15, FR20 and FR24
+## FR16. Confirm the provisional answers from FR5–FR15, FR20, FR24 and FR26
 
 **Status.** **Waiting on the owner.** Every default below is live in the code.
 Tick an item once the owner confirms it, or replace it with the owner's answer
@@ -234,7 +234,7 @@ and file the change as its own FR if it needs code.
 
 **Depends on:** [] _(answers here may spawn small follow-up FRs)_
 
-**Motivation.** FR5–FR15 were built in one pass, and FR20 and FR24 later on their own. Their open questions are the
+**Motivation.** FR5–FR15 were built in one pass, and FR20, FR24 and FR26 later on their own. Their open questions are the
 owner's to answer, so each was given a reasonable, easily changed default and
 recorded here.
 
@@ -279,6 +279,14 @@ recorded here.
   violet or pink, by position.* Signs? *Hub sign "JEKO WOODS"; the gate keeps "THE
   ROAD".* The hero and monsters? *Unchanged, filed as FR25.* The manor's name?
   *None shown yet.*
+- [ ] **FR26** Does a roll charge come back before all 3 are spent? *Yes, one per
+  1.0 s without rolling; rolling back to back empties them, then a 1.5 s lockout
+  refills all 3.* How long is a full sprint, and how fast does it return? *3 s;
+  refills from empty in 4 s, starting 0.5 s after you stop.* What does winded do?
+  *No sprint until stamina is back to 35%; walking unaffected.* Jump and shoot on
+  the bar too? *No, they stay unlimited.* When is the bar shown? *Always on the
+  road; hidden in a battle, while the dialogue box is open, and after death.* Do
+  skills recover while held at a flask or in a battle? *Yes.*
 
 **Acceptance criteria.**
 
@@ -946,6 +954,14 @@ the build container runs every step through **`flake.nix`**, and CD targets
 
 When an entry is fully built, delete it above and add one line here, newest
 first: `FR<n> — title — date — why it closed (commit)`. Its number stays retired.
+
+- FR26 — Skill bar with roll charges and sprint stamina — 2026-11-21 — requested
+  directly by the owner and built in one pass: `game/skills.rs` (`RollCharges`: 3
+  rolls, a 1.0 s trickle, a 1.5 s lockout; `Stamina`: 3 s of sprint, 4 s refill after
+  a 0.5 s delay, winded until 35%; 5 unit tests) owned by `Player`, and `draw_bar`,
+  keycap slots at the bottom centre with charge pips, a lockout sweep and countdown,
+  a stamina meter and a "Winded" state. New dev event `spent`; controls reference,
+  README and ARCHITECTURE updated. Provisional answers are in FR16 (uncommitted)
 
 - FR24 — Revamp the map from the beach to a dark forest with a gothic manor —
   2026-11-21 — owner chose to replace the beach entirely and to use potion flasks as

@@ -1,6 +1,7 @@
 use super::bow::{self, Arrow};
 use super::flicker::{Flicker, FlickerKind};
 use super::gfx::{self, INK};
+use super::skills::Skills;
 use super::world::{self, View};
 use macroquad::prelude::*;
 use std::cell::OnceCell;
@@ -11,8 +12,8 @@ pub const SPAWN_FLICKER_S: f32 = 2.0;
 const JUMP_S: f32 = 0.45;
 const JUMP_HEIGHT: f32 = 22.0;
 const ROLL_S: f32 = 0.4;
-/// Holding Shift multiplies walking speed by this. It stacks with the
-/// Speed Boost upgrade.
+/// Holding Shift multiplies walking speed by this, while there's stamina
+/// for it (FR26). It stacks with the Speed Boost upgrade.
 const SPRINT_MULTIPLIER: f32 = 1.6;
 /// Raises the bow and shoots (FR19).
 pub const SHOOT_KEY: KeyCode = KeyCode::F;
@@ -82,6 +83,8 @@ pub struct Player {
     pub hat_stolen: bool,
     /// Arrows loosed on the road (FR19), oldest first. Cosmetic.
     pub arrows: Vec<Arrow>,
+    /// Roll charges and sprint stamina (FR26), shown on the skill bar.
+    pub skills: Skills,
     /// Off-screen canvas the sprite is drawn into when it has to be
     /// rotated, squashed or made translucent as one piece.
     canvas: OnceCell<RenderTarget>,
@@ -105,6 +108,7 @@ impl Player {
             cheer: 0.0,
             hat_stolen: false,
             arrows: Vec::new(),
+            skills: Skills::default(),
         }
     }
 
@@ -249,12 +253,15 @@ impl Player {
         if self.stunned() || self.cheer > 0.0 {
             // Too dizzy (or too busy celebrating) to walk, jump or roll.
             self.moving = false;
+            self.skills.update(dt, false);
             return;
         }
         if self.action == Action::None {
             if is_key_pressed(KeyCode::Space) {
                 self.action = Action::Jump { t: 0.0 };
-            } else if is_key_pressed(KeyCode::LeftControl) || is_key_pressed(KeyCode::RightControl)
+            } else if (is_key_pressed(KeyCode::LeftControl)
+                || is_key_pressed(KeyCode::RightControl))
+                && self.skills.roll.try_use()
             {
                 self.action = Action::Roll {
                     t: 0.0,
@@ -284,11 +291,11 @@ impl Player {
             self.facing = dir.x.signum();
         }
 
-        let sprint = if is_key_down(KeyCode::LeftShift) || is_key_down(KeyCode::RightShift) {
-            SPRINT_MULTIPLIER
-        } else {
-            1.0
-        };
+        let sprinting = (is_key_down(KeyCode::LeftShift) || is_key_down(KeyCode::RightShift))
+            && dir != Vec2::ZERO
+            && self.skills.stamina.can_sprint();
+        self.skills.update(dt, sprinting);
+        let sprint = if sprinting { SPRINT_MULTIPLIER } else { 1.0 };
         let before = self.pos;
         if dir != Vec2::ZERO {
             self.pos += dir.normalize() * self.base_speed * speed_multiplier * sprint * dt;
@@ -301,10 +308,11 @@ impl Player {
     }
 
     /// Freezes the walk cycle while the player is held in place (e.g. a
-    /// task panel is open).
+    /// task panel is open). The skills keep recovering.
     pub fn stop(&mut self, dt: f32) {
         self.moving = false;
         self.tick_effects(dt);
+        self.skills.update(dt, false);
     }
 
     /// Height off the ground, horizontal/vertical scale and rotation

@@ -267,7 +267,7 @@ fn gfx_surface(cx: f32, y: f32, r: f32, scale: f32, color: Color) {
     ellipse(vec2(cx, y), r * 0.82, 1.6 * scale, color);
 }
 
-fn rounded_rect(x: f32, y: f32, w: f32, h: f32, r: f32, color: Color) {
+pub fn rounded_rect(x: f32, y: f32, w: f32, h: f32, r: f32, color: Color) {
     draw_rectangle(x + r, y, w - 2.0 * r, h, color);
     draw_rectangle(x, y + r, w, h - 2.0 * r, color);
     for (cx, cy) in [

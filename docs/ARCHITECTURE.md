@@ -95,7 +95,8 @@ The layering holds today, and new code should keep it:
 | `game/decor.rs` | Per-chunk forest scenery generation (`generate_chunk`), the hand-placed hub camp (`hub_layout`), how each prop draws, and which props cast light (`Decoration::lights`). |
 | `game/manor.rs` | The gothic manor backdrop (`draw`, with an optional lake reflection), its lightning timing (`lightning`), and the shared `bat` silhouette. |
 | `game/gfx.rs` | The shared drawing vocabulary: the `INK`, `SHADOW`, `MOON`, `LANTERN`, `LAB_GREEN` and `NIGHT` colours, shading, ellipses, ribbons, stars, gradient meshes (`gradient_ring`, `glow`, `vignette`), the potion flask, hearts, the key prompt, the item-get burst, and `hash01`. |
-| `game/player.rs` | `Player`: movement, the cosmetic `Action`s (jump, roll, shoot), the arrows it has loosed, stun, cheer, death, the stolen hat, and the sprite drawn through a render target. |
+| `game/player.rs` | `Player`: movement, the cosmetic `Action`s (jump, roll, shoot), the arrows it has loosed, its `Skills`, stun, cheer, death, the stolen hat, and the sprite drawn through a render target. |
+| `game/skills.rs` | Movement skills (FR26): `RollCharges` (3 rolls, a trickle, a lockout) and `Stamina` (sprint drain, regen, winded), held together in `Skills`, and `draw_bar`, the skill bar at the bottom centre. |
 | `game/bow.rs` | The bow: the shot's timing (`aim`, `SHOOT_S`, `RELEASE_S`), drawing the bow slung and held and an arrow (`draw_arrow`), and `Arrow`, a cosmetic projectile that arcs, then sticks in the ground or splashes in the lake. |
 | `game/flicker.rs` | `Flicker` / `FlickerKind` (spawn ghost, damage blink). It turns elapsed time into a `Look` (tint and alpha) and honours reduce flashing. |
 | `game/health.rs` | `Health`, counted in half-hearts: damage, heal, refill, clamped. |
@@ -351,7 +352,8 @@ The night (FR24) comes from a dark palette, pools of light, and a vignette.
    on top of the darkness.
 9. Key prompts (E) over the flask or NPC in reach, drawn last so they're never hidden.
 10. The item-get burst and banner, then the hearts, which are always shown whatever the
-   HUD setting. If a battle is starting, the iris transition is drawn on top.
+   HUD setting, then the skill bar (`skills::draw_bar`) at the bottom centre, hidden
+   while the dialogue box (also bottom centre) is open and after death. If a battle is starting, the iris transition is drawn on top.
 
 While `battle.scene_visible()`, the battle view replaces all of this
 (`Battle::draw_scene`, then hearts, then the transition). Its backdrop
@@ -437,13 +439,23 @@ roster by distance: Pinchlings thin out, and the tough ones grow common further 
 
 - **Movement** (`Player::update`): WASD or the arrow keys at `base_speed` 140 px/s
   times `progression.speed_multiplier()`, times `SPRINT_MULTIPLIER` (1.6) while Shift
-  is held, then the `constrain` closure. The walk
+  is held, the player is moving and `Stamina::can_sprint`, then the `constrain` closure. The walk
   cycle advances by the distance actually moved, so it stops against the railing. A
   stun or the cheer pose blocks movement. `Player::stop(dt)` holds the player in place
   but keeps effects ticking.
 - **Cosmetic actions.** `Action::Jump` (Space), `Action::Roll` (Ctrl) and
   `Action::Shoot` (F, `SHOOT_KEY`) change only how the sprite is drawn. They never
   change position, speed or anything gameplay reads. Only one runs at a time.
+- **Skills** (`game/skills.rs`, FR26). `Player.skills` limits the roll and the sprint.
+  The roll has `ROLL_CHARGES` (3): Ctrl spends one (`RollCharges::try_use`) and does
+  nothing with none left. A spent charge comes back after `ROLL_RECHARGE_S` (1.0 s)
+  without rolling; spending the last starts a `ROLL_LOCKOUT_S` (1.5 s) lockout that
+  then refills all 3. Stamina is 0..1: sprinting drains it in `SPRINT_S` (3 s); it
+  refills from empty in `STAMINA_REFILL_S` (4 s), starting `STAMINA_REGEN_DELAY_S`
+  (0.5 s) after the sprint stops. Running it dry leaves the player winded (no sprint,
+  walking unaffected) until it's back to `WINDED_UNTIL` (35%). `Skills::update` runs
+  once a frame from `Player::update` or `Player::stop`, so the skills recover at a
+  flask, in a battle and while stunned, and freeze on pause. `Player::new` resets them.
 - **The bow** (`game/bow.rs`). It rides slung across the back. A shot lasts `SHOOT_S`
   (0.55 s): raise, draw (the far eye squints), release at `RELEASE_S`, follow through,
   lower. Facing is locked while it plays. On the road the release looses an `Arrow`
@@ -526,7 +538,8 @@ driving the window:
 - `JEKO_SHOT=out.png:120` saves a screenshot at frame 120, prints
   `Game::debug_summary()` (a `STATE …` line) to stderr, and exits.
 - `JEKO_DEV=name@frame,…` fires scripted events: damage (`hurt`, `kill`), moves
-  (`jump`, `roll`, `shoot`, `stun`, `cheer`), `restart`, `pause`, `settings`, battles
+  (`jump`, `roll`, `shoot`, `stun`, `cheer`), `spent` (empty the roll charges and
+  stamina, to show the skill bar recovering), `restart`, `pause`, `settings`, battles
   (`pinch`, `jelly`, `puff`, `coco`, `gull`, `wyrm`, `titan`), answers through the
   real submit path (`right`, `wrong`), `e` (press E), teleports (`toflask`,
   `tozone`, `topebble`), and display settings: `nohud` (hide both side panels, so
@@ -545,6 +558,7 @@ driving the window:
 | `llm/usage.rs` (5) | Provider-timed vs round-trip speed, zero time ignored, no usage block, the capped history. |
 | `game/bow.rs` (2) | The shot draws, then releases, then lowers. An arrow flies the way it was loosed, comes down a believable distance away, then goes away. |
 | `game/health.rs` (4) | Starts full; damage, heal and refill clamping. |
+| `game/skills.rs` (5) | Three rolls then a lockout that refills all; a spent charge trickles back; sprinting drains and running dry winds; stamina waits, then recovers, and winded ends at the threshold; a short break doesn't refill. |
 | `game/dialogue.rs` (2) | The bank has Professor Pebble; the typewriter reveals, then advances, then closes. |
 | `ui/token_panel.rs` (1) | Token counts read `1,284` below 10,000, then `12.9K` / `4.2M`. |
 
