@@ -49,7 +49,7 @@ async fn main() {
         .collect();
 
     loop {
-        clear_background(Color::new(0.09, 0.45, 0.72, 1.0));
+        clear_background(jeko::game::gfx::NIGHT);
 
         for (name, _) in dev_events.iter().filter(|(_, at)| *at == frame) {
             game.dev_event(name);
@@ -105,7 +105,14 @@ async fn main() {
         frame += 1;
         if let Some((path, at)) = &shot {
             if frame == *at {
-                get_screen_data().export_png(path);
+                // Translucent draws (glows, mist, the night vignette) leave
+                // the framebuffer's alpha below 1; the window ignores it, so
+                // save the shot opaque to match what's on screen.
+                let mut img = get_screen_data();
+                for px in img.bytes.as_chunks_mut::<4>().0 {
+                    px[3] = 255;
+                }
+                img.export_png(path);
                 eprintln!("{}", game.debug_summary());
                 return;
             }

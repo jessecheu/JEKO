@@ -1,14 +1,16 @@
 # JEKO — Math Quest
 
-A 2.5D beach exploration game: you walk up an endless, winding boardwalk,
-and opening a message-in-a-bottle (walk up, press E) asks Cerebras-hosted
+A 2.5D exploration game set in a dark forest at night: you walk up an
+endless, winding cobbled road past a black lake, with a mad scientist's
+gothic manor looming across the water. Opening a glowing potion flask (walk
+up, press E) asks Cerebras-hosted
 Kimi K3.1 to write a fresh, difficulty-scaled math problem on the spot. Built
 for a hackathon demo of Cerebras' low-latency inference: the problem should
 appear fast enough that it doesn't break the player's movement flow.
 
 ## Stack
 
-- **macroquad** — window, input, and world rendering (the beach, its props,
+- **macroquad** — window, input, and world rendering (the forest, its props,
   and the player are all flat-colored primitives for now; swap in real textures via
   `load_texture`/`draw_texture_ex` when art exists).
 - **egui** via **egui-macroquad** — HUD overlay (progress bar, streak,
@@ -35,15 +37,16 @@ src/
     task_gen.rs           prompt templates + JSON extraction helpers
     usage.rs              per-request token counts + tokens/sec, session totals (feeds the token panel)
   game/
-    world.rs              endless boardwalk path, camera view, chunked scenery, bottle triggers, ocean/sand/deck drawing
-    decor.rs              beach props (palms, umbrellas, huts, boats...) — per-chunk generation + drawing
-    gfx.rs                shared drawing helpers (ink outline, shadows, ribbons, stars)
+    world.rs              endless cobbled road, camera view, chunked scenery, potion-flask triggers, lake/ground/road drawing, light pools, mist, bats and fireflies
+    decor.rs              forest props (pines, gravestones, pumpkins, cottages, lampposts...) and the hub camp — per-chunk generation + drawing
+    manor.rs              the gothic manor backdrop across the lake (and on the battle horizon), its lightning, bats
+    gfx.rs                shared drawing helpers (night palette, ink outline, shadows, ribbons, stars, glows, vignette, potion flask)
     player.rs             WASD/arrow movement along the path, speed multiplier from upgrades and Shift sprint, player sprite, jump/roll/shoot
     bow.rs                the bow: shot timing, bow and arrow drawing, cosmetic arrows that arc and stick where they land
     flicker.rs            reusable flicker look (spawn ghost, damage blink), honours "reduce flashing"
     health.rs             player HP in half-hearts (damage/heal/refill, clamped, unit-tested)
     monster.rs            monster roster (stats, rarity by distance) + per-monster drawing and animations
-    battle.rs             wild-encounter battle: transition, phases, battle-view drawing
+    battle.rs             wild-encounter battle: transition, phases, battle-view drawing (moonlit clearing)
     dialogue.rs           NPC dialogue with typewriter reveal (Professor Pebble in the hub)
     task_trigger.rs        state machine: Idle -> Loading -> Active -> Resolved
     mod.rs                 ties player/world/progression/trigger together
@@ -91,10 +94,10 @@ hunting required.
    `secretspec run -- cargo run` if you went the secretspec route). See
    `make help` for every target (`build`, `release`, `check`, `fmt`, `lint`,
    `test`, `gen-content`, `nix-build`).
-3. Controls: W/Up walks up the boardwalk (the map scrolls with you, forever),
+3. Controls: W/Up walks up the road (the map scrolls with you, forever),
    A/D or Left/Right steer across it, S/Down backs up; hold **Shift** to
    sprint. Walk up to a glowing
-   message-in-a-bottle and an **E** key prompt floats over it; press E to
+   potion flask and an **E** key prompt floats over it; press E to
    open its task (you stay put until it's answered). Press E again to jump
    into the answer field, type the number, and hit Enter. No mouse needed
    (clicking the field and Submit still works). **Space** jumps,
@@ -102,9 +105,9 @@ hunting required.
    now; in a battle, a right answer is shown as a bow shot). **P** pauses,
    and **O** opens settings
    (O or Esc closes them).
-   The run starts in a beach hub (press E by Professor Pebble for a quick
-   tutorial); walk north through the "THE ROAD" arch
-   onto the boardwalk. Patches of sea-grass on the deck hide monsters:
+   The run starts in Professor Pebble's camp at the forest edge (press E by
+   Professor Pebble for a quick tutorial); walk north through the iron gate
+   signed "THE ROAD". Patches of ferns on the road hide monsters:
    step in and answer questions to beat them. Wrong answers cost hearts,
    and at zero hearts it's Game Over (E/Enter to try again).
 
@@ -113,7 +116,8 @@ hunting required.
    `kill`, `restart`, `jump`, `roll`, `shoot`, `stun`, `cheer`, `pause`, `settings`,
    battles `pinch`/`jelly`/`puff`/`coco`/`gull`/`wyrm`/`titan`, `right`/
    `wrong` answers through the real submit path, `e` presses E, and
-   teleports `tobottle`/`tozone`/`topebble`) at those frames, stepping a
+   teleports `toflask`/`tozone`/`topebble`, `nohud` hides the side panels,
+   `calm` turns on reduce flashing) at those frames, stepping a
    fixed 1/60 s per frame. At the shot it prints a `STATE ...` line of run
    state to stderr.
 
@@ -179,7 +183,7 @@ without re-checking this.
 
 - More upgrades: a dash, double-jump, or cosmetic skin — `progression/upgrades.rs`
   is the only file that needs a new entry; the unlock logic is generic.
-- Escalating difficulty with distance walked — bottles currently scale only
+- Escalating difficulty with distance walked — flasks currently scale only
   with player level.
 - A second task type (geometry, fractions) via a second prompt template in
   `llm/task_gen.rs`.

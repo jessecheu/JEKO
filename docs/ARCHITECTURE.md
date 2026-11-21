@@ -15,8 +15,9 @@ timestamp: 2026-11-21
 > That call runs on a throwaway OS thread and its result comes back over an `mpsc` channel
 > that `TriggerState` polls each frame. When there's no key or the call fails, a fallback
 > bank compiled into the binary steps in. The world isn't stored as a map. The path is a function of `y`, and each chunk's
-> scenery, bottle and monster zone is a pure function of the chunk index, so the
-> road is endless, the same every run, and unit-testable.
+> scenery, potion flask and monster zone is a pure function of the chunk index, so the
+> road is endless, the same every run, and unit-testable. The setting is a dark forest
+> at night (FR24), with the mad scientist's manor drawn as a backdrop across the lake.
 
 This doc is **descriptive**. It says what the code is today, checked against the source
 on the date in the frontmatter. It isn't a roadmap: planned and open work lives in
@@ -90,11 +91,12 @@ The layering holds today, and new code should keep it:
 | `llm/usage.rs` | `RequestUsage` (one call's tokens and speed) and `TokenStats` (session totals plus the last 24 requests). |
 | `game/mod.rs` | `Game`: run state, the per-frame update and draw, the mode precedence, the damage, answer and reset entry points, and the dev events. |
 | `game/task_trigger.rs` | `TriggerState`, the question state machine (§4), and `pick_fallback`. |
-| `game/world.rs` | Coordinates and camera (`View`), path geometry, chunking, bottles (`Spot`), encounter zones, ground and deck drawing, and the depth-sorted `Tall` items. |
-| `game/decor.rs` | Per-chunk scenery generation (`generate_chunk`), the hand-placed spawn hub (`hub_layout`), and how each prop draws. |
-| `game/gfx.rs` | The shared drawing vocabulary: the `INK` and `SHADOW` colours, shading, ellipses, ribbons, stars, hearts, the key prompt, the item-get burst, and `hash01`. |
+| `game/world.rs` | Coordinates and camera (`View`), path geometry, chunking, potion flasks (`Spot`), encounter zones, the depth-sorted `Tall` items, and drawing the ground, the cobbled road, the light pools, the mist, the bats and fireflies, and where the manor sits on screen. |
+| `game/decor.rs` | Per-chunk forest scenery generation (`generate_chunk`), the hand-placed hub camp (`hub_layout`), how each prop draws, and which props cast light (`Decoration::lights`). |
+| `game/manor.rs` | The gothic manor backdrop (`draw`, with an optional lake reflection), its lightning timing (`lightning`), and the shared `bat` silhouette. |
+| `game/gfx.rs` | The shared drawing vocabulary: the `INK`, `SHADOW`, `MOON`, `LANTERN`, `LAB_GREEN` and `NIGHT` colours, shading, ellipses, ribbons, stars, gradient meshes (`gradient_ring`, `glow`, `vignette`), the potion flask, hearts, the key prompt, the item-get burst, and `hash01`. |
 | `game/player.rs` | `Player`: movement, the cosmetic `Action`s (jump, roll, shoot), the arrows it has loosed, stun, cheer, death, the stolen hat, and the sprite drawn through a render target. |
-| `game/bow.rs` | The bow: the shot's timing (`aim`, `SHOOT_S`, `RELEASE_S`), drawing the bow slung and held and an arrow (`draw_arrow`), and `Arrow`, a cosmetic projectile that arcs, then sticks in the ground or splashes in the sea. |
+| `game/bow.rs` | The bow: the shot's timing (`aim`, `SHOOT_S`, `RELEASE_S`), drawing the bow slung and held and an arrow (`draw_arrow`), and `Arrow`, a cosmetic projectile that arcs, then sticks in the ground or splashes in the lake. |
 | `game/flicker.rs` | `Flicker` / `FlickerKind` (spawn ghost, damage blink). It turns elapsed time into a `Look` (tint and alpha) and honours reduce flashing. |
 | `game/health.rs` | `Health`, counted in half-hearts: damage, heal, refill, clamped. |
 | `game/monster.rs` | The `MonsterKind` roster, `MonsterInfo` stats, distance-weighted `pick`, and per-monster drawing and animation. |
@@ -111,7 +113,7 @@ macroquad's `#[macroquad::main]` gives an `async fn main`, but `next_frame().awa
 only yields once per frame. **It isn't an executor that can drive other futures**,
 which is why network work goes to a thread (§4). Each iteration does this, in order:
 
-1. `clear_background` (the sea blue).
+1. `clear_background` (`gfx::NIGHT`).
 2. Fire any `JEKO_DEV` events scheduled for this frame (`Game::dev_event`).
 3. Choose `dt`: a fixed 1/60 s when `JEKO_SHOT` or `JEKO_DEV` is set, so frame numbers
    map to game time; `get_frame_time()` otherwise.
@@ -157,14 +159,14 @@ what the frame does:
 The road frame, in order:
 
 1. **Busy check.** While `trigger_state` is `Loading` or `Active`, the player is held
-   (`player.stop`). Each bottle is a checkpoint, so a fast model means a short stop.
+   (`player.stop`). Each flask is a checkpoint, so a fast model means a short stop.
 2. Otherwise `player.update(dt, progression.speed_multiplier(), world::clamp_to_path)`.
 3. The camera eases toward the player (anchor 0.66 of screen height, rate `1 − e^(−6·dt)`).
    `world.ensure_generated` keeps one chunk past the top of the screen generated.
 4. `trigger_state.poll(&fallback_tasks)`.
 5. If not busy, stepping into an uncleared encounter zone starts a battle.
-6. Interaction targets: the nearest fresh bottle in reach, or else Professor Pebble.
-   E opens the bottle, talks to Pebble, or focuses the answer field when a task is open.
+6. Interaction targets: the nearest fresh flask in reach, or else Professor Pebble.
+   E opens the flask, talks to Pebble, or focuses the answer field when a task is open.
 7. A `Resolved` cooldown counts down to `Idle`.
 
 **Single entry points.** Several systems have exactly one door, so there's one place
@@ -176,21 +178,21 @@ to change each rule:
   from `from` (clamped to the path), shakes the screen unless reduce flashing is on,
   and calls `die()` at 0 HP.
 - `Game::request_task(bias)` is the only way a question starts (§5).
-- `Game::submit_answer()` is the only way an answer is judged, for bottles and battles alike.
+- `Game::submit_answer()` is the only way an answer is judged, for flasks and battles alike.
 - `Game::reset()` starts a new run without relaunching. It keeps the client, the
   fallback bank, the settings and `best_distance_m`. Everything else is rebuilt, and
   dropping `trigger_state` abandons any request in flight.
 
 **The game clock.** `Game.time` advances only on unpaused frames, and every animation
-reads it. Waves, bunting, bottles and monsters therefore freeze with a pause.
+reads it. Lanterns, flasks, lightning, mist and monsters therefore freeze with a pause.
 Animations must use it, not wall time.
 
 ---
 
-## 5. The question pipeline (bottles and battles)
+## 5. The question pipeline (flasks and battles)
 
 The game's reason to exist is that a fresh, difficulty-scaled problem shows up while
-the player is still moving. Bottles and battles share one path:
+the player is still moving. Potion flasks and battles share one path:
 
 ```
             open_spot / battle phase wants a question
@@ -210,7 +212,7 @@ the player is still moving. Bottles and battles share one path:
      submit_answer(): parse input as f64, correct when |given − answer| < 1e-6
                  │
   Resolved { correct, cooldown }  ── cooldown hits 0 ──▶ Idle
-   (bottle: 1.5 s; battle: f32::MAX, replaced when the battle asks its next question)
+   (flask: 1.5 s; battle: f32::MAX, replaced when the battle asks its next question)
 ```
 
 *Figure: `TriggerState` (`game/task_trigger.rs`) from request to resolution.*
@@ -246,7 +248,7 @@ randomness in the game). The game must stay fully playable with no key and no ne
 
 | | Correct | Wrong |
 |---|---|---|
-| **Bottle** | `record_correct(20)` (times the streak multiplier). Heals ½ heart, or refills on a level-up. Cheer pose and a "+N XP!" banner. The spot is marked `Solved`. | `record_incorrect()` resets the streak. `damage_player(2, None)` costs 1 heart. The spot is marked `Missed`. |
+| **Flask** | `record_correct(20)` (times the streak multiplier). Heals ½ heart, or refills on a level-up. Cheer pose and a "+N XP!" banner. The spot is marked `Solved`. | `record_incorrect()` resets the streak. `damage_player(2, None)` costs 1 heart. The spot is marked `Missed`. |
 | **Battle** | `record_correct(xp_per_hit)`; a level-up refills. Phase → `PlayerAttack`. | `record_incorrect()`. Phase → `MonsterAttack`, whose blow does the damage. |
 
 A stunned player's submit is refused with a toast. Input that won't parse as a number
@@ -257,19 +259,25 @@ is ignored, and the buffer is kept.
 ## 6. World model (`game/world.rs`, `game/decor.rs`)
 
 **Coordinates.** Plain pixels in a 3/4 top-down view: +x is right and **+y is down
-the screen**, so walking "forward" up the boardwalk means `y` decreasing without
+the screen**, so walking "forward" up the road means `y` decreasing without
 bound. `View` is a pure translation that centres the 960 px `WORLD_W` strip
-horizontally and rounds to whole pixels. A wider window just shows more ocean and
-dunes. Height is a straight upward lift in screen pixels.
+horizontally and rounds to whole pixels. A wider window just shows more lake and
+woods. Height is a straight upward lift in screen pixels.
+
+**The setting** (FR24). The road is an old raised cobbled causeway with iron fences
+and lanterns. A black lake lies to the left (west) and the woods to the right
+(east), with open forest floor between each and the road: the *lakeside* (graves,
+pumpkins, giant toadstools) and the *verge*. The question pickups are potion flasks
+hovering over rune stones; monsters hide in patches of ferns.
 
 **Geometry as functions of `y`.** Nothing is a tiled map:
 
 - `path_center(y)`: two slow sines, ramped in from dead straight over the first
-  700 px, with a maximum slope of about 0.25 so the railing nudges rather than shoves.
-- `shore_x(y)` and `dune_x(y)` follow the path with their own wobble, so the beach
-  never pinches shut.
-- `walkable_x(y)` is the deck's width (`PATH_HALF_W − WALK_MARGIN`) north of the
-  gateway. South of it, the width eases out over a 150 px funnel into the hub's open sand.
+  700 px, with a maximum slope of about 0.25 so the fence nudges rather than shoves.
+- `bank_x(y)` (where the lake meets dry land) and `treeline_x(y)` (where the woods
+  start) follow the path with their own wobble, so the ground never pinches shut.
+- `walkable_x(y)` is the road's width (`PATH_HALF_W − WALK_MARGIN`) north of the
+  gate. South of it, the width eases out over a 150 px funnel into the hub's open ground.
 - `clamp_to_path(p)` is the only movement constraint. It's passed into `Player::update`
   as a closure and also used for knockback.
 
@@ -277,30 +285,31 @@ dunes. Height is a straight upward lift in screen pixels.
 
 ```
   y → −∞   … the road, endless …            distance_m = (ROAD_START_Y − y) / 24
-  y = 150  BOARDWALK_SOUTH_END = ROAD_START_Y: the "THE ROAD" gateway arch
+  y = 150  ROAD_SOUTH_END = ROAD_START_Y: the iron gate, signed "THE ROAD"
   y = 300  funnel ends
   y = 365  Professor Pebble (pebble_pos)
   y = 420  PLAYER_START_Y (spawn)
   y = 880  SOUTH_LIMIT  (HUB_SOUTH − 30)
 ```
 
-South of the gateway is the **spawn hub**, a safe zone. No encounters are placed
-there, and it's laid out by hand in `decor::hub_layout`.
+South of the gate is the **spawn hub**, a safe zone dressed as Professor Pebble's
+lantern-lit camp (a campfire, a covered wagon, a cottage, lampposts). No encounters
+are placed there, and it's laid out by hand in `decor::hub_layout`.
 
 **Chunks.** The world is cut into 320 px strips (`CHUNK_H`). Chunk `k` spans
 `y ∈ [−(k+1)·320, −k·320]`, and chunk 0 starts at y = 0. Chunks run from `FIRST_CHUNK`
 = −4, which fills the screen below the hub, and are generated lazily by
 `World::ensure_generated(north_y)`. **They're never dropped.** They're small, and
-bottles and zones must remember being solved if the player walks back. Each chunk
+flasks and zones must remember being solved if the player walks back. Each chunk
 gets:
 
 | What | Where decided | Rule |
 |---|---|---|
-| Scenery | `decor::generate_chunk(k, spot)` | `StdRng` seeded from `k`. Props go in zones relative to the path and coast (water, waterline, beach, the strip right of the deck, dunes), and never on the deck or around the bottle. |
-| A bottle (`Spot`) | `world::spot_for_chunk(k)` | Even chunks with `k ≥ 0`, positioned with `gfx::hash01`. Chunk 0's bottle is fixed just past the gateway, near the middle of the deck. |
+| Scenery | `decor::generate_chunk(k, spot)` | `StdRng` seeded from `k`. Props go in zones relative to the path and the bank (lake, shallows, bank, lakeside, verge, woods, plus `Far*` zones only a wide window shows), and never on the road or around the flask. A pair of lampposts frames each flask, and a stone milestone stands every 50 m. |
+| A potion flask (`Spot`) | `world::spot_for_chunk(k)` | Even chunks with `k ≥ 0`, positioned with `gfx::hash01`. Chunk 0's flask is fixed just past the gate, near the middle of the road. Its potion colour (`flask_color`) is a hash of its position. |
 | An encounter zone | `world::encounter_for_chunk(k)` | Odd chunks with `k ≥ 1`. A Tide Titan always guards the first odd chunk at or past each 500 m mark. Otherwise there's a 70% chance of a zone, with the monster from `MonsterKind::pick(roll, meters)`. |
 
-Because bottles take even chunks and zones take odd ones, they never crowd each
+Because flasks take even chunks and zones take odd ones, they never crowd each
 other. The same seed gives the same world on every run and every restart.
 
 ---
@@ -308,41 +317,69 @@ other. The same seed gives the same world on every run and every restart.
 ## 7. Rendering: the 2.5D look
 
 Everything is flat-coloured macroquad primitives. There are no textures yet. The
-depth comes from three things: lifted surfaces (the deck sits `BOARDWALK_LIFT` = 6 px
-up), warm cast shadows (`gfx::SHADOW`), and **back-to-front sorting by ground `y`**.
+depth comes from three things: lifted surfaces (the road sits `ROAD_LIFT` = 6 px
+up), cool cast shadows (`gfx::SHADOW`), and **back-to-front sorting by ground `y`**.
+The night (FR24) comes from a dark palette, pools of light, and a vignette.
 
 `Game::draw` paints the road view in this order:
 
-1. `world.draw_ground`: ocean, surf, sand, dunes, and flat decor (speckles, ripples, shells).
-2. `world.draw_boardwalk`: the deck planks, encounter-zone sea-grass, and the pads
-   under the bottles.
-3. **The depth-sorted pass.** `world.tall_items(&view)` returns every `Tall` item on
-   screen: `Decor` (palms, huts, umbrellas, …), railing `Post`s with their rope, and
-   `Bottle`s. The player and their arrows (keyed by the ground under them) are added,
-   everything is sorted by `sort_y()`, and the items are drawn in order. The player
-   walks behind a palm north of them and in front of one south of them. The sort is
-   stable and arrows go in after the player, so a fresh arrow draws over the archer.
-4. `world.draw_overhead`: gulls, always on top.
-5. Key prompts (E) over the bottle or NPC in reach, drawn last so they're never hidden.
-6. The item-get burst and banner, then the hearts, which are always shown whatever the
+1. `world.draw_ground`: the lake, the muddy bank, the forest floor, the woods' darker
+   ground, then flat decor (speckles, leaves, paw prints, toadstools, lily pads, water
+   ripples, will-o'-wisps).
+2. `world.draw_manor`: the manor backdrop (`manor::draw` with its reflection). It is
+   **pinned to the screen**, not placed in the world: its x follows the path's slow
+   meander so it stays over the lake, and its y drifts with the camera, so it's
+   always ahead. Lightning flashes behind it every ~9 s (`manor::lightning`, timed by
+   `hash01` on the game clock).
+3. `world.draw_road`: the cobbles and curbs, the fern patches of encounter zones,
+   and the rune stones under the flasks.
+4. `world.draw_lights`: soft light pools (`gfx::glow`) on the ground under lampposts,
+   fence lanterns, lit pumpkins, the campfire, cottage windows, cauldrons and the
+   waiting flasks. Props say what light they cast in `Decoration::lights`.
+5. **The depth-sorted pass.** `world.tall_items(&view)` returns every `Tall` item on
+   screen: `Decor` (pines, dead trees, gravestones, cottages, …), fence `Post`s with
+   their rails (every third pair with a lantern), and `Flask`s. The player and their
+   arrows (keyed by the ground under them) are added, everything is sorted by
+   `sort_y()`, and the items are drawn in order. The player walks behind a tree north
+   of them and in front of one south of them. The sort is stable and arrows go in
+   after the player, so a fresh arrow draws over the archer.
+6. `world.draw_mist`: faint drifting mist banks.
+7. `gfx::vignette` around the player's feet: clear within 190 px, fading to half of
+   `NIGHT` by 620 px (`NIGHT_CLEAR_R`, `NIGHT_DARK_R`, `NIGHT_STRENGTH` in
+   `game/mod.rs`). It darkens the edges without hiding anything near the player.
+8. `world.draw_overhead`: bats crossing the screen and fireflies over the ground,
+   on top of the darkness.
+9. Key prompts (E) over the flask or NPC in reach, drawn last so they're never hidden.
+10. The item-get burst and banner, then the hearts, which are always shown whatever the
    HUD setting. If a battle is starting, the iris transition is drawn on top.
 
 While `battle.scene_visible()`, the battle view replaces all of this
-(`Battle::draw_scene`, then hearts, then the transition).
+(`Battle::draw_scene`, then hearts, then the transition). Its backdrop
+(`battle::draw_backdrop`) is a moonlit clearing: a starry sky, the moon, the manor
+on a far hill with the same lightning, a treeline, and mossy stone platforms.
 
 **Render targets.** The player and the monsters each draw into an off-screen canvas
 (`OnceCell<RenderTarget>`, at 2× resolution), which is then blitted. The canvas lets
 a sprite be rotated (roll), squashed (jump), or made translucent (flicker) as one
 piece without seams. It's created on first draw.
 
-**The art vocabulary** lives in `gfx.rs`: one brown `INK` for outlines instead of
-black, one warm `SHADOW`, the shared `shade`/`mix` maths, and `hash01` for cheap
-deterministic noise. New art should use these so the storybook-cartoon look stays
-consistent.
+**The art vocabulary** lives in `gfx.rs`: a deep plum `INK` for outlines instead of
+black, a cool night `SHADOW`, the palette constants `MOON` (cool highlights and
+rims), `LANTERN` (warm light), `LAB_GREEN` (anything the mad scientist made) and
+`NIGHT`, the shared `shade`/`mix` maths, the vertex-coloured gradient meshes
+(`gradient_ring`, `glow`, `vignette`), `potion_flask` (shared by the road pickup and
+the item-get reward), and `hash01` for cheap deterministic noise. New art should use
+these so the storybook-cartoon look stays consistent.
+
+**Screenshots.** Translucent draws leave the framebuffer's alpha below 1. The window
+ignores it, but the `JEKO_SHOT` hook forces alpha to 255 before saving, so a saved
+shot matches the screen.
 
 **Accessibility.** `Settings.reduce_flashing` swaps both flickers for a steady tint
-and turns off the hit shake. The battle transition and item-get burst also honour it.
-Any new flash, blink or shake must check it.
+and turns off the hit shake. The battle transition and item-get burst also honour it,
+the manor's lightning becomes a steady pale glow (in both views), the fireflies stop
+pulsing, and the battle sky's stars stop twinkling. Any new flash, blink or shake must
+check it.
 
 ---
 
@@ -411,8 +448,8 @@ roster by distance: Pinchlings thin out, and the tough ones grow common further 
   (0.55 s): raise, draw (the far eye squints), release at `RELEASE_S`, follow through,
   lower. Facing is locked while it plays. On the road the release looses an `Arrow`
   into `Player.arrows` (at most `MAX_ARROWS`, 8). It flies across at 560 px/s, comes
-  down under gravity about 340 px away, then sticks in the deck or sand for 1.4 s, or
-  splashes if it lands west of `shore_x`. Arrows tick with the player's effects, so
+  down under gravity about 340 px away, then sticks in the road or ground for 1.4 s, or
+  splashes if it lands west of `bank_x`, in the lake. Arrows tick with the player's effects, so
   they freeze with a pause. Nothing collides with them.
 - **Status.** Stun (`stun(secs)` extends a running one) shows a halo of stars, blocks
   movement and blocks submitting an answer. The cheer is the item-get pose. `dead`
@@ -421,9 +458,9 @@ roster by distance: Pinchlings thin out, and the tough ones grow common further 
   protection. The hurt `Damage` blink lasts 1 s. Either one being active is what makes
   `damage_player` ignore hits.
 - **Health** (`game/health.rs`). 5 hearts, stored as 10 half-hearts and clamped at both
-  ends. Heals: ½ heart for a correct bottle, a full refill on a level-up. Death sets
+  ends. Heals: ½ heart for a correct flask, a full refill on a level-up. Death sets
   `game_over = Some(0.0)`, clears pause and settings, records `best_distance_m`, and
-  marks any open bottle `Missed`.
+  marks any open flask `Missed`.
 
 ---
 
@@ -455,8 +492,9 @@ values passed to it as `&mut`.
 | `settings_panel::draw` | modal | | `Settings`, `settings_open` |
 | `game_over_panel::draw` | modal | `Game` (run stats, best distance) | returns `true` to restart |
 
-`ui::style::apply` sets the theme every frame: cream panels, thick driftwood borders,
-hard offset shadows, teal accents. `gfx::key_prompt` copies the palette, so world
+`ui::style::apply` sets the theme every frame: pale parchment panels (kept light so
+text reads against the dark world), thick dark-wood borders, hard offset shadows, a
+lantern-amber hover and a moss-green accent. `gfx::key_prompt` copies the palette, so world
 prompts match the panels. `Settings` (`show_hud`, `show_token_panel`,
 `reduce_flashing`) lives on `Game` and isn't saved between launches.
 
@@ -485,8 +523,9 @@ driving the window:
 - `JEKO_DEV=name@frame,…` fires scripted events: damage (`hurt`, `kill`), moves
   (`jump`, `roll`, `shoot`, `stun`, `cheer`), `restart`, `pause`, `settings`, battles
   (`pinch`, `jelly`, `puff`, `coco`, `gull`, `wyrm`, `titan`), answers through the
-  real submit path (`right`, `wrong`), `e` (press E), and teleports (`tobottle`,
-  `tozone`, `topebble`).
+  real submit path (`right`, `wrong`), `e` (press E), teleports (`toflask`,
+  `tozone`, `topebble`), and display settings: `nohud` (hide both side panels, so
+  a shot shows the whole world) and `calm` (turn on reduce flashing).
 - With either variable set, the loop steps a fixed 1/60 s, so a run is repeatable
   frame by frame. Without an API key, questions come straight from the fallback
   bank, so `right`/`wrong` work on the next frame.
@@ -496,7 +535,8 @@ driving the window:
 
 | Module | What's covered |
 |---|---|
-| `game/world.rs` (10) | Scenery never lands on the deck. Every bottle is reachable and on the deck. Generation is deterministic. Interact reaches only nearby fresh bottles. The clamp keeps the player on the deck. Encounters are on the road and deterministic. A Titan guards every 500 m. Tougher monsters appear further up. The hub is wide, dry and bounded. The walkable width is continuous through the gateway. |
+| `game/world.rs` (10) | Scenery never lands on the road. Every flask is reachable and on the road. Generation is deterministic. Interact reaches only nearby fresh flasks. The clamp keeps the player on the road. Encounters are on the road and deterministic. A Titan guards every 500 m. Tougher monsters appear further up. The hub is wide, dry and bounded. The walkable width is continuous through the gate. |
+| `game/manor.rs` (1) | Lightning strikes now and then (under 12% of frames), stays in 0..1, and is the same every run. |
 | `llm/usage.rs` (5) | Provider-timed vs round-trip speed, zero time ignored, no usage block, the capped history. |
 | `game/bow.rs` (2) | The shot draws, then releases, then lowers. An arrow flies the way it was loosed, comes down a believable distance away, then goes away. |
 | `game/health.rs` (4) | Starts full; damage, heal and refill clamping. |
@@ -528,7 +568,7 @@ the owner, and update this section if it goes ahead.
    the placement tests stay meaningful. New placed things (lava, blockers, cages,
    shells) should follow `spot_for_chunk` / `encounter_for_chunk` and get a
    determinism test.
-4. **The hub is a safe zone.** Nothing hostile spawns south of `BOARDWALK_SOUTH_END`
+4. **The hub is a safe zone.** Nothing hostile spawns south of `ROAD_SOUTH_END`
    (chunk `k < 1`).
 5. **`Game` owns run state, and panels are views.** UI functions take what they need
    and return events. They don't keep gameplay state of their own.
@@ -561,6 +601,10 @@ still to make:
   placement, and nothing pushes the player forward.
 - **The difficulty cap is 5** and comes from level plus monster bias only. It doesn't
   rise with distance.
-- **The settled-for-now defaults** from FR5–FR15 are listed for the owner in FR16.
+- **The hero and the monsters still dress for the beach.** FR24 changed the world
+  but not the characters: the hero wears a straw sun hat and swim shorts, and the
+  roster is crabs, jellyfish, pufferfish, coconuts, gulls, a sand worm and a Tide
+  Titan. Restyling them is FR25.
+- **The settled-for-now defaults** from FR5–FR15, FR20 and FR24 are listed for the owner in FR16.
 
 See [FeatureRequestToDo.md](../FeatureRequestToDo.md) for the backlog.

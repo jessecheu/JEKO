@@ -2,10 +2,10 @@ use crate::llm::cerebras_client::CerebrasClient;
 use crate::llm::usage::{RequestUsage, TokenStats, HISTORY_LEN};
 use egui_macroquad::egui;
 
-/// The newest request's bar: dark sea-glass teal, 4.4:1 against the cream
-/// panel.
-const BAR_LATEST: egui::Color32 = egui::Color32::from_rgb(20, 128, 126);
-/// Every earlier bar: mid driftwood, 3.3:1 against the cream panel, so the
+/// The newest request's bar: deep moss green, about 5:1 against the
+/// parchment panel.
+const BAR_LATEST: egui::Color32 = egui::Color32::from_rgb(34, 110, 72);
+/// Every earlier bar: mid wood, about 3:1 against the parchment panel, so the
 /// history stays legible but recedes behind the latest bar.
 const BAR_HISTORY: egui::Color32 = egui::Color32::from_rgb(176, 128, 76);
 const GRAPH_H: f32 = 52.0;
@@ -65,7 +65,7 @@ fn speed_readout(ui: &mut egui::Ui, stats: &TokenStats) {
                 "last request, incl. network time"
             },
         ),
-        None => ("–".to_string(), "Open a bottle to make the first request."),
+        None => ("–".to_string(), "Open a flask to make the first request."),
     };
 
     ui.horizontal(|ui| {

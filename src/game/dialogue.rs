@@ -21,10 +21,10 @@ pub fn load_bank() -> Vec<NpcLines> {
 /// Professor Pebble's hub tutorial, said before one of their lines from
 /// the bank.
 pub const PEBBLE_TUTORIAL: &[&str] = &[
-    "Welcome to JEKO Beach! I'm Professor Pebble.",
-    "Walk with W A S D. North, through the arch, is The Road.",
-    "Message bottles on the boardwalk hold math problems. Stand by one and press E.",
-    "Sea-grass on the deck hides monsters. Answer right to beat them; wrong answers cost hearts!",
+    "Welcome to JEKO Woods! I'm Professor Pebble. Warm your hands by the fire.",
+    "Walk with W A S D. North, through the iron gate, is The Road. It leads to the old manor across the lake.",
+    "Glowing potion flasks on the road hold math problems. Stand by one and press E.",
+    "Ferns on the road hide monsters. Answer right to beat them; wrong answers cost hearts!",
 ];
 
 #[derive(Debug, Clone)]

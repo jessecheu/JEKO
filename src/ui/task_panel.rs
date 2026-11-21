@@ -15,7 +15,7 @@ pub fn draw(
     in_battle: bool,
 ) -> Option<TaskPanelEvent> {
     let mut event = None;
-    // Beside the boardwalk on the road; under the fighters in a battle.
+    // Beside the road; under the fighters in a battle.
     let (align, offset) = if in_battle {
         (egui::Align2::CENTER_BOTTOM, egui::vec2(0.0, -16.0))
     } else {

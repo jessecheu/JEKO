@@ -5,6 +5,7 @@ pub mod dialogue;
 pub mod flicker;
 pub mod gfx;
 pub mod health;
+pub mod manor;
 pub mod monster;
 pub mod player;
 pub mod task_trigger;
@@ -22,8 +23,14 @@ use player::Player;
 use task_trigger::TriggerState;
 use world::{SpotState, View, World};
 
+/// The darkness vignette around the player (FR24): clear within the first
+/// radius, fading to `NIGHT_STRENGTH` of the night colour by the second.
+const NIGHT_CLEAR_R: f32 = 190.0;
+const NIGHT_DARK_R: f32 = 620.0;
+const NIGHT_STRENGTH: f32 = 0.5;
+
 /// Where the player sits on screen, as a fraction of its height from the
-/// top. Low, so most of the screen shows the boardwalk ahead of them.
+/// top. Low, so most of the screen shows the road ahead of them.
 const CAMERA_ANCHOR: f32 = 0.66;
 /// How quickly the camera closes the gap to its target (per second); high
 /// enough to keep up with the player, low enough to glide rather than snap.
@@ -66,7 +73,7 @@ pub const DEATH_ANIM_S: f32 = 1.2;
 /// Stats for the current run, for the Game Over screen.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct RunStats {
-    pub bottles_solved: u32,
+    pub flasks_solved: u32,
     pub monsters_beaten: u32,
 }
 
@@ -107,23 +114,23 @@ pub struct Game {
     pebble_talks: usize,
     /// The player is close enough to Professor Pebble to talk.
     npc_in_reach: bool,
-    /// "Item get" celebration after a solved bottle (FR9): seconds in, and
+    /// "Item get" celebration after a solved flask (FR9): seconds in, and
     /// the banner text.
     item_get: Option<(f32, String)>,
     /// Set each frame from egui: a text field has keyboard focus, so key
     /// presses are typing, not game controls (P in the answer field).
     pub typing: bool,
     /// Game clock for animation; only advances while unpaused, so waves,
-    /// bunting and bottles freeze with the pause.
+    /// lanterns and flasks freeze with the pause.
     time: f32,
-    /// Bottle that pressing E would open right now — drawn with a key
+    /// Flask that pressing E would open right now — drawn with a key
     /// prompt over it.
     interact_target: Option<usize>,
     client: CerebrasClient,
     fallback_tasks: Vec<MathTask>,
     /// World y at the top of the screen.
     cam_y: f32,
-    /// Bottle whose task is currently loading/open, so the result can be
+    /// Flask whose task is currently loading/open, so the result can be
     /// stamped onto it.
     active_spot: Option<usize>,
 }
@@ -243,8 +250,8 @@ impl Game {
             return;
         }
 
-        // The player stops at a bottle while its problem is loading or
-        // open: each bottle is a checkpoint, and a fast model means a
+        // The player stops at a flask while its problem is loading or
+        // open: each flask is a checkpoint, and a fast model means a
         // short stop.
         let busy = matches!(
             self.trigger_state,
@@ -266,7 +273,7 @@ impl Game {
 
         self.trigger_state.poll(&self.fallback_tasks);
 
-        // Stepping into a monster's patch of sea-grass starts a battle.
+        // Stepping into a monster's patch of ferns starts a battle.
         if !busy {
             if let Some(z) = self.world.encounter_at(self.player.pos) {
                 self.start_battle(self.world.zones[z].kind, Some(z));
@@ -550,7 +557,7 @@ impl Game {
             TriggerState::Resolved { .. } => "resolved",
         };
         format!(
-            "STATE hp={}/{} level={} xp={} streak={} dist={}m bottles={} beaten={} \
+            "STATE hp={}/{} level={} xp={} streak={} dist={}m flasks={} beaten={} \
              zones_cleared={} battle={:?} trigger={} dialogue={} game_over={} hat_stolen={} \
              arrows={}",
             self.health.current,
@@ -559,7 +566,7 @@ impl Game {
             self.progression.lifetime_xp,
             self.progression.streak,
             self.distance_m(),
-            self.run.bottles_solved,
+            self.run.flasks_solved,
             self.run.monsters_beaten,
             self.world.zones.iter().filter(|z| z.cleared).count(),
             self.battle.as_ref().map(|b| (b.kind, b.hits_left, b.phase)),
@@ -614,7 +621,7 @@ impl Game {
                     self.cam_y = camera_target(self.player.pos.y);
                 }
             }
-            "tobottle" => {
+            "toflask" => {
                 if let Some(sp) = self
                     .world
                     .spots
@@ -643,6 +650,12 @@ impl Game {
             }
             "pause" => self.paused = true,
             "settings" => self.settings_open = true,
+            "calm" => self.settings.reduce_flashing = true,
+            // Hides both side panels, so a screenshot shows the whole world.
+            "nohud" => {
+                self.settings.show_hud = false;
+                self.settings.show_token_panel = false;
+            }
             _ => eprintln!("JEKO_DEV: unknown event {name}"),
         }
     }
@@ -689,7 +702,7 @@ impl Game {
         }
 
         if correct {
-            self.run.bottles_solved += 1;
+            self.run.flasks_solved += 1;
             let level = self.progression.level;
             let xp_before = self.progression.lifetime_xp;
             for upgrade in self.progression.record_correct(20) {
@@ -706,7 +719,7 @@ impl Game {
             self.item_get = Some((0.0, format!("+{gained} XP!")));
         } else {
             self.progression.record_incorrect();
-            // Provisional (FR13 open question): a wrong bottle answer
+            // Provisional (FR13 open question): a wrong flask answer
             // costs a heart, so HP has a stake before monsters exist.
             self.damage_player(2, None);
         }
@@ -745,11 +758,13 @@ impl Game {
         let view = View::new(self.cam_y + shake);
 
         self.world.draw_ground(&view, t);
-        self.world.draw_boardwalk(&view, t);
+        self.world.draw_manor(&view, t, rf);
+        self.world.draw_road(&view, t);
+        self.world.draw_lights(&view, t);
 
         // One back-to-front pass over everything that stands up off the
         // ground, keyed by where it touches the ground, so the player walks
-        // behind a railing post or palm north of them and in front of one
+        // behind a fence post or tree north of them and in front of one
         // south of them. Arrows go in by the ground under them, after the
         // player so one just loosed draws over the archer (the sort is
         // stable).
@@ -785,12 +800,17 @@ impl Game {
             }
         }
 
-        self.world.draw_overhead(t);
+        // The night (FR24): mist over everything, then the screen darkens
+        // away from the player, then bats and fireflies on top.
+        self.world.draw_mist(&view, t);
+        let foot = view.to_screen(self.player.pos) - vec2(0.0, 30.0);
+        gfx::vignette(foot, NIGHT_CLEAR_R, NIGHT_DARK_R, NIGHT_STRENGTH);
+        self.world.draw_overhead(&view, t, rf);
 
-        // Last, so the prompt is never hidden behind a palm or a gull.
+        // Last, so the prompt is never hidden behind a tree or a bat.
         if let Some(i) = self.interact_target {
             let base = view.to_screen(self.world.spots[i].pos);
-            gfx::key_prompt(base - vec2(0.0, world::BOARDWALK_LIFT + 54.0), "E", t);
+            gfx::key_prompt(base - vec2(0.0, world::ROAD_LIFT + 54.0), "E", t);
         }
         if self.npc_in_reach && self.dialogue.is_none() {
             let base = view.to_screen(world::pebble_pos());

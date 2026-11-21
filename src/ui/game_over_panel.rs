@@ -24,7 +24,7 @@ pub fn draw(ctx: &egui::Context, game: &Game) -> bool {
                     ("Best this session", format!("{} m", game.best_distance_m)),
                     ("Level", game.progression.level.to_string()),
                     ("Best streak", game.progression.best_streak.to_string()),
-                    ("Bottles solved", game.run.bottles_solved.to_string()),
+                    ("Flasks solved", game.run.flasks_solved.to_string()),
                     ("Monsters beaten", game.run.monsters_beaten.to_string()),
                 ];
                 for (k, v) in rows {

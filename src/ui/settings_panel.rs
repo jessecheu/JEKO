@@ -5,7 +5,7 @@ use egui_macroquad::egui;
 const CONTROLS: &[(&str, &str)] = &[
     ("W A S D / arrows", "Walk"),
     ("Shift (hold)", "Sprint"),
-    ("E", "Open a bottle / jump to the answer field"),
+    ("E", "Open a flask / jump to the answer field"),
     ("Enter", "Submit an answer"),
     ("Space", "Jump"),
     ("Ctrl", "Roll"),

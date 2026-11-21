@@ -183,7 +183,7 @@ impl Player {
     }
 
     /// Advances the cosmetic timers (actions, flicker). Runs whether or not
-    /// the player can move, so a jump started before a bottle opened still
+    /// the player can move, so a jump started before a flask opened still
     /// lands.
     fn tick_effects(&mut self, dt: f32) {
         self.anim_t += dt;
@@ -242,8 +242,8 @@ impl Player {
         ));
     }
 
-    /// W/Up walks north along the boardwalk, A/D steer across it, S backs
-    /// up. `constrain` keeps the result on the walkable deck.
+    /// W/Up walks north along the road, A/D steer across it, S backs
+    /// up. `constrain` keeps the result on the walkable road.
     pub fn update(&mut self, dt: f32, speed_multiplier: f32, constrain: impl Fn(Vec2) -> Vec2) {
         self.tick_effects(dt);
         if self.stunned() || self.cheer > 0.0 {

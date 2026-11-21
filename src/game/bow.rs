@@ -1,6 +1,6 @@
 //! The hero's bow (FR19). It rides slung across their back; F raises it,
-//! draws the string and looses an arrow that arcs across the beach and
-//! sticks where it lands (or splashes, over the sea). In a battle the same
+//! draws the string and looses an arrow that arcs across the ground and
+//! sticks where it lands (or splashes, over the lake). In a battle the same
 //! shot is the player's attack.
 //!
 //! Like jump and roll, the shot is cosmetic (invariant 7): an arrow never
@@ -27,11 +27,11 @@ const ARROW_SPEED: f32 = 560.0;
 /// third of a screen of flight from hand height.
 const ARROW_RISE: f32 = 40.0;
 const GRAVITY: f32 = 260.0;
-/// A landed arrow stays stuck in the deck or sand this long, fading out
+/// A landed arrow stays stuck in the road or ground this long, fading out
 /// over the last `FADE_S`.
 const STUCK_S: f32 = 1.4;
 const FADE_S: f32 = 0.4;
-/// The ripple an arrow makes when it lands in the sea.
+/// The ripple an arrow makes when it lands in the lake.
 const SPLASH_S: f32 = 0.5;
 /// Oldest arrows are dropped past this many.
 pub const MAX_ARROWS: usize = 8;
@@ -185,7 +185,7 @@ enum ArrowState {
     Flying,
     /// Seconds since it stuck in the ground, and the angle it landed at.
     Stuck(f32, Vec2),
-    /// Seconds since it dropped into the sea.
+    /// Seconds since it dropped into the lake.
     Splash(f32),
 }
 
@@ -194,15 +194,15 @@ enum ArrowState {
 pub struct Arrow {
     /// The point on the ground under the arrow (world coordinates).
     pub ground: Vec2,
-    /// Height above the sand, in px (the deck is `BOARDWALK_LIFT` up).
+    /// Height above the ground, in px (the road is `ROAD_LIFT` up).
     z: f32,
     vx: f32,
     vz: f32,
     state: ArrowState,
 }
 
-/// How high the surface under `p` is: the deck's lift on the boardwalk,
-/// sand level off it.
+/// How high the surface under `p` is: the road's lift on the road,
+/// ground level off it.
 fn surface_lift(p: Vec2) -> f32 {
     if (p.x - world::path_center(p.y)).abs() < world::PATH_HALF_W {
         world::ground_lift(p.y)
@@ -212,7 +212,7 @@ fn surface_lift(p: Vec2) -> f32 {
 }
 
 impl Arrow {
-    /// Loosed from `ground` at `z` px above the sand, flying `dir` (+1
+    /// Loosed from `ground` at `z` px above the ground, flying `dir` (+1
     /// right).
     pub fn new(ground: Vec2, z: f32, dir: f32) -> Self {
         Self {
@@ -246,7 +246,7 @@ impl Arrow {
                 let floor = surface_lift(self.ground);
                 if self.z <= floor {
                     self.z = floor;
-                    self.state = if self.ground.x < world::shore_x(self.ground.y) {
+                    self.state = if self.ground.x < world::bank_x(self.ground.y) {
                         ArrowState::Splash(0.0)
                     } else {
                         // Flights land shallow; tilt it into the ground so it
@@ -330,7 +330,7 @@ mod tests {
         let y = world::ROAD_START_Y - 2000.0;
         let from = vec2(world::path_center(y), y);
         for dir in [-1.0, 1.0] {
-            let mut a = Arrow::new(from, world::BOARDWALK_LIFT + 18.0, dir);
+            let mut a = Arrow::new(from, world::ROAD_LIFT + 18.0, dir);
             let mut t = 0.0;
             while a.flying() && t < 3.0 {
                 a.update(1.0 / 60.0);
