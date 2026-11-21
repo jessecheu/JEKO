@@ -37,7 +37,12 @@ encourages a student exploring a math-themed overworld. Keep it upbeat and age-a
         npcs.push(json!({ "npc": name, "lines": lines }));
     }
 
-    fs::write("assets/dialogue.json", serde_json::to_string_pretty(&npcs)?)?;
+    // Check the whole bank before it replaces the shipped one: the game
+    // compiles this file in, and a bad one would fail the build or the start.
+    let json = serde_json::to_string_pretty(&npcs)?;
+    jeko::game::dialogue::check_bank(&json)
+        .map_err(|e| anyhow::anyhow!("not writing assets/dialogue.json: {e}"))?;
+    fs::write("assets/dialogue.json", json)?;
     println!("wrote assets/dialogue.json");
     Ok(())
 }

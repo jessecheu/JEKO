@@ -36,6 +36,7 @@ src/
     mod.rs                content events, the roster of loaded spec monsters, where the content dir is (JEKO_CONTENT_DIR)
     monster_spec.rs       a monster as JSON data: parse + validate (clamped, unit-tested), stats from a tier table
     watcher.rs            background thread that rescans content/monsters/*.json and hot-reloads edits
+    vet.rs                the word blocklist for NPC lines and generated text
   llm/
     cerebras_client.rs    OpenAI-compatible chat-completions call to Cerebras, async wrapper
     task_gen.rs           prompt templates + JSON extraction helpers
@@ -72,6 +73,11 @@ src/
     token_panel.rs           model + API address, latest tokens/sec, per-request speed graph, token totals
   bin/
     gen_content.rs          offline batch generator for NPC dialogue (not called at runtime)
+    validate_content.rs     offline checker: loads the dialogue bank and the content dir the way the game does (`make validate`)
+openclaw/                  optional OpenClaw agent skills (FR30); the game never needs them, see openclaw/README.md
+  skills/jeko-dialogue/    refreshes assets/dialogue.json: runs `make gen-content`, validates, leaves the diff
+  skills/jeko-monsters/    designs monster specs into content/monsters/ and validates them
+  skills/jeko-playtest/    runs the JEKO_DEV / JEKO_SHOT scenarios, looks at the screenshots, reports
 content/
   monsters/*.json          monsters defined as data, loaded at runtime and hot-reloaded while the game runs
 assets/
@@ -105,7 +111,7 @@ hunting required.
 2. `make run` (or `nix develop`, then `cargo run` inside — or
    `secretspec run -- cargo run` if you went the secretspec route). See
    `make help` for every target (`build`, `release`, `check`, `fmt`, `lint`,
-   `test`, `gen-content`, `nix-build`).
+   `test`, `gen-content`, `validate`, `nix-build`).
 3. Controls: W/Up walks up the road (the map scrolls with you, forever),
    A/D or Left/Right steer across it, S/Down backs up; hold **Shift** to
    sprint, which drains the stamina meter on the skill bar at the bottom of the

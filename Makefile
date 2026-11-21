@@ -4,7 +4,7 @@ NIX := nix develop --command
 
 INSTANCE := $(or $(JEKO_INSTANCE),$(notdir $(CURDIR)))
 
-.PHONY: help info run build release check fmt lint test gen-content shell nix-build clean
+.PHONY: help info run build release check fmt lint test gen-content validate shell nix-build clean
 
 help:
 	@echo "jeko [$(INSTANCE)] — make targets:"
@@ -17,6 +17,7 @@ help:
 	@echo "  make lint         cargo clippy --all-targets"
 	@echo "  make test         run the unit tests (cargo test)"
 	@echo "  make gen-content  regenerate assets/dialogue.json via Kimi K3.1 (needs CEREBRAS_API_KEY in .env)"
+	@echo "  make validate     check assets/dialogue.json and the content dir the way the game loads them (offline)"
 	@echo "  make shell        drop into the nix dev shell"
 	@echo "  make nix-build    build the release binary as a nix derivation (needs Cargo.lock)"
 	@echo "  make clean        remove target/"
@@ -51,6 +52,10 @@ test:
 
 gen-content:
 	$(NIX) cargo run --bin gen_content
+
+# Offline, no key: exits non-zero if the dialogue bank or any content file is rejected.
+validate:
+	$(NIX) cargo run --quiet --bin validate_content
 
 shell:
 	nix develop

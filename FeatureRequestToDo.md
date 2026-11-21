@@ -1635,9 +1635,26 @@ without making the game depend on them.
 
 ## FR30. Run JEKO's agent-shaped jobs as OpenClaw agents
 
-**Status.** **Not started.** Requested by the owner; the approach is suggested only.
+**Status.** **In progress: milestones A and C built, B built for monsters only
+(2026-11-21).** Done: `openclaw/` with three skills (`jeko-dialogue`, `jeko-monsters`,
+`jeko-playtest`) and a README with the agent config; `dialogue::check_bank`;
+`content::vet` (the word blocklist); the `validate_content` binary and `make validate`
+(dialogue bank, the content dir through the watcher's scan, and the blocklist on each
+monster's text). `make test` passes (61) and `make validate` is ok. **Not verified:**
+the skills have not been run through a real OpenClaw install (none was available), so
+the setup steps and tool names in `openclaw/README.md` are unchecked against OpenClaw
+2026.10.5. The `JEKO_DEV` scenarios in `jeko-playtest` were spot-checked (one was run);
+the rest are untested. **Left:** (1) run each skill once through a real Gateway and
+fix what's wrong; (2) the run log (`content/runs/<date>.jsonl`) and the owner's call on
+its fields; (3) `jeko-lessons` once FR22 exists in this checkout; (4) the live bridge and
+`jeko-villain` (milestone D, needs FR23); (5) `jeko-tutor` (E, needs the child-data
+decision). **Next step:** step (1). **Heads-up:** the sibling clone `~/Development/JEKO`
+has its own, unpushed milestone A (commit `882aad5`) plus FR21 B/C and FR22 (the studio,
+lessons, tips). This checkout has none of those, so `content::vet` here stands in for
+that clone's `studio::vet_text`, and the two will conflict on merge: when they meet, keep
+one blocklist and let `validate_content` also report lessons and tips.
 Check the OpenClaw details below (endpoints, config keys, skill layout) against
-[docs.openclaw.ai](https://docs.openclaw.ai) before building. They were read on
+[docs.openclaw.ai](https://docs.openclaw.ai) before relying on them. They were read on
 2026-11-21 and OpenClaw changes quickly.
 
 **Depends on:** [] _(milestone A needs nothing; milestone B shares FR21's content dir
@@ -1756,7 +1773,8 @@ monsters for tomorrow").
   and without `CEREBRAS_API_KEY`.
 - [ ] `openclaw/` holds a skill per agent and a README with the config and setup
   steps, and following it from a clean OpenClaw install gets the dialogue agent
-  working.
+  working. _(Skills for dialogue, monsters and playtest and the README are written;
+  lessons, villain and tutor are blocked; nothing has been run through OpenClaw yet.)_
 - [ ] The dialogue agent refreshes `assets/dialogue.json` on request and on a
   schedule, and its output passes validation.
 - [ ] Monster and lesson agents write files the game loads live, through the same
@@ -1766,7 +1784,8 @@ monsters for tomorrow").
 - [ ] If the live bridge is built, it's off unless `JEKO_AGENT_URL` is set, never
   blocks the frame, and failures are silent apart from a dev-mode toast.
 - [ ] `docs/ARCHITECTURE.md` (*Content, configuration and dev hooks*: the agent dirs,
-  run log, env vars, validator; *The question pipeline* if any question path changes)
+  run log, env vars, validator _(agent dirs, validator and blocklist are in; the run log and
+  env vars aren't built)_; *The question pipeline* if any question path changes)
   and the README layout are updated.
 
 ---

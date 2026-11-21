@@ -2,3 +2,8 @@
 .env
 /result
 .direnv/
+
+# OpenClaw seeds these into an agent's workspace when the workspace is this repo (FR30).
+/IDENTITY.md
+/SOUL.md
+/USER.md
