@@ -29,6 +29,10 @@ pub fn draw(ctx: &egui::Context, settings: &mut Settings, open: &mut bool, guide
             ui.checkbox(&mut settings.show_minimap, "Show minimap");
             ui.checkbox(&mut settings.show_token_panel, "Show token usage panel");
             ui.checkbox(
+                &mut settings.show_creation_bar,
+                "Show creation bar (what the model is writing)",
+            );
+            ui.checkbox(
                 &mut settings.reduce_flashing,
                 "Reduce flashing (steady tint instead of flicker)",
             );

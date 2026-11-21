@@ -1,3 +1,4 @@
+pub mod creation_bar;
 pub mod dialogue_panel;
 pub mod field_guide_panel;
 pub mod game_over_panel;

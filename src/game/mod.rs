@@ -20,8 +20,10 @@ pub mod world;
 
 use crate::content::studio::{self, MonsterJob, Studio, StudioStatus, TipsJob};
 use crate::content::{ContentEvent, Roster};
+use crate::llm::activity::{BarView, GenActivity, JobState};
 use crate::llm::buffer::{Source, WaitStats};
 use crate::llm::cerebras_client::CerebrasClient;
+use crate::llm::usage::RequestKind;
 use crate::llm::MathTask;
 use crate::progression::Progression;
 use battle::{Battle, Phase};
@@ -71,6 +73,8 @@ pub struct Settings {
     pub show_minimap: bool,
     /// Swaps flicker effects (spawn, damage) for a steady tint.
     pub reduce_flashing: bool,
+    /// The creation bar at the top centre (FR33).
+    pub show_creation_bar: bool,
 }
 
 impl Default for Settings {
@@ -80,7 +84,16 @@ impl Default for Settings {
             show_hud: true,
             show_minimap: true,
             reduce_flashing: false,
+            show_creation_bar: true,
         }
+    }
+}
+
+/// How a question's arrival shows on the creation bar.
+fn job_state(arrival: Arrival) -> JobState {
+    match arrival {
+        Arrival::Live => JobState::Ready,
+        Arrival::Fallback => JobState::Fallback,
     }
 }
 
@@ -183,6 +196,9 @@ pub struct Game {
     pub prefetch: Prefetch,
     /// How long the player waited for each question shown (FR32).
     pub waits: WaitStats,
+    /// What the model is being asked to make now, for the creation bar
+    /// (FR33). A read-only mirror: nothing reads it to decide anything.
+    pub activity: GenActivity,
     /// The question in `trigger_state` while it's still loading, for the wait
     /// measurement and the soft deadline.
     asking: Option<Ask>,
@@ -288,6 +304,7 @@ impl Game {
             goalpost: Tracker::new(),
             prefetch: Prefetch::new(PrefetchConfig::from_env()),
             waits: WaitStats::default(),
+            activity: GenActivity::new(),
             asking: None,
             next_question: None,
             studio: None,
@@ -440,6 +457,7 @@ impl Game {
 
     pub fn update(&mut self, dt: f32) {
         self.poll_content();
+        self.activity.tick(dt);
         if let Some(t) = &mut self.game_over {
             // Only the restart key works once the run is over.
             *t += dt;
@@ -916,6 +934,7 @@ impl Game {
             world::PLAYER_START_Y,
         );
         self.stash_questions();
+        self.activity.clear();
         self.player = Player::new(start);
         // A new run takes a new snapshot of the roster, so monsters the studio
         // wrote during the last one can now appear.
@@ -1010,6 +1029,32 @@ impl Game {
                 ),
             ),
         )
+    }
+
+    /// Queues a fake creation-bar job (`JEKO_DEV=gen:<kind>`), so each state
+    /// can be checked by screenshot with no model.
+    fn dev_gen(&mut self, what: &str) {
+        let (kind, secs, end) = match what {
+            "question" => (RequestKind::Question, 2.5, JobState::Ready),
+            "prefetch" => (RequestKind::Prefetch, 2.5, JobState::Ready),
+            "monster" => (RequestKind::Monster, 2.5, JobState::Ready),
+            "lesson" => (RequestKind::Lesson, 2.5, JobState::Ready),
+            "fallback" => (RequestKind::Question, 2.5, JobState::Fallback),
+            "slow" => (RequestKind::Question, 10.0, JobState::Ready),
+            _ => return eprintln!("JEKO_DEV: unknown gen kind {what}"),
+        };
+        self.activity.scripted(kind, what, secs, end);
+    }
+
+    /// Whether the player is in the hub, before the gate, where nothing is
+    /// being generated and the creation bar stays hidden.
+    pub fn in_hub(&self) -> bool {
+        world::in_hub(self.player.pos.y)
+    }
+
+    /// The creation bar's circles (FR33), for the UI to draw.
+    pub fn creation_view(&self) -> BarView {
+        self.activity.view()
     }
 
     /// Scripted events for the `JEKO_DEV` screenshot hook in `main.rs`.
@@ -1171,6 +1216,10 @@ impl Game {
                 self.discovery.note(y);
             }
             "calm" => self.settings.reduce_flashing = true,
+            // A fake job on the creation bar (FR33): `gen:question`,
+            // `gen:monster`, `gen:lesson`, `gen:fallback`, `gen:slow` (writes
+            // for ten seconds). Writes for 2.5 s, then is ready.
+            n if n.starts_with("gen:") => self.dev_gen(&n["gen:".len()..]),
             // The curse (FR1) at the fever stage, and at full.
             "curse" => self.curse.force(0.75),
             "cursefull" => self.curse.force(1.0),
@@ -1212,17 +1261,32 @@ impl Game {
             waited: 0.0,
             deadline: deadline_s,
             counts: true,
+            job: None,
+        };
+        let label = if self.battle.is_some() {
+            "battle"
+        } else {
+            "flask"
         };
         if let Some(task) = self.prefetch.buffer.take(difficulty, topic.as_deref()) {
             return (TriggerState::Active(task), ask(Source::Buffer));
         }
         if self.client.has_api_key() {
             let rx = self.client.request_task_async(difficulty, topic);
-            (TriggerState::Loading(rx), ask(Source::Live))
+            let job = self.activity.start(RequestKind::Question, label);
+            let live = Ask {
+                job: Some(job),
+                ..ask(Source::Live)
+            };
+            (TriggerState::Loading(rx), live)
         } else {
             let task = task_trigger::pick_fallback_for(&self.fallback_tasks, topic.as_deref());
+            let job = self
+                .activity
+                .instant(RequestKind::Question, label, JobState::Fallback);
             let offline = Ask {
                 counts: false,
+                job: Some(job),
                 ..ask(Source::Fallback)
             };
             (TriggerState::Active(task), offline)
@@ -1250,11 +1314,15 @@ impl Game {
     fn poll_questions(&mut self, dt: f32) {
         self.prefetch.poll();
         if let Some((state, ask)) = &mut self.next_question {
-            match state.poll(&self.fallback_tasks) {
-                // Back before it was needed: the player never sees a wait.
-                Some(Arrival::Live) => ask.source = Source::Ready,
-                Some(Arrival::Fallback) => ask.source = Source::Fallback,
-                None => {}
+            // Back before it was needed: the player never sees a wait.
+            if let Some(arrival) = state.poll(&self.fallback_tasks) {
+                ask.source = match arrival {
+                    Arrival::Live => Source::Ready,
+                    Arrival::Fallback => Source::Fallback,
+                };
+                if let Some(job) = ask.job {
+                    self.activity.finish(job, job_state(arrival));
+                }
             }
         }
         if !matches!(self.trigger_state, TriggerState::Loading(_)) {
@@ -1270,6 +1338,9 @@ impl Game {
         match landed {
             Some(arrival) => {
                 self.asking = None;
+                if let Some(job) = ask.job {
+                    self.activity.finish(job, job_state(arrival));
+                }
                 let source = match arrival {
                     Arrival::Live => Source::Live,
                     Arrival::Fallback => Source::Fallback,
@@ -1285,6 +1356,9 @@ impl Game {
                     self.prefetch.adopt(ask.difficulty, rx);
                 }
                 self.asking = None;
+                if let Some(job) = ask.job {
+                    self.activity.finish(job, JobState::Fallback);
+                }
                 self.waits.record(Source::Deadline, ask.waited);
             }
             None => {}
@@ -1437,8 +1511,14 @@ impl Game {
             let difficulty = self.asking.map_or(1, |a| a.difficulty);
             self.prefetch.adopt(difficulty, rx);
         }
+        if let Some(job) = self.asking.and_then(|a| a.job) {
+            self.activity.cancel(job);
+        }
         self.asking = None;
         if let Some((state, ask)) = self.next_question.take() {
+            if let (TriggerState::Loading(_), Some(job)) = (&state, ask.job) {
+                self.activity.cancel(job);
+            }
             match state {
                 TriggerState::Loading(rx) => self.prefetch.adopt(ask.difficulty, rx),
                 TriggerState::Active(task) if ask.source != Source::Fallback => {

@@ -72,6 +72,8 @@ pub struct Ask {
     pub deadline: f32,
     /// False when there's no model to wait for (offline): nothing to measure.
     pub counts: bool,
+    /// Its job on the creation bar, if one was opened (FR33).
+    pub job: Option<u32>,
 }
 
 struct Flight {

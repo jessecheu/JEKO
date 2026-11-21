@@ -41,6 +41,7 @@ src/
     tips.rs               Professor Pebble's tips on topics the player keeps missing
     prompts.rs            what the studio asks the model for
   llm/
+    activity.rs           what the model is writing now (jobs for the creation bar; a read-only mirror)
     buffer.rs             ready-question buffer, the pure look-ahead planner, and the wait readout
     expr.rs               a tiny arithmetic evaluator that checks a generated problem's answer against its own sum
     cerebras_client.rs    OpenAI-compatible chat-completions call to Cerebras, async wrapper
@@ -73,6 +74,7 @@ src/
   ui/
     hud.rs                  progress bar + streak + upgrade list + unlock toast
     goalpost_panel.rs        the goalpost badge at the top centre: a circle that unrolls into "name · N m"
+    creation_bar.rs          the creation bar under it: a progress circle per model call being written (FR33)
     field_guide_panel.rs     the field guide (G): a card per monster, filled in once beaten
     map_panel.rs            the map (M): discovered road, landmarks, fog
     minimap.rs              the always-on minimap, top right
@@ -237,6 +239,9 @@ without re-checking this.
 - **Goalpost tracker** — a badge at the top centre names the next thing up the
   road (a flask, ferns, a monster, a milestone, the Tide Titan) and counts down
   the metres to it (`ui/goalpost_panel.rs`, `game/goalpost.rs`).
+- **Creation bar** — circles at the top centre show the model writing a question
+  as it happens: a ring turns while it writes, closes when it lands, and shows how
+  long it took (`ui/creation_bar.rs`, `llm/activity.rs`). Settings can hide it.
 - **Streak multiplier** — consecutive correct answers raise XP gain up to
   +100% (`Progression::streak_multiplier`). Getting one wrong resets it to
   zero — this is what makes stopping mid-streak feel costly, which is the

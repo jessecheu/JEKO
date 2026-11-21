@@ -1,3 +1,4 @@
+pub mod activity;
 pub mod buffer;
 pub mod cerebras_client;
 pub mod expr;

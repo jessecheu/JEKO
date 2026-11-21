@@ -110,11 +110,28 @@ async fn main() {
             if let Some(v) = &tracker {
                 ui::goalpost_panel::draw(ctx, v);
             }
-            let toast_top = if tracker.is_some() {
+            let mut toast_top = if tracker.is_some() {
                 ui::goalpost_panel::TOAST_BELOW_BADGE
             } else {
                 12.0
             };
+            // The creation bar (FR33) sits under the tracker, and pushes the
+            // toast down in turn. It hides in the hub, in dialogue and on the
+            // map; in a battle only the battle's own question shows, so a wait
+            // never looks like a stall.
+            if game.settings.show_creation_bar
+                && game.game_over.is_none()
+                && game.dialogue.is_none()
+                && !game.map_open
+                && !game.in_hub()
+            {
+                let view = game.creation_view();
+                let h =
+                    ui::creation_bar::draw(ctx, &view, toast_top, game.settings.reduce_flashing);
+                if h > 0.0 {
+                    toast_top += h + 6.0;
+                }
+            }
             ui::hud::draw_toast(ctx, &game.toast, toast_top);
             if game.settings.show_token_panel && !in_battle {
                 ui::token_panel::draw(ctx, game.llm(), &game.waits, game.studio_status().as_ref());

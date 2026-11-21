@@ -819,8 +819,15 @@ and gives the player something to steer around.
 
 ## FR33. A live "creation" bar: show Cerebras generating monsters, questions and lines in real time
 
-**Status.** **Not started.** Requested by the owner; the approach is suggested only.
-Milestone A needs no FR21 or FR22 work, so start there.
+**Status.** **Milestone A built (2026-11-21); B and C not started.** `llm/activity.rs`
+(`GenActivity`), `ui/creation_bar.rs`, the `show_creation_bar` setting and the
+`JEKO_DEV=gen:<kind>` hook are in, wired to live flask and battle questions (a buffer hit
+makes no circle; no key shows an instant `Fallback` circle). It sits under the goalpost badge
+and pushes the toast down. Next step: milestone B. Open a `Prefetch` job where
+`Game::tick_prefetch` sends a look-ahead request and end it where `Prefetch::poll` collects it
+(`RequestKind::Prefetch` already exists), then show the buffer's stock. Chosen provisionally
+while building A, pending the owner: stage ring, no streaming; `Fallback` shows quietly as a
+grey "bank" circle; the bar stays visible while a flask problem is open, so the ready pop shows.
 
 **Depends on:** [] _(shows whatever model calls exist. Today that is live questions;
 it fills out as FR32's prefetch, FR21's `GenMonster`, FR22's lesson packs and FR23's
@@ -915,22 +922,22 @@ fraction of a second shows what fast inference is.
 
 **Acceptance criteria.**
 
-- [ ] The top-centre bar shows a circle for each model call that is running, with an
-  icon for its kind and a ring that shows its progress.
-- [ ] A finished creation closes its ring, pops, and shows how long it took.
-- [ ] With the owner's chosen progress source, the ring never shows a made-up
+- [x] The top-centre bar shows a circle for each model call that is running, with an
+  icon for its kind and a ring that shows its progress. *(questions only so far)*
+- [x] A finished creation closes its ring, pops, and shows how long it took.
+- [x] With the owner's chosen progress source, the ring never shows a made-up
   percentage: it is real tokens, real stages or a real stock count.
-- [ ] Live questions (flask and battle) appear as circles with no API key too, using
+- [x] Live questions (flask and battle) appear as circles with no API key too, using
   the fallback bank and the `Fallback` state.
 - [ ] Prefetches, monsters, lessons and lines appear as their FRs land, without a
   change to the bar's code beyond a new `kind`.
-- [ ] The bar changes no XP, HP, answers or timing (invariant 7), the frame never
+- [x] The bar changes no XP, HP, answers or timing (invariant 7), the frame never
   waits on it (invariant 1), and it honours `reduce flashing`.
 - [ ] It does not overlap the toast or FR31's tracker, and hides in the hub and (apart
   from the battle question circle) in battles and open problems.
-- [ ] `GenActivity` state changes are unit-tested (queue, write, ready, fail, fallback,
+- [x] `GenActivity` state changes are unit-tested (queue, write, ready, fail, fallback,
   the 3-circle cap) without a network.
-- [ ] `docs/ARCHITECTURE.md` (*The question pipeline*: where `GenActivity` is updated;
+- [x] *(milestone A)* `docs/ARCHITECTURE.md` (*The question pipeline*: where `GenActivity` is updated;
   *Progression and the UI layer*: the new panel and what it reads; *Content,
   configuration and dev hooks*: the setting and the `gen:` event) and the README
   layout are updated.

@@ -121,6 +121,7 @@ The layering holds today, and new code should keep it:
 | `content/watcher.rs` | `Scanner` (one rescan of `monsters/`, `lessons/` and `tips/`, by modification time and length) and `spawn`, the thread that runs it every `POLL` (0.5 s). |
 | `llm/mod.rs` | `MathTask { topic, problem, answer: f64, hint, difficulty, explanation, expression }`, the one task type every question path produces (the last two are FR22's and default to empty), and `fallback_bank()`, the compiled-in bank. |
 | `llm/expr.rs` | `eval` (a tiny arithmetic evaluator) and `verify` (a generated problem passes only if its `answer` equals its `expression`; FR22). |
+| `llm/activity.rs` | `GenActivity` (FR33): the jobs the creation bar shows, one per model call being written, each `Writing`, then `Ready` or `Fallback`. `view()` gives the bar's circles (oldest three, and the count of the rest). A read-only mirror: nothing reads it to decide anything. |
 | `llm/buffer.rs` | `QuestionBuffer` (ready questions per difficulty, with an optional strict topic), `plan_prefetch` (the pure look-ahead policy and its `PrefetchCaps`), and `WaitStats` (where each shown question came from and how long the player waited). |
 | `llm/cerebras_client.rs` | `CerebrasClient`: the async wrappers (live and look-ahead), the blocking chat-completions call with its `RequestKind` tag, the shared token stats, and the `fakemodel` stand-in. |
 | `llm/task_gen.rs` | The prompt templates (`build_prompt(difficulty, topic)` for a live question, `build_pack_prompt` for a lesson pack) and lenient JSON extraction (`extract_json_object` / `_array`). |
@@ -146,7 +147,7 @@ The layering holds today, and new code should keep it:
 | `game/battle.rs` | `Battle` and its `Phase`s, the iris transition, and the battle-view drawing. |
 | `game/dialogue.rs` | `Dialogue` (typewriter reveal), the `PEBBLE_TUTORIAL` lines, and `load_bank()` for `assets/dialogue.json`. |
 | `progression/` | `Progression` (XP, level curve, streak multiplier, upgrade unlocks, and FR22's per-topic accuracy and the problems missed) and `upgrades.rs` (upgrade definitions). |
-| `ui/` | One egui function per panel (`hud`, `goalpost_panel`, `task_panel`, `token_panel`, `settings_panel`, `field_guide_panel`, `map_panel`, `minimap`, `dialogue_panel`, `game_over_panel`), plus `style::apply`. |
+| `ui/` | One egui function per panel (`hud`, `goalpost_panel`, `creation_bar`, `task_panel`, `token_panel`, `settings_panel`, `field_guide_panel`, `map_panel`, `minimap`, `dialogue_panel`, `game_over_panel`), plus `style::apply`. |
 
 ---
 
@@ -169,7 +170,7 @@ which is why network work goes to a thread (§4). Each iteration does this, in o
 7. **egui pass** (`egui_macroquad::ui`): `ui::style::apply`, then set
    `game.typing = ctx.wants_keyboard_input()`, then draw the panels. The HUD and token
    panel are hidden during a battle, a dialogue or while the map is open. The goalpost badge (`goalpost_panel`, FR31) shows when
-   `game.goalpost.view()` has something, and the toast steps down below it. The map panel (`map_panel::draw`) draws from `game.map_view()`. The minimap (`minimap::draw`, top right, `settings.show_minimap`) draws the same `MapView` as a small window around the player, hidden in the same cases as the HUD, and returns its bottom edge so the HUD sits beneath it. The task panel returns
+   `game.goalpost.view()` has something, and the toast steps down below it. The creation bar (`creation_bar`, FR33, `settings.show_creation_bar`) sits under the badge and pushes the toast down in turn; it hides in the hub, in a dialogue, on the map and at Game Over, and in a battle it holds only the battle's own question. The map panel (`map_panel::draw`) draws from `game.map_view()`. The minimap (`minimap::draw`, top right, `settings.show_minimap`) draws the same `MapView` as a small window around the player, hidden in the same cases as the HUD, and returns its bottom edge so the HUD sits beneath it. The task panel returns
    `TaskPanelEvent::Submit`, which calls `game.submit_answer()`. The Game Over panel
    returns `true`, which calls `game.reset()`.
 8. `egui_macroquad::draw()`, then the `JEKO_SHOT` screenshot check, then `next_frame().await`.
@@ -780,6 +781,7 @@ values passed to it as `&mut`.
 | `hud::draw` | top right | `Progression`, `distance_m` | none |
 | `hud::draw_toast` | top centre (below the badge while it's up) | `game.toast`, a top offset | none |
 | `goalpost_panel::draw` | top centre | `game.goalpost.view()` (`TrackerView`) | none |
+| `creation_bar::draw` | top centre, under the badge | `game.creation_view()` (`BarView`), reduce flashing | none; returns its height |
 | `task_panel::draw` | left centre (bottom centre in a battle); the explanation card below (above) it | `TriggerState`, `Game.explain` | `input_buffer`, `focus_answer`; returns `Submit` |
 | `token_panel::draw` | bottom right | `CerebrasClient::token_stats()`, model, base URL | none |
 | `dialogue_panel::draw` | | `Dialogue` | none |
@@ -787,6 +789,19 @@ values passed to it as `&mut`.
 | `field_guide_panel::draw` | modal | the guide's cards | `guide_open` |
 | `map_panel::draw` | modal | `MapView` from `Game::map_view` (`Discovery` + the world) | none; M or Esc is handled in `Game::update` |
 | `game_over_panel::draw` | modal | `Game` (run stats, best distance) | returns `true` to restart |
+
+**The creation bar** (FR33). `Game.activity` (`llm::activity::GenActivity`) is advanced in
+`Game::update` and opened and closed where questions are asked and land: `request_task` opens a
+`Question` job (labelled `flask` or `battle`) for a live call, `poll_questions` ends it `Ready`
+when the answer lands or `Fallback` when the call failed or missed the soft deadline, and
+`stash_questions` cancels the ones let go of (their answers still go to the buffer). A question
+taken from the buffer makes no job, since nothing was generated; with no API key the bank's
+answer shows as an instant `Fallback` job. The ring is a stage ring, not a percentage: an arc
+turns while the job is `Writing`, closes when it ends, the icon pops with a spark (no spark and
+a slower arc with reduce flashing), and the time it took shows underneath (`bank` for a
+fallback). A job still open after 12 s is dropped, and an ended one stays 2.2 s. Three circles at
+most, then "+N". Prefetch, monster and lesson kinds are in `RequestKind` but nothing opens
+them yet. It never changes XP, HP, answers or timing (invariant 7).
 
 **The goalpost badge** (FR31). `Game::tick_goalpost` asks `World::next_goalpost` for the next
 thing up the road (§6) and feeds it to `goalpost::Tracker`, which owns the animation: a
@@ -801,7 +816,7 @@ game clock, so a pause freezes it, and it never changes XP, speed or answers (in
 text reads against the dark world), thick dark-wood borders, hard offset shadows, a
 lantern-amber hover and a moss-green accent. `gfx::key_prompt` copies the palette, so world
 prompts match the panels. `Settings` (`show_hud`, `show_token_panel`,
-`reduce_flashing`) lives on `Game` and isn't saved between launches.
+`show_creation_bar`, `reduce_flashing`) lives on `Game` and isn't saved between launches.
 
 ---
 
@@ -856,7 +871,7 @@ driving the window:
   call from the fallback bank after 700 ms, with made-up token counts, so the buffer, the
   soft deadline and the token panel's wait readout can be tried with no key. The studio
   uses it too: it writes made-up creatures, so the whole path from job to a fightable
-  monster runs offline. `genmonster@N` queues one tier 2 job, `cards` unlocks four field guide cards and
+  monster runs offline. `genmonster@N` queues one tier 2 job, `gen:question` (also `gen:fallback`, `gen:monster`, `gen:lesson`, `gen:slow`) queues a fake creation-bar job that writes for 2.5 s (10 s for `slow`) and ends, `cards` unlocks four field guide cards and
   `guide` opens the guide. `tospec` and `tospecblock` teleport to the first
   zone (or road blocker) that holds a spec monster.
 - With either variable set, the loop steps a fixed 1/60 s, so a run is repeatable
@@ -881,6 +896,7 @@ driving the window:
 | `game/world.rs` (30) | Scenery never lands on the road. Every flask is reachable and on the road. Generation is deterministic. Interact reaches only nearby fresh flasks. The clamp keeps the player on the road. Encounters are on the road and deterministic. A Titan guards every 500 m, blocking the road. Monsters block the road regularly (no gap over 100 m, the first under 70 m) and deterministically. A blocker shuts the road, can be challenged but doesn't ambush, and opens once beaten. Tougher monsters appear further up. The hub is wide, dry and bounded. The walkable width is continuous through the gate. Goalposts are deterministic and stand in their chunk, nothing hostile is one in the hub, the pick is always north of the player, nearest first and the bigger event first within 25 m, a solved flask or beaten monster is never offered again, and a blocker counts down to its line. `upcoming_in` is nearest first and in range, matches where the world places things, shows no monster in the hub, takes a monster's hits and bias from its stats, and `World::upcoming` leaves out what's been dealt with. About 40% of zones get a spec monster and never a boss, one far enough up the road; an empty pool changes nothing; the same pool gives the same zones and the layout never depends on it; rebinding a built world matches building it with the pool; an edited spec shows in its zones; `upcoming` uses a held spec's tier. |
 | `game/goalpost.rs` (7) | A new goalpost pops in as a circle and then unrolls. The metres go down as the player walks, rounded up, and the ring fills. It pulses under 10 m and says "Now!" on arrival. It closes before the next one appears, hides while a battle or problem is open and comes back, and shows nothing with nothing ahead. Labels. |
 | `game/manor.rs` (1) | Lightning strikes now and then (under 12% of frames), stays in 0..1, and is the same every run. |
+| `llm/activity.rs` (10) | A job writes, then is ready and remembers how long it took; a failure shows as fallback; ending twice keeps the first ending; a finished job leaves after lingering; one nobody ended goes stale; cancel; the bar shows three circles and counts the rest; the pop and fade; an instant job; a scripted job ends by itself. |
 | `llm/usage.rs` (6) | Provider-timed vs round-trip speed, zero time ignored, no usage block, the capped history, totals split by kind. |
 | `llm/expr.rs` (5) | The evaluator follows the usual rules (precedence, parentheses, unary minus, `×` `÷` `−`), rejects anything that isn't plain arithmetic (powers, functions, division by zero, `1 2` as 12), bounds hostile input (nesting, length), and `verify` passes a problem only when its answer matches its expression. |
 | `llm/mod.rs` (2) | The compiled-in bank loads, every answer in it checks out and has an explanation; a task without the FR22 fields still loads. |
