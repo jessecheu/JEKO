@@ -2,7 +2,7 @@
 type: Feature Request
 title: JEKO — Feature Requests
 description: Concrete, actionable feature requests for JEKO (Math Quest) — work that is scoped and wanted but not yet built. Each entry states the motivation, a proposed approach, and what "done" looks like. Maintained as the shared agent todo list.
-tags: [feature-request, backlog, gameplay, urgency, lava, monsters, battle, education, minigames, pets, controls, pause, settings, health, death, art-direction, spawn, tooling, ci-cd, dagger, content-generation, hot-reload, live-content, villain, story, live-dialogue, setting, forest, manor, map, exploration, regions, village, castle, rest-stops, road, obstacles, agents, openclaw, hud, goalposts, prefetch, latency, liveness]
+tags: [feature-request, backlog, gameplay, urgency, curse, sickness, monsters, battle, education, minigames, pets, controls, pause, settings, health, death, art-direction, spawn, tooling, ci-cd, dagger, content-generation, hot-reload, live-content, villain, story, live-dialogue, setting, forest, manor, map, exploration, regions, village, castle, rest-stops, road, obstacles, agents, openclaw, hud, goalposts]
 timestamp: 2026-11-21
 ---
 
@@ -44,46 +44,8 @@ reused or renumbered when an entry is removed. Take the next number, not the fir
 # Gameplay — urgency
 
 **Goal:** make the player feel urgency so they keep moving up the road.
-Today nothing pushes the player: they can stand still, and the only stops are the
-potion-flask problems (`src/game/mod.rs` freezes the player while a problem
-is `Loading` or `Active`). FR1 pushes from behind; FR2 and FR3 block the way ahead.
-
-## FR1. Rising lava from the bottom of the road
-
-**Status.** **Not started.**
-
-**Depends on:** [] _(pairs with FR2 — the lava is the pressure that makes a blocking monster matter)_
-
-**Motivation.** The player can stand still forever. A front that keeps advancing up
-the road behind them means they can't, and gives every stop (a flask, a
-monster) a cost.
-
-**Proposed approach.** *(suggested, not decided)* Keep a world-space lava front
-`lava_y` on `Game`, starting a little south of `world::PLAYER_START_Y` and moving
-north (towards smaller `y`, since `distance_m` grows as `y` falls) every `update`.
-Draw everything south of it as lava over the road and ground in `World::draw_ground` /
-`draw_road`. Ramp its speed with distance or `progression.level`. Decide what
-the lava does while the player is frozen at a problem (see open questions): if it
-keeps full speed, slow model responses punish the player, which works against the
-README's "the problem should appear fast enough that it doesn't break movement flow".
-
-**Open questions.**
-
-- What happens when the lava reaches the player — game over and restart, knock back
-  to the last solved flask, or lose the streak?
-- Does the lava pause, slow, or keep going while a problem or battle is open?
-- *(raised by FR24)* The world is a dark forest now. Is it still lava, or something
-  that fits the woods, such as a creeping fog, rising swamp water, or one of the mad
-  scientist's spills?
-
-**Acceptance criteria.**
-
-- [ ] The road behind the player fills with lava that keeps advancing, so the
-  player can't stand still and has to keep going.
-- [ ] The lava reaching the player has a defined outcome (per the open question above).
-- [ ] The lava's behaviour during an open problem/battle is defined and implemented.
-
----
+The doctor's curse (FR1, built) now wears the player down while they linger on the
+road. FR2 and FR3 block the way ahead.
 
 ## FR2. Monsters blocking the road ahead
 
@@ -91,8 +53,8 @@ README's "the problem should appear fast enough that it doesn't break movement f
 
 **Depends on:** [] _(FR3 makes the battle itself; until FR3 lands, a placeholder interaction can clear a monster)_
 
-**Motivation.** The lava (FR1) pushes from behind; a monster on the road ahead is
-something the player has to deal with *now*, with the lava coming.
+**Motivation.** The curse (FR1) worsens while the player lingers; a monster on the road
+ahead is something the player has to deal with *now*, with the curse taking hold.
 
 **Proposed approach.** *(suggested, not decided)* Spawn monsters per chunk the way
 flasks are (`spot_for_chunk` in `src/game/world.rs`), so placement stays
@@ -133,7 +95,7 @@ until the player answers correctly.
 bank (`assets/tasks_fallback.json`), and the answer panel (`src/ui/task_panel.rs`).
 A correct answer defeats the monster, unblocks the road, and awards XP through
 `progression.record_correct`. On a wrong answer the monster stays and the player
-retries with a fresh question after the cooldown, while the lava keeps its pressure.
+retries with a fresh question after the cooldown, while the curse keeps its pressure.
 
 **Open questions.**
 
@@ -203,7 +165,7 @@ its "help" is animation. It never changes XP, speed, answers or battle outcomes.
   along? How often?
 - What happens on a failed or abandoned puzzle — retry right away, a cooldown like
   the flasks, or the cage is gone?
-- Does the lion survive a lava game-over/restart (FR1)? Nothing is saved between
+- Does the lion survive a curse game-over/restart (FR1)? Nothing is saved between
   runs today.
 
 **Acceptance criteria.**
@@ -228,7 +190,7 @@ its "help" is animation. It never changes XP, speed, answers or battle outcomes.
 (see [Completed](#completed)), each on a provisional answer so the work could
 land; this entry keeps the questions so they are answered, not settled silently.
 
-## FR16. Confirm the provisional answers from FR5–FR15, FR20, FR24 and FR26
+## FR16. Confirm the provisional answers from FR1, FR5–FR15, FR20, FR24 and FR26
 
 **Status.** **Waiting on the owner.** Every default below is live in the code.
 Tick an item once the owner confirms it, or replace it with the owner's answer
@@ -236,11 +198,18 @@ and file the change as its own FR if it needs code.
 
 **Depends on:** [] _(answers here may spawn small follow-up FRs)_
 
-**Motivation.** FR5–FR15 were built in one pass, and FR20, FR24 and FR26 later on their own. Their open questions are the
+**Motivation.** FR5–FR15 were built in one pass, and FR1, FR20, FR24 and FR26 later on their own. Their open questions are the
 owner's to answer, so each was given a reasonable, easily changed default and
 recorded here.
 
 **Decisions to confirm** (question, then the provisional answer in the code):
+
+- [ ] **FR1** The owner chose the framing (both: the doctor's curse, felt as a
+  fever), a health drain at full, a full pause while a question or battle is open,
+  and a slow lift in the hub. Still provisional: does a correct flask cleanse some
+  of it? *Yes, 0.25.* The numbers? *Full after 45 s standing still near the gate,
+  rising up to ×1.5 by 2,000 m; each metre of new ground lifts 0.006; the hub lifts
+  0.05/s; slows from 0.5 down to ×0.85 at full; at full, ½ heart every 3 s.*
 
 - [ ] **FR5** Jump/roll while standing still? *Yes.* Roll as a dodge later? *Not now;
   the roll has a defined start/end (`Action::Roll { t }`) so one can hook in.*
@@ -891,12 +860,13 @@ the hub and wherever the player dies. The owner wants places to rest along the w
 The owner's wording was "safe hubs like a quick mouse"; this entry reads it as a
 small house or rest stop. Confirm that reading (see open questions).
 
-**Depends on:** [] _(pairs with FR1: a safe stop is where the lava gives the player
-a breather; FR27's map shows each stop as a landmark; FR17's shells could be spent
+**Depends on:** [] _(pairs with FR1, built: a safe stop is where the doctor's curse
+gives the player a breather; FR27's map shows each stop as a landmark; FR17's shells could be spent
 here)_
 
 **Motivation.** Once the player leaves the hub there's no let-up: flasks, monsters
-and (with FR1) the lava, all the way up. A safe stop every so often gives the run a
+and the doctor's curse (FR1), which closes in whenever they stop moving, all the
+way up. A safe stop every so often gives the run a
 rhythm (push, rest, push), a place to heal before a Tide Titan, and a goal a little
 way ahead that's closer than the castle.
 
@@ -921,7 +891,11 @@ way ahead that's closer than the castle.
   `Well`). Optionally a keeper NPC who talks through the dialogue bank
   (`assets/dialogue.json`), the way Professor Pebble does.
 - **What makes it safe.** Inside a stop's span: no encounters spawn, the player
-  can't be damaged, and (with FR1) the lava pauses or slows. Resting there heals:
+  can't be damaged, and the curse eases. `Curse::tick` already decides by the
+  player's `y` (rising on the road, lifting at `HUB_LIFT_PER_S` in the hub), so a
+  stop's span can either pause the curse or lift it the way the hub does. That
+  makes a stop the one place up the road where standing still doesn't bring the
+  fever on. Resting there heals:
   either a full `Health::refill` on arrival, or a slow heal while the player stands
   in the clearing (one door per rule, invariant 6).
 - **Optional extras** (the owner picks): a checkpoint so dying restarts at the last
@@ -942,9 +916,12 @@ way ahead that's closer than the castle.
   heal only once per stop per run?
 - **Checkpoint?** Does dying send the player back to the last stop, or still to the
   hub?
-- **Can the player linger forever?** If FR1's lava pauses at a stop, the player can
-  stand there indefinitely. Is that fine, or does the lava keep creeping (slower) so
-  the stop is a breather, not a hiding place?
+- **What does a stop do to the curse?** Pause it, lift it like the hub
+  (0.05/s, about 20 s from full to clear), or only slow its rise?
+- **Can the player linger forever?** On the road the curse fills in 45 s of standing
+  still (`FULL_AFTER_S`). If a stop pauses or lifts it, the player can stand there
+  indefinitely, as they already can in the hub. Is that fine, or does the curse keep
+  rising there, just slower, so the stop is a breather, not a hiding place?
 - **A keeper?** Is there someone at each stop (one recurring character, or a
   different one each time), or is it an empty house?
 
@@ -953,14 +930,15 @@ way ahead that's closer than the castle.
 - [ ] Safe stops appear along the road at fixed distances, the same every run.
 - [ ] Each stop is a clearing off the road with a small house and props, and the
   fence and walkable width open onto it smoothly.
-- [ ] No encounter zone, flask or (with FR1) lava threatens the player inside a stop.
+- [ ] No encounter zone or flask threatens the player inside a stop, and the curse
+  behaves there as decided above (covered by a `game/curse.rs` test).
 - [ ] Resting at a stop heals as decided above, through `Health`.
 - [ ] Placement is covered by a test: stops are deterministic, on the road, never
   share a chunk with a flask or a zone, and never sit next to a zone.
 - [ ] A dev event (for example `tostop`) snaps the player next to the first stop so
   it can be checked by screenshot.
-- [ ] `docs/ARCHITECTURE.md` (*World model* table, invariant 4, the new `decor`
-  kinds, the dev event) is updated.
+- [ ] `docs/ARCHITECTURE.md` (*World model* table, invariant 4, the curse's rule
+  at a stop, the new `decor` kinds, the dev event) is updated.
 
 ---
 
@@ -1673,6 +1651,16 @@ monsters for tomorrow").
 
 When an entry is fully built, delete it above and add one line here, newest
 first: `FR<n> — title — date — why it closed (commit)`. Its number stays retired.
+
+- FR1 — The doctor's curse: a sickness that sets in once the player is on the road —
+  2026-11-21 — reworked from rising lava at the owner's request; owner chose the
+  framing (curse felt as a fever), a health drain at full, a full pause during
+  questions and battles, and a slow lift in the hub. Built as `game/curse.rs`
+  (8 tests): dormant until the player first passes the gate, rises over time and is
+  held back by new ground, cleansed by a correct flask, slows the player past the
+  fever stage and drains ½ heart every 3 s at full through `damage_player`; a green
+  tint and closing vignette, wisps off the hero, a curse meter under the hearts,
+  stage toasts, dev events `curse`/`cursefull`. Remaining provisional numbers are in FR16
 
 - FR26 — Skill bar with roll charges and sprint stamina — 2026-11-21 — requested
   directly by the owner and built in one pass: `game/skills.rs` (`RollCharges`: 3

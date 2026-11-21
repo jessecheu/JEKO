@@ -50,6 +50,7 @@ src/
     bow.rs                the bow: shot timing, bow and arrow drawing, cosmetic arrows that arc and stick where they land
     flicker.rs            reusable flicker look (spawn ghost, damage blink), honours "reduce flashing"
     health.rs             player HP in half-hearts (damage/heal/refill, clamped, unit-tested)
+    curse.rs              the doctor's curse: a fever that starts on the road, worsens while you linger, drains hearts at full
     monster.rs            monster roster (stats, rarity by distance), Species (built-in or spec) + per-monster drawing and animations
     monster_rig.rs        draws any JSON-defined monster from its body shape, parts, eyes and accessory
     battle.rs             wild-encounter battle: transition, phases, battle-view drawing (moonlit clearing)
@@ -117,7 +118,10 @@ hunting required.
    The run starts in Professor Pebble's camp at the forest edge (press E by
    Professor Pebble for a quick tutorial); walk north through the iron gate
    signed "THE ROAD". Patches of ferns on the road hide monsters:
-   step in and answer questions to beat them. Wrong answers cost hearts,
+   step in and answer questions to beat them. Past the gate the doctor's
+   curse sets in: it worsens while you linger, eases as you reach new
+   ground or solve a flask, lifts back in the camp, and drains hearts at
+   full. Wrong answers cost hearts,
    and at zero hearts it's Game Over (E/Enter to try again).
 
    Dev aids: `JEKO_SHOT=out.png:120` saves a screenshot at frame 120 and
@@ -127,7 +131,8 @@ hunting required.
    for a monster from `content/monsters/`, `right`/
    `wrong` answers through the real submit path, `e` presses E, and
    teleports `toflask`/`tozone`/`topebble`, `nohud` hides the side panels,
-   `calm` turns on reduce flashing) at those frames, stepping a
+   `calm` turns on reduce flashing, `curse`/`cursefull` set the curse to
+   the fever stage or full) at those frames, stepping a
    fixed 1/60 s per frame. At the shot it prints a `STATE ...` line of run
    state to stderr.
 
