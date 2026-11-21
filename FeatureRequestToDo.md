@@ -740,7 +740,13 @@ scientist lives.
 
 ## FR27. A discovery map on M, and a village with the mad scientist's castle at the end of the road
 
-**Status.** **Not started.** Requested by the owner; the approach is suggested only.
+**Status.** **Milestone A built** (map on M, `game/map.rs`, `ui/map_panel.rs`). B
+(regions) and C (village and castle) are not started; next step is B's region table.
+Owner decisions for A: the game **pauses** while the map is open, and it can't open
+during a flask problem, battle, dialogue or settings; it shows **landmarks plus
+flasks** (hub gate, 50 m milestones, flasks fresh/solved/missed, monster zones, Tide
+Titans, you-are-here). Still open: castle distance and end-of-road, manor vs castle,
+FR23, fog hints, persistence, minimap.
 
 **Depends on:** [] _(pairs with FR23: the castle is the mad scientist's home and the
 natural place for a final showdown; touches FR24's manor, see open questions)_
@@ -824,22 +830,23 @@ extend, not a hand-drawn picture.
 
 **Acceptance criteria.**
 
-- [ ] Pressing M opens a map and pressing it again (or Escape) closes it. M is listed
+- [x] Pressing M opens a map and pressing it again (or Escape) closes it. M is listed
   in the controls reference.
-- [ ] The map shows the hub, the gate and the road the player has walked so far, with
+- [x] The map shows the hub, the gate and the road the player has walked so far, with
   landmarks and a "you are here" marker. The road north of the furthest point
   reached is fogged.
-- [ ] Walking further north fills in more of the map, the same way every run.
+- [x] Walking further north fills in more of the map, the same way every run.
 - [ ] Adding a region is one entry in the region table, and the map and the world
   both pick it up.
 - [ ] The road ends at a village town with a castle at the far end, where the mad
   scientist lives. The castle is marked on the map as the goal before it's reached.
-- [ ] The map changes no XP, HP, answers or battle results (invariant 7), and the
+- [x] The map changes no XP, HP, answers or battle results (invariant 7), and the
   panel keeps no gameplay state (invariant 5).
 - [ ] A dev event (for example `map`) opens the map without the keyboard, and one
   (`tocastle`) snaps the player near the end, so both can be checked by screenshot.
+  *(`map` and `far` exist; `tocastle` waits for milestone C.)*
 - [ ] Tests cover `Discovery` updates and that regions and the castle sit at fixed
-  distances (invariant 3).
+  distances (invariant 3). *(`Discovery` tests done; regions and castle wait for B and C.)*
 - [ ] `docs/ARCHITECTURE.md` (the road is no longer endless, the new modules, the
   panel, the region table, the dev events, *Known limits*) and the README layout are
   updated.

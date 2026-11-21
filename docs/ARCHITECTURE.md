@@ -112,6 +112,7 @@ The layering holds today, and new code should keep it:
 | `game/player.rs` | `Player`: movement, the cosmetic `Action`s (jump, roll, shoot), the arrows it has loosed, its `Skills`, stun, cheer, death, the stolen hat, and the sprite drawn through a render target. |
 | `game/skills.rs` | Movement skills (FR26): `RollCharges` (3 rolls, a trickle, a lockout) and `Stamina` (sprint drain, regen, winded), held together in `Skills`, and `draw_bar`, the skill bar at the bottom centre. |
 | `game/bow.rs` | The bow: the shot's timing (`aim`, `SHOOT_S`, `RELEASE_S`), drawing the bow slung and held and an arrow (`draw_arrow`), and `Arrow`, a cosmetic projectile that arcs, then sticks in the ground or splashes in the lake. |
+| `game/map.rs` | The discovery map (FR27): `Discovery` (the furthest `y` reached, kept on `Game`) and `snapshot`, which samples the world functions and the flasks and zones for the discovered stretch and returns a `MapView` (landmarks, the road's centreline, the player). No egui. |
 | `game/flicker.rs` | `Flicker` / `FlickerKind` (spawn ghost, damage blink). It turns elapsed time into a `Look` (tint and alpha) and honours reduce flashing. |
 | `game/health.rs` | `Health`, counted in half-hearts: damage, heal, refill, clamped. |
 | `game/curse.rs` | `Curse` (FR1): the curse level and its rules (`tick` returns a `Tick` for `Game` to act on, `cleanse`, `speed_factor`), its `Stage`s, and its drawing (`draw_tint`, `draw_wisps`, `draw_meter`). |
@@ -120,7 +121,7 @@ The layering holds today, and new code should keep it:
 | `game/battle.rs` | `Battle` and its `Phase`s, the iris transition, and the battle-view drawing. |
 | `game/dialogue.rs` | `Dialogue` (typewriter reveal), the `PEBBLE_TUTORIAL` lines, and `load_bank()` for `assets/dialogue.json`. |
 | `progression/` | `Progression` (XP, level curve, streak multiplier, upgrade unlocks) and `upgrades.rs` (upgrade definitions). |
-| `ui/` | One egui function per panel (`hud`, `task_panel`, `token_panel`, `settings_panel`, `dialogue_panel`, `game_over_panel`), plus `style::apply`. |
+| `ui/` | One egui function per panel (`hud`, `task_panel`, `token_panel`, `settings_panel`, `map_panel`, `dialogue_panel`, `game_over_panel`), plus `style::apply`. |
 
 ---
 
@@ -141,7 +142,7 @@ which is why network work goes to a thread (§4). Each iteration does this, in o
 6. `game.draw_pause_overlay()`: the pause dim, or the dim behind Game Over.
 7. **egui pass** (`egui_macroquad::ui`): `ui::style::apply`, then set
    `game.typing = ctx.wants_keyboard_input()`, then draw the panels. The HUD and token
-   panel are hidden during a battle or dialogue. The task panel returns
+   panel are hidden during a battle, a dialogue or while the map is open. The map panel (`map_panel::draw`) draws from `game.map_view()`. The task panel returns
    `TaskPanelEvent::Submit`, which calls `game.submit_answer()`. The Game Over panel
    returns `true`, which calls `game.reset()`.
 8. `egui_macroquad::draw()`, then the `JEKO_SHOT` screenshot check, then `next_frame().await`.
@@ -170,8 +171,8 @@ what the frame does:
 |---|---|---|---|
 | 0 | (every frame) | | `poll_content` drains the content watcher into `roster` (§8). It runs before everything else, so an edit shows while paused or after death. |
 | 1 | **Game over** | `game_over.is_some()` | Only the death animation advances. After `DEATH_ANIM_S` (1.2 s), E or Enter calls `reset()`. |
-| 2 | Toggles | not `typing` | O toggles `settings_open`, and Esc closes it. With settings closed, P toggles `paused`. |
-| 3 | **Paused** | `paused \|\| settings_open` | Only `trigger_state.poll()` runs, so a response that arrives isn't lost. The clock doesn't advance. |
+| 2 | Toggles | not `typing` | With the map open, M or Esc closes it. Otherwise M opens it (`can_open_map`: on the road, no battle, dialogue, open question or settings). O toggles `settings_open`, and Esc closes it. With settings closed, P toggles `paused`. |
+| 3 | **Paused** | `paused \|\| settings_open \|\| map_open` | Only `trigger_state.poll()` runs, so a response that arrives isn't lost. The clock doesn't advance. |
 | 4 | (every unpaused frame) | | Advance `time`, shake, the toast and the item-get timers. |
 | 5 | **Battle** | `battle.is_some()` | `update_battle`: the player is held, phases advance (§8), and new questions are requested. |
 | 6 | **Dialogue** | `dialogue.is_some()` | The player is held. E reveals the line, then advances, then closes. |
@@ -186,7 +187,7 @@ The road frame, in order:
    the player, the frame ends here. The curse is ticked only on this branch, so it
    holds still while a question is loading or open, in a battle, in a dialogue and
    while paused.
-3. The camera eases toward the player (anchor 0.66 of screen height, rate `1 − e^(−6·dt)`).
+3. `discovery.note(player.y)` records the furthest point reached (FR27). The camera eases toward the player (anchor 0.66 of screen height, rate `1 − e^(−6·dt)`).
    `world.ensure_generated` keeps one chunk past the top of the screen generated.
 4. `trigger_state.poll(&fallback_tasks)`.
 5. If not busy, stepping into an uncleared encounter zone starts a battle.
@@ -601,6 +602,7 @@ values passed to it as `&mut`.
 | `token_panel::draw` | bottom right | `CerebrasClient::token_stats()`, model, base URL | none |
 | `dialogue_panel::draw` | | `Dialogue` | none |
 | `settings_panel::draw` | modal | | `Settings`, `settings_open` |
+| `map_panel::draw` | modal | `MapView` from `Game::map_view` (`Discovery` + the world) | none; M or Esc is handled in `Game::update` |
 | `game_over_panel::draw` | modal | `Game` (run stats, best distance) | returns `true` to restart |
 
 `ui::style::apply` sets the theme every frame: pale parchment panels (kept light so
@@ -640,7 +642,7 @@ driving the window:
   `Game::debug_summary()` (a `STATE …` line) to stderr, and exits.
 - `JEKO_DEV=name@frame,…` fires scripted events: damage (`hurt`, `kill`), moves
   (`jump`, `roll`, `shoot`, `stun`, `cheer`), `spent` (empty the roll charges and
-  stamina, to show the skill bar recovering), `restart`, `pause`, `settings`, battles
+  stamina, to show the skill bar recovering), `restart`, `pause`, `settings`, `map` (open the map), `far` (teleport 120 m up the road and discover it), battles
   (`pinch`, `jelly`, `puff`, `coco`, `gull`, `wyrm`, `titan`, and `battle:<id>` for a
   spec monster from the content dir), answers through the
   real submit path (`right`, `wrong`), `e` (press E), teleports (`toflask`,
@@ -667,6 +669,7 @@ driving the window:
 | `game/health.rs` (4) | Starts full; damage, heal and refill clamping. |
 | `game/curse.rs` (8) | Nothing happens in the hub before the road. It starts the first time the player is past the gate. Standing still fills it, then drains on the interval. Walking north holds it back, even at the far end of the ramp. Old ground gives no relief. The hub lifts it. Stage toasts replay only after it clears. Cleanse and speed clamp. |
 | `game/skills.rs` (5) | Three rolls then a lockout that refills all; a spent charge trickles back; sprinting drains and running dry winds; stamina waits, then recovers, and winded ends at the threshold; a short break doesn't refill. |
+| `game/map.rs` (6) | Discovery starts at the gate and only moves north. The range has a floor and grows with progress. Landmarks never sit in the fog, while flasks further up exist but stay hidden. Milestones every 50 m. The same walk gives the same map. Solved flasks show as solved. |
 | `game/dialogue.rs` (2) | The bank has Professor Pebble; the typewriter reveals, then advances, then closes. |
 | `ui/token_panel.rs` (1) | Token counts read `1,284` below 10,000, then `12.9K` / `4.2M`. |
 

@@ -79,7 +79,7 @@ async fn main() {
             game.typing = ctx.wants_keyboard_input();
             // A battle is its own full-screen view; the side panels would
             // cover the monster.
-            let in_battle = game.battle.is_some() || game.dialogue.is_some();
+            let in_battle = game.battle.is_some() || game.dialogue.is_some() || game.map_open;
             if game.settings.show_hud && !in_battle {
                 ui::hud::draw(ctx, &game.progression, game.distance_m());
             }
@@ -92,6 +92,10 @@ async fn main() {
             }
             if game.can_restart() && ui::game_over_panel::draw(ctx, &game) {
                 game.reset();
+            }
+            if game.map_open {
+                let view = game.map_view();
+                ui::map_panel::draw(ctx, &view);
             }
             if game.settings_open {
                 ui::settings_panel::draw(ctx, &mut game.settings, &mut game.settings_open);

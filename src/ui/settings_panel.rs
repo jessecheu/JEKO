@@ -10,6 +10,7 @@ const CONTROLS: &[(&str, &str)] = &[
     ("Space", "Jump"),
     ("Ctrl", "Roll (3 charges)"),
     ("F", "Shoot an arrow"),
+    ("M", "Map (Esc or M closes)"),
     ("P", "Pause"),
     ("O / Esc", "Settings"),
 ];
