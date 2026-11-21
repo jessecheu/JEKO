@@ -365,8 +365,43 @@ invariant 3 and needs the owner's decision (see FR21's open questions).
 
 ## FR21. Generated monsters, hot-reloaded into the running game
 
-**Status.** **Not started.** Designed only. Milestone A is useful by itself and
-needs no API key, so start there.
+**Status.** **Milestone A built (2026-11-21); B and C not started.** Done: the
+`content` module (`MonsterSpec`, `parse`/validation with 7 hostile-input tests, the
+tier table in `MonsterSpec::info`, `Roster`, `ContentEvent`), the polling watcher
+thread (`content/watcher.rs`, every 0.5 s, by mtime and length), `game/monster_rig.rs`
+(every shape, part, eye look, accessory, idle and attack in the spec), `Species` on
+`Battle` with the rules frozen in `Battle.info` at the start of a fight, the
+live-swap rule (`Battle::respec`), the `battle:<id>` dev event, four hand-written
+specs in `content/monsters/` (Mossmunch, Lantern Moth, Bramblehog, Inkwisp, one per
+special), and the docs. Checked by screenshot: idle, intro, every attack style, hurt,
+faint, the grows special and a stolen hat, plus a mid-battle edit (new look at once,
+same rules) and a broken edit (logged, last good version kept, no crash).
+
+Built differently from the sketch below: the variant is `Species::Spec` (it covers
+hand-written and generated specs alike), not `Generated`. `EncounterZone` still holds
+a `MonsterKind`, because putting specs in zones is Milestone C and waits on the
+invariant 3 question. `MonsterInfo` moved to `content::monster_spec` (minus its
+name; `Species::name()` and `MonsterKind::name()` give names) so that `content`
+stays free of `game`.
+
+Provisional choices for the owner (change freely):
+
+- *Content dir:* `JEKO_CONTENT_DIR`, else `./content`, else the build checkout's
+  `content/` (not "next to the binary", which is `target/debug/` under cargo). The
+  hand-written specs are committed. Whether generated ones are is still open below.
+- *Invalid-file toast:* shown always, not only in dev mode, since there's no dev mode
+  flag and only someone editing the files can trigger it.
+- *Specials:* hand-written specs may use all four. Whether generated ones may is
+  still open below.
+- *Tier table:* tier 1 = 1 hit/1 dmg/0 m/bias 0/15 XP, tier 2 = 2/1/50 m/0/20,
+  tier 3 = 3/2/140 m/1/25, tier 4 = 3/2/400 m/2/30; stun is 2.0 s. Never a boss.
+- *Fit:* a file's `id` must match its file name, or it's rejected.
+
+**Next step:** Milestone B, the `Studio` worker (`src/content/studio.rs`) with a
+`GenMonster` job that writes `monsters/<id>.json` through `parse`. The watcher
+already loads whatever it writes. Ask the owner the open questions on moderation,
+which specials generated monsters may use, and `JEKO_STUDIO_MODEL` first. The `reload`
+and `genmonster` dev events, and `gen_content --monsters`, aren't built.
 
 **Depends on:** [] _(FR22 builds on its `Studio` and watcher; generated monsters fill FR10's encounter zones and, later, FR2's road blockers)_
 
@@ -481,11 +516,12 @@ no rebuild. Today the assets are `include_str!`'d, so any change means a recompi
 
 **Acceptance criteria.**
 
-- [ ] A monster defined only by a JSON spec in the content dir can be fought, with
+- [x] A monster defined only by a JSON spec in the content dir can be fought, with
   idle, intro, attack, hurt and faint poses, and honours reduce flashing.
-- [ ] Editing that JSON while the game runs updates the monster within about 2 s,
+  *(Milestone A; fought via `battle:<id>` until C puts specs on the road.)*
+- [x] Editing that JSON while the game runs updates the monster within about 2 s,
   with no restart. An invalid edit keeps the last good version and doesn't crash.
-- [ ] Spec validation is a pure, unit-tested function: hostile input (huge sizes,
+- [x] Spec validation is a pure, unit-tested function: hostile input (huge sizes,
   unknown enums, invisible colours, long names) is clamped or rejected, and stats
   always come from the tier table.
 - [ ] With an API key, the studio generates new monsters in the background while
@@ -498,7 +534,7 @@ no rebuild. Today the assets are `include_str!`'d, so any change means a recompi
 - [ ] The token panel splits usage by request kind.
 - [ ] `docs/ARCHITECTURE.md` (new `content` module, the watcher in the frame,
   `Species`, env vars and dev events, invariant 3 as decided) and the README layout
-  are updated.
+  are updated. *(Done for Milestone A; the studio, zones and invariant 3 remain.)*
 
 ---
 

@@ -7,9 +7,11 @@
 use super::bow;
 use super::gfx::{self, MOON};
 use super::manor;
-use super::monster::{self, MonsterCanvas, MonsterKind, Pose};
+use super::monster::{self, MonsterCanvas, MonsterInfo, Pose, Species};
 use super::player::Player;
+use crate::content::MonsterSpec;
 use macroquad::prelude::*;
+use std::sync::Arc;
 
 /// Flash, then the iris closes on the player and opens on the battle.
 pub const ENTER_S: f32 = 1.0;
@@ -42,7 +44,12 @@ pub enum Phase {
 }
 
 pub struct Battle {
-    pub kind: MonsterKind,
+    /// Who it's against. A spec monster's art follows edits to its file
+    /// mid-battle ([`Battle::respec`]).
+    pub species: Species,
+    /// Its rules, fixed when the battle starts, so editing a spec's tier or
+    /// special never changes a fight in progress (FR21).
+    pub info: MonsterInfo,
     /// Index of the encounter zone in `World::zones` that started it.
     pub zone: usize,
     pub hits_left: u32,
@@ -55,11 +62,13 @@ pub struct Battle {
 }
 
 impl Battle {
-    pub fn new(kind: MonsterKind, zone: usize) -> Self {
+    pub fn new(species: Species, zone: usize) -> Self {
+        let info = species.info();
         Self {
-            kind,
+            species,
+            info,
             zone,
-            hits_left: kind.info().hits,
+            hits_left: info.hits,
             misses: 0,
             phase: Phase::Enter(0.0),
             hit_landed: false,
@@ -69,8 +78,17 @@ impl Battle {
 
     /// Half-hearts the monster's next hit takes.
     pub fn damage(&self) -> u32 {
-        let info = self.kind.info();
-        info.damage + if info.grows { self.misses } else { 0 }
+        self.info.damage + if self.info.grows { self.misses } else { 0 }
+    }
+
+    /// Swaps in a newer version of the spec this battle is against, if it's
+    /// the same monster. Only the look changes: `info` stays as it was.
+    pub fn respec(&mut self, spec: &Arc<MonsterSpec>) {
+        if let Species::Spec(cur) = &mut self.species {
+            if cur.id == spec.id {
+                *cur = spec.clone();
+            }
+        }
     }
 
     /// True while the battle view (not the world) is on screen.
@@ -174,7 +192,7 @@ impl Battle {
         if !matches!(self.phase, Phase::Exit(_)) || self.hits_left > 0 {
             monster::draw(
                 &self.canvas,
-                self.kind,
+                &self.species,
                 monster_at,
                 2.0,
                 pose,
@@ -190,7 +208,7 @@ impl Battle {
         }
 
         // Nameplate with a pip per hit still needed.
-        let info = self.kind.info();
+        let info = self.info;
         let plate = vec2(monster_at.x - 90.0, h * 0.13);
         draw_rectangle(
             plate.x,
@@ -200,7 +218,13 @@ impl Battle {
             Color::new(1.0, 0.97, 0.87, 0.95),
         );
         draw_rectangle_lines(plate.x, plate.y, 180.0, 44.0, 2.5, gfx::INK);
-        draw_text(info.name, plate.x + 10.0, plate.y + 19.0, 22.0, gfx::INK);
+        draw_text(
+            self.species.name(),
+            plate.x + 10.0,
+            plate.y + 19.0,
+            22.0,
+            gfx::INK,
+        );
         for i in 0..info.hits {
             let c = vec2(plate.x + 18.0 + i as f32 * 20.0, plate.y + 32.0);
             let full = i < self.hits_left;
@@ -237,6 +261,26 @@ impl Battle {
                 16.0,
                 gfx::shade(gfx::INK, 1.6),
             );
+        }
+        // A spec monster's one-line blurb, under the plate.
+        if let Species::Spec(spec) = &self.species {
+            if !spec.blurb.is_empty() {
+                let size = 18u16;
+                let dims = measure_text(&spec.blurb, None, size, 1.0);
+                let x = (plate.x + 90.0 - dims.width * 0.5)
+                    .clamp(8.0, (w - dims.width - 8.0).max(8.0))
+                    .round();
+                let y = (plate.y + 66.0).round();
+                gfx::rounded_rect(
+                    x - 8.0,
+                    y - dims.offset_y - 5.0,
+                    dims.width + 16.0,
+                    dims.height + 10.0,
+                    6.0,
+                    gfx::with_alpha(gfx::NIGHT, 0.7),
+                );
+                draw_text(&spec.blurb, x, y, size as f32, MOON);
+            }
         }
     }
 }

@@ -1,0 +1,18 @@
+{
+  "id": "mossmunch",
+  "name": "Mossmunch",
+  "blurb": "A soft green lump that nibbles the moss off the cobbles.",
+  "fact": "Mosses have no roots; they soak up water through their leaves.",
+  "theme": { "subject": "math", "topic": "addition" },
+  "body": { "shape": "blob", "w": 46, "h": 36 },
+  "palette": { "main": "#6fae4f", "accent": "#e8d25a", "belly": "#cfe8a0" },
+  "eyes": { "count": 2, "size": 4.5, "stalks": false, "look": "cute" },
+  "parts": [
+    { "kind": "leg", "count": 2, "size": 0.8, "side": "both" }
+  ],
+  "accessory": "leaf",
+  "idle": "bob",
+  "attack": "lunge",
+  "tier": 1,
+  "special": "none"
+}

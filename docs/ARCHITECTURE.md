@@ -1,7 +1,7 @@
 ---
 type: Reference
 title: JEKO — Architecture
-description: As-built overview of JEKO's architecture — crate layering, the frame loop, the Game state owner and its modes, the live-question pipeline to Cerebras, procedural world generation, 2.5D rendering, battles, progression, the egui layer — and the invariants a change has to keep.
+description: As-built overview of JEKO's architecture — crate layering, the frame loop, the Game state owner and its modes, the live-question pipeline to Cerebras, procedural world generation, 2.5D rendering, battles, data-defined monsters and hot reload, progression, the egui layer — and the invariants a change has to keep.
 tags: [architecture, design, overview, rust, macroquad, egui, cerebras]
 timestamp: 2026-11-21
 ---
@@ -18,6 +18,9 @@ timestamp: 2026-11-21
 > scenery, potion flask and monster zone is a pure function of the chunk index, so the
 > road is endless, the same every run, and unit-testable. The setting is a dark forest
 > at night (FR24), with the mad scientist's manor drawn as a backdrop across the lake.
+> Besides the hand-drawn monsters, monsters can be defined as JSON specs in a content
+> dir (FR21). A watcher thread reloads them while the game runs, over the same kind
+> of polled channel.
 
 This doc is **descriptive**. It says what the code is today, checked against the source
 on the date in the frontmatter. It isn't a roadmap: planned and open work lives in
@@ -47,9 +50,13 @@ src/main.rs: one macroquad loop, one iteration per frame
                    TriggerState::Loading(rx) ── try_recv() each frame ──▶ Active(MathTask)
                                                 │ error, or no API key
                                                 └──▶ random task from assets/tasks_fallback.json
+
+content::watcher thread ── rescans <content dir>/monsters/*.json every 0.5 s
+  └─ ContentEvent over mpsc ── Game::poll_content, try_recv() each frame ──▶ Game.roster
 ```
 
-*Figure: the frame loop and the one asynchronous path, to Cerebras.*
+*Figure: the frame loop and its two background paths: questions from Cerebras, and
+monster specs from the content dir.*
 
 ---
 
@@ -59,7 +66,7 @@ One Cargo package, `jeko` (`Cargo.toml`, edition 2021):
 
 | Target | Source | Role |
 |---|---|---|
-| library `jeko` | `src/lib.rs` | `config`, `llm`, `game`, `progression`, `ui`. It exists so both binaries share `CerebrasClient`. |
+| library `jeko` | `src/lib.rs` | `config`, `content`, `llm`, `game`, `progression`, `ui`. It exists so both binaries share `CerebrasClient`. |
 | binary `jeko` (default-run) | `src/main.rs` | The game: window config, the frame loop, the dev hooks (§11). |
 | binary `gen_content` | `src/bin/gen_content.rs` | Offline tool. Asks the model for NPC lines and writes `assets/dialogue.json`. The game never runs it. |
 
@@ -67,14 +74,16 @@ Which module uses which (arrows mean "uses"):
 
 ```
 main.rs ──▶ ui ──▶ game ──▶ llm ──▶ config
-            │        └────▶ progression
-            └──────────────▶ progression, llm   (read-only, for the HUD and token panel)
+  │         │        ├────▶ progression
+  │         │        └────▶ content
+  │         └──────────────▶ progression, llm   (read-only, for the HUD and token panel)
+  └──▶ content   (starts the watcher)
 gen_content.rs ──▶ llm, config
 ```
 
 The layering holds today, and new code should keep it:
 
-- **`config`, `llm`, `progression`** know nothing about macroquad or egui. They're
+- **`config`, `content`, `llm`, `progression`** know nothing about macroquad or egui. They're
   plain Rust, so they can be tested and reused without a window (`gen_content` uses
   `llm` this way).
 - **`game`** uses macroquad (input, drawing, render targets) and never egui. It
@@ -85,6 +94,9 @@ The layering holds today, and new code should keep it:
 | Module | Owns |
 |---|---|
 | `config.rs` | `Config::load()`: reads `CEREBRAS_API_KEY`, `CEREBRAS_MODEL`, `CEREBRAS_BASE_URL` from the environment, after `dotenvy` loads `.env`. An empty key counts as no key. `instance_name()`: `JEKO_INSTANCE`, else the folder the binary was built from (`CARGO_MANIFEST_DIR`), shown in the window title. |
+| `content/mod.rs` | `ContentEvent` (a spec loaded or reloaded, a file removed, a file rejected), `Roster` (the loaded specs by id, sorted), and `content_dir()`. |
+| `content/monster_spec.rs` | `MonsterSpec`, a monster as data, and `parse`, the only way in: JSON in, a clamped and validated spec out. `MonsterInfo`, the gameplay numbers every monster has, and the tier table (`MonsterSpec::info`). |
+| `content/watcher.rs` | `Scanner` (one rescan of `monsters/*.json`, by modification time and length) and `spawn`, the thread that runs it every `POLL` (0.5 s). |
 | `llm/mod.rs` | `MathTask { topic, problem, answer: f64, hint, difficulty }`, the one task type every question path produces. |
 | `llm/cerebras_client.rs` | `CerebrasClient`: the async wrapper, the blocking chat-completions call, and the shared token stats. |
 | `llm/task_gen.rs` | The prompt template (`build_prompt(difficulty)`) and lenient JSON extraction (`extract_json_object` / `_array`). |
@@ -100,7 +112,8 @@ The layering holds today, and new code should keep it:
 | `game/bow.rs` | The bow: the shot's timing (`aim`, `SHOOT_S`, `RELEASE_S`), drawing the bow slung and held and an arrow (`draw_arrow`), and `Arrow`, a cosmetic projectile that arcs, then sticks in the ground or splashes in the lake. |
 | `game/flicker.rs` | `Flicker` / `FlickerKind` (spawn ghost, damage blink). It turns elapsed time into a `Look` (tint and alpha) and honours reduce flashing. |
 | `game/health.rs` | `Health`, counted in half-hearts: damage, heal, refill, clamped. |
-| `game/monster.rs` | The `MonsterKind` roster, `MonsterInfo` stats, distance-weighted `pick`, and per-monster drawing and animation. |
+| `game/monster.rs` | `Species` (a built-in `MonsterKind` or a `MonsterSpec`), the `MonsterKind` roster and its stats, distance-weighted `pick`, the shared canvas and poses, and per-monster drawing and animation. |
+| `game/monster_rig.rs` | `draw_spec`: draws any `MonsterSpec` from its body shape, parts, eyes, accessory, idle and attack. |
 | `game/battle.rs` | `Battle` and its `Phase`s, the iris transition, and the battle-view drawing. |
 | `game/dialogue.rs` | `Dialogue` (typewriter reveal), the `PEBBLE_TUTORIAL` lines, and `load_bank()` for `assets/dialogue.json`. |
 | `progression/` | `Progression` (XP, level curve, streak multiplier, upgrade unlocks) and `upgrades.rs` (upgrade definitions). |
@@ -110,7 +123,8 @@ The layering holds today, and new code should keep it:
 
 ## 3. The frame loop (`src/main.rs`)
 
-macroquad's `#[macroquad::main]` gives an `async fn main`, but `next_frame().await`
+Before the loop, `main` builds `Game` and starts the content watcher on
+`content::content_dir()` (`Game::watch_content`). macroquad's `#[macroquad::main]` gives an `async fn main`, but `next_frame().await`
 only yields once per frame. **It isn't an executor that can drive other futures**,
 which is why network work goes to a thread (§4). Each iteration does this, in order:
 
@@ -118,7 +132,8 @@ which is why network work goes to a thread (§4). Each iteration does this, in o
 2. Fire any `JEKO_DEV` events scheduled for this frame (`Game::dev_event`).
 3. Choose `dt`: a fixed 1/60 s when `JEKO_SHOT` or `JEKO_DEV` is set, so frame numbers
    map to game time; `get_frame_time()` otherwise.
-4. `game.update(dt)`: input, simulation, polling the question (§5).
+4. `game.update(dt)`: content events first (§8), then input, simulation, polling the
+   question (§5).
 5. `game.draw()`: the world or the battle view, in screen space (§7).
 6. `game.draw_pause_overlay()`: the pause dim, or the dim behind Game Over.
 7. **egui pass** (`egui_macroquad::ui`): `ui::style::apply`, then set
@@ -141,7 +156,8 @@ Two consequences of this order:
 
 Everything that changes during a run is a field on `Game`, or is owned by one: `player`,
 `world`, `progression`, `health`, `trigger_state`, `battle`, `dialogue`, `settings`,
-`run` stats, the camera (`cam_y`, `shake`), toasts, and the game clock `time`. The UI
+`run` stats, the camera (`cam_y`, `shake`), toasts, the game clock `time`, and the
+spec monster `roster` with the watcher's channel. The UI
 gets it by reference. Nothing else holds gameplay state.
 
 `Game::update` runs these checks in a fixed order. The first one that matches decides
@@ -149,6 +165,7 @@ what the frame does:
 
 | # | Mode | Condition | What the frame does |
 |---|---|---|---|
+| 0 | (every frame) | | `poll_content` drains the content watcher into `roster` (§8). It runs before everything else, so an edit shows while paused or after death. |
 | 1 | **Game over** | `game_over.is_some()` | Only the death animation advances. After `DEATH_ANIM_S` (1.2 s), E or Enter calls `reset()`. |
 | 2 | Toggles | not `typing` | O toggles `settings_open`, and Esc closes it. With settings closed, P toggles `paused`. |
 | 3 | **Paused** | `paused \|\| settings_open` | Only `trigger_state.poll()` runs, so a response that arrives isn't lost. The clock doesn't advance. |
@@ -181,7 +198,7 @@ to change each rule:
 - `Game::request_task(bias)` is the only way a question starts (§5).
 - `Game::submit_answer()` is the only way an answer is judged, for flasks and battles alike.
 - `Game::reset()` starts a new run without relaunching. It keeps the client, the
-  fallback bank, the settings and `best_distance_m`. Everything else is rebuilt, and
+  fallback bank, the settings, `best_distance_m` and the content `roster` with its watcher. Everything else is rebuilt, and
   dropping `trigger_state` abandons any request in flight.
 
 **The game clock.** `Game.time` advances only on unpaused frames, and every animation
@@ -387,7 +404,7 @@ check it.
 
 ## 8. Battles and monsters (`game/battle.rs`, `game/monster.rs`)
 
-Walking into an uncleared zone calls `Game::start_battle(kind, zone)`, which clears
+Walking into an uncleared zone calls `Game::start_battle(species, zone)`, which clears
 the trigger, input and action, turns the player to face the monster on the right,
 and sets `battle = Some(Battle::new(..))`. The battle
 reuses the question pipeline (§5) for every question.
@@ -417,10 +434,15 @@ impact star. The player stays on their pad. The shot is drawing only: the hit is
 counted by the phase timer, as before.
 
 On victory the zone is marked `cleared`, a stolen hat comes back, `monsters_beaten`
-goes up, and a toast shows. There's no fleeing. Dev battles (`JEKO_DEV=jelly@…`) use
-zone index `usize::MAX`, so nothing gets cleared.
+goes up, and a toast shows. There's no fleeing. Dev battles (`JEKO_DEV=jelly@…`,
+`battle:<id>`) use zone index `usize::MAX`, so nothing gets cleared.
 
-`MonsterKind::info()` holds all the gameplay numbers. `MonsterKind::pick` weights the
+A battle is against a `Species`: `Builtin(MonsterKind)` or `Spec(Arc<MonsterSpec>)`.
+`Battle::new` copies the species' `MonsterInfo` into `Battle.info`, and every rule in
+the fight (hits, damage, stun, growth, hat theft, bias, XP) reads that copy. The
+nameplate shows `Species::name()`, and a spec's blurb is shown under it.
+
+`MonsterKind::info()` holds the built-ins' gameplay numbers. `MonsterKind::pick` weights the
 roster by distance: Pinchlings thin out, and the tough ones grow common further up.
 
 | Monster | Hits | Damage (½♥) | Special | From | Bias | XP/hit |
@@ -432,6 +454,55 @@ roster by distance: Pinchlings thin out, and the tough ones grow common further 
 | Coco Knight | 3 | 2 | stun 2.0 s | 140 m | 1 | 25 |
 | Dune Wyrm | 3 | 2 | rare mini-boss | 400 m | 2 | 30 |
 | Tide Titan | 4 | 2 | boss, only at each 500 m mark | 500 m | 2 | 40 |
+
+**Spec monsters** (FR21). A `MonsterSpec` is a monster as data: a name and blurb, a body
+`shape` (`blob`, `shell`, `dome`, `segmented`, `wave`, `spiky_ball`) and size, a
+three-colour palette, eyes (1–3, size, stalks, `cute`/`grumpy`/`sleepy`), up to 6 parts
+(`claw`, `tentacle`, `spike`, `fin`, `wing`, `horn`, `leg`, `tail`, each with a count,
+size and side), an accessory, an `idle` (`bob`, `scuttle`, `float`, `sway`, `pulse`)
+and an `attack` (`lunge`, `zap`, `spin`, `slam`, `spit`). `monster_rig::draw_spec` draws
+it inside `monster::draw`, so it gets the same canvas, poses, hurt flash, faint fade
+and reduce flashing as the built-ins. Also stored, not used yet: a `fact` and a
+`theme` (for FR22).
+
+A spec can't set its numbers. It picks a `tier` and a `special`, and
+`MonsterSpec::info` looks them up in a table that follows the built-ins' bands. Specs
+are never bosses.
+
+| Tier | Hits | Damage (½♥) | From | Bias | XP/hit |
+|---:|---:|---:|---:|---:|---:|
+| 1 | 1 | 1 | 0 m | 0 | 15 |
+| 2 | 2 | 1 | 50 m | 0 | 20 |
+| 3 | 3 | 2 | 140 m | 1 | 25 |
+| 4 | 3 | 2 | 400 m | 2 | 30 |
+
+`special` is one of the existing mechanics: `none`, `stun` (2.0 s), `grows` or
+`steals_hat`.
+
+`content::monster_spec::parse` is the only way a spec gets in. Unknown enum values,
+a bad id (1–32 of `a-z 0-9 _ -`), an empty name or a colour that isn't `#rrggbb` are
+rejected. Numbers are clamped into range, text is cut (name 16 chars, blurb 80, at a
+word boundary), extra fields are ignored, and a colour too dark to read against `INK`
+is lightened to a contrast of at least 3.5.
+
+**Hot reload.** The content dir is `JEKO_CONTENT_DIR`, else `./content`, else the
+`content/` folder of the checkout the binary was built from. The repo ships four
+hand-written specs in `content/monsters/`: Mossmunch, Lantern Moth, Bramblehog and
+Inkwisp, one for each special. The watcher thread rescans `monsters/*.json` every
+0.5 s and sends a `ContentEvent` for each new, edited, rejected or deleted file. A
+file's `id` must match its file name. `Game::poll_content` applies the events to
+`roster`:
+
+- A rejected file is logged and shown as a toast, and the roster keeps the last good
+  version.
+- A reload shows a "Reloaded …" toast.
+- **Live-swap rule.** If the spec being fought is reloaded, `Battle::respec` swaps in
+  the new look at once, but `Battle.info` stays, so a tier or special change applies
+  from that monster's next battle.
+
+Encounter zones still pick from the built-in roster only. Spec monsters are fought
+through the `battle:<id>` dev event until FR21's later milestones put them on the
+road.
 
 ---
 
@@ -515,7 +586,8 @@ prompts match the panels. `Settings` (`show_hud`, `show_token_panel`,
 ## 11. Content, configuration and dev hooks
 
 **Assets** are compiled into the binary with `include_str!`, so editing them needs a
-rebuild:
+rebuild. The exception is the content dir, which is read at runtime and hot-reloaded
+(`content/monsters/*.json`, §8):
 
 | File | Loaded by | Used for |
 |---|---|---|
@@ -526,11 +598,12 @@ rebuild:
 `CEREBRAS_MODEL` defaults to `kimi-k3.1`, a placeholder slug.
 `CEREBRAS_BASE_URL` defaults to `https://api.cerebras.ai/v1`. Values come from the
 environment, a `.env` file, or secretspec (`secretspec.toml`). See the README.
+`JEKO_CONTENT_DIR` points the content watcher at another folder (§8).
 `JEKO_INSTANCE` names the checkout for the window title (`JEKO — Math Quest [name]`)
 and the startup stderr line. It defaults to the build folder's name, so two clones
 run side by side can be told apart. Nothing else is shared between clones: each has
-its own `target/` and `.env`, and the game opens no ports and writes no files apart
-from a `JEKO_SHOT` screenshot.
+its own `target/`, `.env` and `content/`, and the game opens no ports and writes no
+files apart from a `JEKO_SHOT` screenshot.
 
 **Dev hooks** (`main.rs` plus `Game::dev_event`) let a change be checked without
 driving the window:
@@ -540,7 +613,8 @@ driving the window:
 - `JEKO_DEV=name@frame,…` fires scripted events: damage (`hurt`, `kill`), moves
   (`jump`, `roll`, `shoot`, `stun`, `cheer`), `spent` (empty the roll charges and
   stamina, to show the skill bar recovering), `restart`, `pause`, `settings`, battles
-  (`pinch`, `jelly`, `puff`, `coco`, `gull`, `wyrm`, `titan`), answers through the
+  (`pinch`, `jelly`, `puff`, `coco`, `gull`, `wyrm`, `titan`, and `battle:<id>` for a
+  spec monster from the content dir), answers through the
   real submit path (`right`, `wrong`), `e` (press E), teleports (`toflask`,
   `tozone`, `topebble`), and display settings: `nohud` (hide both side panels, so
   a shot shows the whole world) and `calm` (turn on reduce flashing).
@@ -553,6 +627,10 @@ driving the window:
 
 | Module | What's covered |
 |---|---|
+| `content/monster_spec.rs` (7) | A good spec loads with defaults. Huge and negative numbers are clamped. Unknown enum values are rejected. Bad ids, empty names and malformed colours are rejected. Long or multi-line text is cut and cleaned. Too-dark colours are lightened until they read against `INK`. Stats come from the tier table only, whatever extra fields say. |
+| `content/watcher.rs` (3) | A missing dir is empty. A file loads, an edit reloads it, a broken edit and a mismatched id are reported, and a delete is reported. The specs shipped in `content/monsters/` all load. |
+| `content/mod.rs` (1) | A rejected file keeps the last good version in the roster; a delete removes it. |
+| `game/monster_rig.rs` (2) | The palette check's `INK_RGB` matches `gfx::INK`; parts spread evenly. |
 | `game/world.rs` (10) | Scenery never lands on the road. Every flask is reachable and on the road. Generation is deterministic. Interact reaches only nearby fresh flasks. The clamp keeps the player on the road. Encounters are on the road and deterministic. A Titan guards every 500 m. Tougher monsters appear further up. The hub is wide, dry and bounded. The walkable width is continuous through the gate. |
 | `game/manor.rs` (1) | Lightning strikes now and then (under 12% of frames), stays in 0..1, and is the same every run. |
 | `llm/usage.rs` (5) | Provider-timed vs round-trip speed, zero time ignored, no usage block, the capped history. |
@@ -579,7 +657,8 @@ the owner, and update this section if it goes ahead.
 
 1. **The frame never waits on the network.** Every model call goes through a
    background thread and an `mpsc` channel that's polled with `try_recv`. Never
-   `.await` or block on a request inside `update`/`draw`.
+   `.await` or block on a request inside `update`/`draw`. Reading the content dir
+   follows the same pattern (the watcher thread).
 2. **Every question path works offline.** No key, a timeout, an HTTP error and a bad
    payload all fall back to `assets/tasks_fallback.json`. A new question source needs
    the same fallback.
@@ -600,7 +679,7 @@ the owner, and update this section if it goes ahead.
 8. **Animation runs on the game clock.** Use `Game.time` or per-object timers advanced
    by `dt`, so pausing freezes everything.
 9. **Reduce flashing is honoured** by every flicker, flash and shake.
-10. **Layering** (§2): `config`/`llm`/`progression` stay free of macroquad and egui,
+10. **Layering** (§2): `config`/`content`/`llm`/`progression` stay free of macroquad and egui,
     `game` stays free of egui.
 
 ---
@@ -625,6 +704,10 @@ still to make:
   but not the characters: the hero wears a straw sun hat and swim shorts, and the
   roster is crabs, jellyfish, pufferfish, coconuts, gulls, a sand worm and a Tide
   Titan. Restyling them is FR25.
+- **Spec monsters don't appear on the road yet.** Encounter zones still choose a
+  `MonsterKind`, so a spec is only reachable through `battle:<id>`. Putting them in
+  zones (and generating them with the model) is the rest of FR21, and needs the
+  owner's call on invariant 3.
 - **The settled-for-now defaults** from FR5–FR15, FR20 and FR24 are listed for the owner in FR16.
 
 See [FeatureRequestToDo.md](../FeatureRequestToDo.md) for the backlog.

@@ -7,11 +7,13 @@ pub mod gfx;
 pub mod health;
 pub mod manor;
 pub mod monster;
+pub mod monster_rig;
 pub mod player;
 pub mod skills;
 pub mod task_trigger;
 pub mod world;
 
+use crate::content::{ContentEvent, Roster};
 use crate::llm::cerebras_client::CerebrasClient;
 use crate::llm::MathTask;
 use crate::progression::Progression;
@@ -19,8 +21,9 @@ use battle::{Battle, Phase};
 use flicker::FlickerKind;
 use health::Health;
 use macroquad::prelude::*;
-use monster::MonsterKind;
+use monster::{MonsterKind, Species};
 use player::Player;
+use std::sync::mpsc::{Receiver, TryRecvError};
 use task_trigger::TriggerState;
 use world::{SpotState, View, World};
 
@@ -134,6 +137,11 @@ pub struct Game {
     /// Flask whose task is currently loading/open, so the result can be
     /// stamped onto it.
     active_spot: Option<usize>,
+    /// Monsters defined by specs in the content dir (FR21), kept current
+    /// by the watcher. Content, not run state: `reset` keeps it.
+    pub roster: Roster,
+    /// The content watcher's channel, drained every frame.
+    content_rx: Option<Receiver<ContentEvent>>,
 }
 
 fn camera_target(player_y: f32) -> f32 {
@@ -176,6 +184,54 @@ impl Game {
             fallback_tasks,
             cam_y: camera_target(start.y),
             active_spot: None,
+            roster: Roster::default(),
+            content_rx: None,
+        }
+    }
+
+    /// Starts taking content events from a watcher
+    /// (`content::watcher::spawn`). Without one the roster stays empty
+    /// and only the built-in monsters exist.
+    pub fn watch_content(&mut self, rx: Receiver<ContentEvent>) {
+        self.content_rx = Some(rx);
+    }
+
+    /// Applies whatever the content watcher has found since last frame.
+    /// Runs every frame, paused or not, so an edit shows even on a paused
+    /// battle. A spec's look changes at once, also mid-battle; its rules
+    /// only from its next battle (see `Battle::info`).
+    fn poll_content(&mut self) {
+        let Some(rx) = &self.content_rx else {
+            return;
+        };
+        let mut events = Vec::new();
+        loop {
+            match rx.try_recv() {
+                Ok(e) => events.push(e),
+                Err(TryRecvError::Empty) => break,
+                Err(TryRecvError::Disconnected) => {
+                    self.content_rx = None;
+                    break;
+                }
+            }
+        }
+        for event in events {
+            self.roster.apply(&event);
+            match &event {
+                ContentEvent::Monster { spec, reloaded } => {
+                    if let Some(b) = &mut self.battle {
+                        b.respec(spec);
+                    }
+                    if *reloaded {
+                        self.toast = Some((format!("Reloaded {}", spec.name), 1.5));
+                    }
+                }
+                ContentEvent::Invalid { file, error } => {
+                    eprintln!("content: {file}: {error} (keeping the last good version)");
+                    self.toast = Some((format!("{file}: {error}"), 4.0));
+                }
+                ContentEvent::Removed { .. } => {}
+            }
         }
     }
 
@@ -196,6 +252,7 @@ impl Game {
     }
 
     pub fn update(&mut self, dt: f32) {
+        self.poll_content();
         if let Some(t) = &mut self.game_over {
             // Only the restart key works once the run is over.
             *t += dt;
@@ -277,7 +334,7 @@ impl Game {
         // Stepping into a monster's patch of ferns starts a battle.
         if !busy {
             if let Some(z) = self.world.encounter_at(self.player.pos) {
-                self.start_battle(self.world.zones[z].kind, Some(z));
+                self.start_battle(Species::Builtin(self.world.zones[z].kind), Some(z));
                 return;
             }
         }
@@ -336,16 +393,16 @@ impl Game {
         }
     }
 
-    /// Starts a battle with `kind`. `zone` is the encounter zone to clear
-    /// on victory (`None` for a scripted dev battle).
-    fn start_battle(&mut self, kind: MonsterKind, zone: Option<usize>) {
+    /// Starts a battle with `species`. `zone` is the encounter zone to
+    /// clear on victory (`None` for a scripted dev battle).
+    fn start_battle(&mut self, species: Species, zone: Option<usize>) {
         self.trigger_state = TriggerState::Idle;
         self.interact_target = None;
         self.input_buffer.clear();
         self.player.action = player::Action::None;
         // The battle view puts the monster on the right.
         self.player.facing = 1.0;
-        self.battle = Some(Battle::new(kind, zone.unwrap_or(usize::MAX)));
+        self.battle = Some(Battle::new(species, zone.unwrap_or(usize::MAX)));
     }
 
     /// Advances the battle's phases: transition, intro, attacks, faint.
@@ -389,8 +446,7 @@ impl Game {
                 let t = t + dt;
                 if t >= battle::MONSTER_HIT_AT && !b.hit_landed {
                     b.hit_landed = true;
-                    monster_hit =
-                        Some((b.damage(), b.kind.info().stun_s, b.kind.info().steals_hat));
+                    monster_hit = Some((b.damage(), b.info.stun_s, b.info.steals_hat));
                     b.misses += 1;
                 }
                 if t < battle::MONSTER_ATTACK_S {
@@ -411,20 +467,21 @@ impl Game {
             }
             Phase::Exit(t) => Phase::Exit(t + dt),
         };
-        let (kind, zone) = (b.kind, b.zone);
+        let (info, zone) = (b.info, b.zone);
+        let name = b.species.name().to_string();
 
         if let Some((halves, stun_s, steals_hat)) = monster_hit {
             self.damage_player(halves, None);
             if steals_hat && !self.player.hat_stolen {
                 self.player.hat_stolen = true;
-                self.toast = Some(("The Gull Bandit swiped your hat!".into(), 2.0));
+                self.toast = Some((format!("The {name} swiped your hat!"), 2.0));
             }
             if stun_s > 0.0 && self.game_over.is_none() {
                 self.player.stun(stun_s);
             }
         }
         if next_question && self.game_over.is_none() {
-            self.trigger_state = self.request_task(kind.info().difficulty_bias);
+            self.trigger_state = self.request_task(info.difficulty_bias);
         }
         if won {
             if self.player.hat_stolen {
@@ -435,7 +492,7 @@ impl Game {
             }
             self.run.monsters_beaten += 1;
             self.trigger_state = TriggerState::Idle;
-            self.toast = Some((format!("You beat the {}!", kind.info().name), 2.5));
+            self.toast = Some((format!("You beat the {name}!"), 2.5));
         }
         if done {
             self.battle = None;
@@ -453,7 +510,7 @@ impl Game {
             return;
         }
         b.hit_landed = false;
-        let xp = b.kind.info().xp_per_hit;
+        let xp = b.info.xp_per_hit;
         if correct {
             b.phase = Phase::PlayerAttack(0.0);
             self.player.shoot_at_monster();
@@ -560,7 +617,7 @@ impl Game {
         format!(
             "STATE hp={}/{} level={} xp={} streak={} dist={}m flasks={} beaten={} \
              zones_cleared={} battle={:?} trigger={} dialogue={} game_over={} hat_stolen={} \
-             arrows={}",
+             arrows={} roster={}",
             self.health.current,
             self.health.max,
             self.progression.level,
@@ -570,12 +627,15 @@ impl Game {
             self.run.flasks_solved,
             self.run.monsters_beaten,
             self.world.zones.iter().filter(|z| z.cleared).count(),
-            self.battle.as_ref().map(|b| (b.kind, b.hits_left, b.phase)),
+            self.battle
+                .as_ref()
+                .map(|b| (b.species.name().to_string(), b.hits_left, b.phase)),
             trigger,
             self.dialogue.is_some(),
             self.game_over.is_some(),
             self.player.hat_stolen,
             self.player.arrows.len(),
+            self.roster.len(),
         )
     }
 
@@ -604,13 +664,21 @@ impl Game {
                 self.player.skills.stamina.exhaust();
             }
             "restart" => self.reset(),
-            "pinch" => self.start_battle(MonsterKind::Pinchling, None),
-            "jelly" => self.start_battle(MonsterKind::Jellyglow, None),
-            "puff" => self.start_battle(MonsterKind::Puffspike, None),
-            "coco" => self.start_battle(MonsterKind::CocoKnight, None),
-            "gull" => self.start_battle(MonsterKind::GullBandit, None),
-            "wyrm" => self.start_battle(MonsterKind::DuneWyrm, None),
-            "titan" => self.start_battle(MonsterKind::TideTitan, None),
+            "pinch" => self.start_battle(Species::Builtin(MonsterKind::Pinchling), None),
+            "jelly" => self.start_battle(Species::Builtin(MonsterKind::Jellyglow), None),
+            "puff" => self.start_battle(Species::Builtin(MonsterKind::Puffspike), None),
+            "coco" => self.start_battle(Species::Builtin(MonsterKind::CocoKnight), None),
+            "gull" => self.start_battle(Species::Builtin(MonsterKind::GullBandit), None),
+            "wyrm" => self.start_battle(Species::Builtin(MonsterKind::DuneWyrm), None),
+            "titan" => self.start_battle(Species::Builtin(MonsterKind::TideTitan), None),
+            // Fight a spec monster from the content dir (FR21) by its id.
+            _ if name.starts_with("battle:") => {
+                let id = &name["battle:".len()..];
+                match self.roster.get(id) {
+                    Some(spec) => self.start_battle(Species::Spec(spec.clone()), None),
+                    None => eprintln!("JEKO_DEV: no monster {id:?} in the content dir"),
+                }
+            }
             // Answer the open question through the real submit path.
             "right" | "wrong" => {
                 if let TriggerState::Active(task) = &self.trigger_state {

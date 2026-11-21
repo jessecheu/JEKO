@@ -1,0 +1,18 @@
+{
+  "id": "inkwisp",
+  "name": "Inkwisp",
+  "blurb": "A sneaky puff of night fog with an eye for hats.",
+  "fact": "Fog is a cloud that touches the ground.",
+  "theme": { "subject": "math", "topic": "fractions" },
+  "body": { "shape": "wave", "w": 50, "h": 44 },
+  "palette": { "main": "#7c6bc4", "accent": "#b3e86b", "belly": "#e3dcff" },
+  "eyes": { "count": 3, "size": 3.5, "stalks": false, "look": "cute" },
+  "parts": [
+    { "kind": "tail", "count": 1, "size": 1.1, "side": "back" }
+  ],
+  "accessory": "mask",
+  "idle": "sway",
+  "attack": "spit",
+  "tier": 2,
+  "special": "steals_hat"
+}

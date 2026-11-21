@@ -1,4 +1,5 @@
 use jeko::config::{self, Config};
+use jeko::content;
 use jeko::game::Game;
 use jeko::llm::cerebras_client::CerebrasClient;
 use jeko::llm::MathTask;
@@ -34,6 +35,9 @@ async fn main() {
     let client = CerebrasClient::new(&cfg);
     let fallback_tasks = load_fallback_tasks();
     let mut game = Game::new(client, fallback_tasks);
+    let content_dir = content::content_dir();
+    eprintln!("content dir {}", content_dir.display());
+    game.watch_content(content::watcher::spawn(content_dir));
 
     // Dev aid: `JEKO_SHOT=out.png:60` saves a screenshot at frame 60 and
     // exits, so a change can be checked without driving the window.
