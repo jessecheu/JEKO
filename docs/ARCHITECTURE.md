@@ -390,11 +390,12 @@ roster by distance: Pinchlings thin out, and the tough ones grow common further 
 ## 9. Player, health and effects
 
 - **Movement** (`Player::update`): WASD or the arrow keys at `base_speed` 140 px/s
-  times `progression.speed_multiplier()`, then the `constrain` closure. The walk
+  times `progression.speed_multiplier()`, times `SPRINT_MULTIPLIER` (1.6) while Shift
+  is held, then the `constrain` closure. The walk
   cycle advances by the distance actually moved, so it stops against the railing. A
   stun or the cheer pose blocks movement. `Player::stop(dt)` holds the player in place
   but keeps effects ticking.
-- **Cosmetic actions.** `Action::Jump` (Space) and `Action::Roll` (Shift) change only
+- **Cosmetic actions.** `Action::Jump` (Space) and `Action::Roll` (Ctrl) change only
   how the sprite is drawn. They never change position, speed or anything gameplay reads.
 - **Status.** Stun (`stun(secs)` extends a running one) shows a halo of stars, blocks
   movement and blocks submitting an answer. The cheer is the item-get pose. `dead`

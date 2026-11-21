@@ -10,6 +10,9 @@ pub const SPAWN_FLICKER_S: f32 = 2.0;
 const JUMP_S: f32 = 0.45;
 const JUMP_HEIGHT: f32 = 22.0;
 const ROLL_S: f32 = 0.4;
+/// Holding Shift multiplies walking speed by this. It stacks with the
+/// Speed Boost upgrade.
+const SPRINT_MULTIPLIER: f32 = 1.6;
 /// How long the stun's stars take to pop and fade once it ends (FR12).
 const STUN_POP_S: f32 = 0.35;
 /// How long the "item get" pose holds (FR9).
@@ -178,7 +181,8 @@ impl Player {
         if self.action == Action::None {
             if is_key_pressed(KeyCode::Space) {
                 self.action = Action::Jump { t: 0.0 };
-            } else if is_key_pressed(KeyCode::LeftShift) || is_key_pressed(KeyCode::RightShift) {
+            } else if is_key_pressed(KeyCode::LeftControl) || is_key_pressed(KeyCode::RightControl)
+            {
                 self.action = Action::Roll {
                     t: 0.0,
                     dir: self.facing,
@@ -204,9 +208,14 @@ impl Player {
             self.facing = dir.x.signum();
         }
 
+        let sprint = if is_key_down(KeyCode::LeftShift) || is_key_down(KeyCode::RightShift) {
+            SPRINT_MULTIPLIER
+        } else {
+            1.0
+        };
         let before = self.pos;
         if dir != Vec2::ZERO {
-            self.pos += dir.normalize() * self.base_speed * speed_multiplier * dt;
+            self.pos += dir.normalize() * self.base_speed * speed_multiplier * sprint * dt;
         }
         self.pos = constrain(self.pos);
 

@@ -3,7 +3,7 @@ type: Feature Request
 title: JEKO — Feature Requests
 description: Concrete, actionable feature requests for JEKO (Math Quest) — work that is scoped and wanted but not yet built. Each entry states the motivation, a proposed approach, and what "done" looks like. Maintained as the shared agent todo list.
 tags: [feature-request, backlog, gameplay, urgency, lava, monsters, battle, education, minigames, pets, controls, pause, settings, health, death, art-direction, spawn]
-timestamp: 2026-11-20
+timestamp: 2026-11-21
 ---
 
 # JEKO — Feature Requests
@@ -36,7 +36,7 @@ Entries are grouped by area. Numbering is stable; don't renumber when one is rem
 
 ## Numbering
 
-**The next free number is FR18**; bump it when you file one. Numbers are never
+**The next free number is FR19**; bump it when you file one. Numbers are never
 reused or renumbered when an entry is removed. Take the next number, not the first gap.
 
 ---
@@ -306,6 +306,9 @@ HUD. Give them a use (e.g. a shop in the FR15 hub, or extra hearts).
 When an entry is fully built, delete it above and add one line here, newest
 first: `FR<n> — title — date — why it closed (commit)`. Its number stays retired.
 
+- FR18 — Sprint on Shift, roll moved to Ctrl — 2026-11-21 — built: holding Shift
+  multiplies walk speed by `SPRINT_MULTIPLIER` (1.6, stacks with Speed Boost) in
+  `Player::update`; roll rebound to Ctrl; controls reference updated (uncommitted)
 - FR9 — Classic adventure-platformer look & feel — 2026-11-21 — built: refreshed
   hero (bolder ink, bigger eyes, pouch), "item get" pose with `gfx::item_get` rays,
   sparkles and "+N XP!" banner on a solved bottle, framed egui style with hard drop
@@ -336,7 +339,7 @@ first: `FR<n> — title — date — why it closed (commit)`. Its number stays r
   single `Game::damage_player` entry point, hearts always drawn top-left (uncommitted)
 - FR8 — Ghost flicker on spawn — 2026-11-21 — built: reusable `game/flicker.rs`,
   seam-free via the player's render-target blit, honours reduce flashing (uncommitted)
-- FR5 — Jump (Space) and roll (Shift) animations — 2026-11-21 — built: cosmetic
+- FR5 — Jump (Space) and roll (Shift, now Ctrl per FR18) animations — 2026-11-21 — built: cosmetic
   `Action` on `Player`, render-target blit for rotation and squash (uncommitted)
 - FR7 — Settings modal on O (pauses the game) — 2026-11-21 — built: `Settings` on
   `Game`, `ui/settings_panel.rs`; closing keeps a P pause (uncommitted)

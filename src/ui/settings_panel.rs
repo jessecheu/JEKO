@@ -4,10 +4,11 @@ use egui_macroquad::egui;
 /// Every key the game listens to, for the read-only reference.
 const CONTROLS: &[(&str, &str)] = &[
     ("W A S D / arrows", "Walk"),
+    ("Shift (hold)", "Sprint"),
     ("E", "Open a bottle / jump to the answer field"),
     ("Enter", "Submit an answer"),
     ("Space", "Jump"),
-    ("Shift", "Roll"),
+    ("Ctrl", "Roll"),
     ("P", "Pause"),
     ("O / Esc", "Settings"),
 ];

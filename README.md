@@ -38,7 +38,7 @@ src/
     world.rs              endless boardwalk path, camera view, chunked scenery, bottle triggers, ocean/sand/deck drawing
     decor.rs              beach props (palms, umbrellas, huts, boats...) — per-chunk generation + drawing
     gfx.rs                shared drawing helpers (ink outline, shadows, ribbons, stars)
-    player.rs             WASD/arrow movement along the path, speed multiplier from upgrades, player sprite, jump/roll
+    player.rs             WASD/arrow movement along the path, speed multiplier from upgrades and Shift sprint, player sprite, jump/roll
     flicker.rs            reusable flicker look (spawn ghost, damage blink), honours "reduce flashing"
     health.rs             player HP in half-hearts (damage/heal/refill, clamped, unit-tested)
     monster.rs            monster roster (stats, rarity by distance) + per-monster drawing and animations
@@ -91,12 +91,13 @@ hunting required.
    `make help` for every target (`build`, `release`, `check`, `fmt`, `lint`,
    `test`, `gen-content`, `nix-build`).
 3. Controls: W/Up walks up the boardwalk (the map scrolls with you, forever),
-   A/D or Left/Right steer across it, S/Down backs up. Walk up to a glowing
+   A/D or Left/Right steer across it, S/Down backs up; hold **Shift** to
+   sprint. Walk up to a glowing
    message-in-a-bottle and an **E** key prompt floats over it; press E to
    open its task (you stay put until it's answered). Press E again to jump
    into the answer field, type the number, and hit Enter. No mouse needed
    (clicking the field and Submit still works). **Space** jumps and
-   **Shift** rolls (cosmetic for now). **P** pauses, and **O** opens settings
+   **Ctrl** rolls (cosmetic for now). **P** pauses, and **O** opens settings
    (O or Esc closes them).
    The run starts in a beach hub (press E by Professor Pebble for a quick
    tutorial); walk north through the "THE ROAD" arch
