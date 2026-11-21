@@ -17,7 +17,7 @@
 use super::decor::{self, Decoration};
 use super::gfx::{self, INK, LAB_GREEN, LANTERN, MOON, SHADOW};
 use super::manor;
-use super::monster::MonsterKind;
+use super::monster::{self, MonsterCanvas, MonsterKind, Pose};
 use macroquad::prelude::*;
 
 /// Logical width of the world strip. The view centers this horizontally;
@@ -72,6 +72,17 @@ const ZONE_CHANCE: f32 = 0.7;
 pub const ZONE_HALF_H: f32 = 26.0;
 /// A Tide Titan boss guards the road every this many meters.
 pub const BOSS_EVERY_M: u32 = 500;
+/// Every this many chunks (on the odd chunks, from chunk 3) a monster
+/// stands in the open on the road and blocks it (FR2), instead of the
+/// chance of one hiding in ferns. Six chunks is ~80 m.
+const BLOCKER_EVERY_N_CHUNKS: i64 = 6;
+/// The player's feet stop this far south of a road-blocking monster.
+pub const BLOCK_GAP: f32 = 44.0;
+/// How close (along the road) the player must be to a blocking monster to
+/// challenge it with E.
+pub const BLOCKER_REACH: f32 = BLOCK_GAP + 26.0;
+/// Size of a road-blocking monster on the road, relative to its sprite.
+const BLOCKER_SCALE: f32 = 1.15;
 
 fn smoothstep(edge0: f32, edge1: f32, x: f32) -> f32 {
     let t = ((x - edge0) / (edge1 - edge0)).clamp(0.0, 1.0);
@@ -217,6 +228,8 @@ pub enum Tall<'a> {
         lantern: bool,
     },
     Flask(&'a Spot),
+    /// A monster standing on the road, blocking it (FR2).
+    Blocker(&'a EncounterZone),
 }
 
 impl Tall<'_> {
@@ -225,6 +238,7 @@ impl Tall<'_> {
             Tall::Decor(d) => d.pos.y,
             Tall::Post { base, .. } => base.y,
             Tall::Flask(s) => s.pos.y,
+            Tall::Blocker(z) => z.pos.y,
         }
     }
 
@@ -237,27 +251,43 @@ impl Tall<'_> {
                 lantern,
             } => draw_post(view, *base, *next, *lantern, t),
             Tall::Flask(s) => draw_flask(view, s, t),
+            Tall::Blocker(z) => draw_blocker(view, z, t),
         }
     }
 }
 
-/// A patch of ferns and brambles across the road where a wild monster
-/// lurks (FR10). Walking into it starts a battle with `kind`.
+/// Where a monster waits on the road (FR10, FR2). Most hide in a patch of
+/// ferns and brambles across the road, and walking into it starts a
+/// battle with `kind`. A road blocker (`blocks`) stands in the open
+/// instead: the player can't get past it, and challenges it with E.
 pub struct EncounterZone {
     pub pos: Vec2,
     pub kind: MonsterKind,
+    /// Stands on the road and blocks it (FR2), rather than lurking.
+    pub blocks: bool,
     pub cleared: bool,
+    /// Off-screen canvas for drawing a blocker on the road.
+    canvas: MonsterCanvas,
 }
 
-/// Decides whether chunk `k` gets an encounter zone, where, and which
-/// monster. Deterministic per chunk, like the flasks, and never in the
-/// spawn hub.
-pub fn encounter_for_chunk(k: i64) -> Option<(Vec2, MonsterKind)> {
+/// What `encounter_for_chunk` places: where, which monster, and whether
+/// it blocks the road (FR2) or lurks in ferns (FR10).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Encounter {
+    pub pos: Vec2,
+    pub kind: MonsterKind,
+    pub blocks: bool,
+}
+
+/// Decides whether chunk `k` gets an encounter, where, which monster, and
+/// whether it blocks the road. Deterministic per chunk, like the flasks,
+/// and never in the spawn hub.
+pub fn encounter_for_chunk(k: i64) -> Option<Encounter> {
     if k < 1 || k % 2 == 0 {
         return None;
     }
     // A Tide Titan guards each 500 m milestone: the first odd chunk at or
-    // past it gets the boss, always.
+    // past it gets the boss, always, standing across the road.
     let (north, _) = chunk_span(k);
     let (_, prev_south) = chunk_span(k - 1);
     let milestone_px = BOSS_EVERY_M as f32 * PX_PER_METER;
@@ -265,15 +295,25 @@ pub fn encounter_for_chunk(k: i64) -> Option<(Vec2, MonsterKind)> {
     let at = ROAD_START_Y - lo_m as f32 * milestone_px;
     if at <= prev_south && at > north {
         let y = (north + CHUNK_H * 0.5).min(at - 20.0).max(north + 40.0);
-        return Some((vec2(path_center(y), y), MonsterKind::TideTitan));
+        return Some(Encounter {
+            pos: vec2(path_center(y), y),
+            kind: MonsterKind::TideTitan,
+            blocks: true,
+        });
     }
     let h = |n: u64| gfx::hash01((k as u64).wrapping_mul(11).wrapping_add(n) ^ 0xE4C0);
-    if h(3) >= ZONE_CHANCE {
+    // Every sixth chunk from chunk 3 always has a monster, out on the road.
+    let blocks = k % BLOCKER_EVERY_N_CHUNKS == 3;
+    if !blocks && h(3) >= ZONE_CHANCE {
         return None;
     }
     let y = north + 80.0 + h(4) * (CHUNK_H - 160.0);
     let meters = ((ROAD_START_Y - y) / PX_PER_METER).max(0.0) as u32;
-    Some((vec2(path_center(y), y), MonsterKind::pick(h(5), meters)))
+    Some(Encounter {
+        pos: vec2(path_center(y), y),
+        kind: MonsterKind::pick(h(5), meters),
+        blocks,
+    })
 }
 
 pub struct World {
@@ -315,11 +355,13 @@ impl World {
                     state: SpotState::Fresh,
                 });
             }
-            if let Some((pos, kind)) = encounter_for_chunk(k) {
+            if let Some(e) = encounter_for_chunk(k) {
                 self.zones.push(EncounterZone {
-                    pos,
-                    kind,
+                    pos: e.pos,
+                    kind: e.kind,
+                    blocks: e.blocks,
                     cleared: false,
+                    canvas: MonsterCanvas::default(),
                 });
             }
         }
@@ -338,11 +380,35 @@ impl World {
             .map(|(i, _)| i)
     }
 
-    /// The uncleared encounter zone the player at `pos` has stepped into.
+    /// The uncleared fern patch the player at `pos` has stepped into.
+    /// Road blockers don't ambush: they're challenged with E instead.
     pub fn encounter_at(&self, pos: Vec2) -> Option<usize> {
         self.zones
             .iter()
-            .position(|z| !z.cleared && (z.pos.y - pos.y).abs() < ZONE_HALF_H)
+            .position(|z| !z.cleared && !z.blocks && (z.pos.y - pos.y).abs() < ZONE_HALF_H)
+    }
+
+    /// The undefeated road blocker (FR2) the player at `pos` is close
+    /// enough to challenge: what pressing E would fight.
+    pub fn blocker_in_reach(&self, pos: Vec2) -> Option<usize> {
+        self.zones.iter().position(|z| {
+            z.blocks && !z.cleared && pos.y > z.pos.y && pos.y - z.pos.y < BLOCKER_REACH
+        })
+    }
+
+    /// Keeps `p` south of every undefeated road blocker (FR2): the road is
+    /// shut until the monster is beaten. Only acts within a band just past
+    /// the blocking line, far more than a frame's movement or a knockback,
+    /// so a player who is somehow north of a blocker isn't yanked back.
+    pub fn clamp_blocked(&self, p: Vec2) -> Vec2 {
+        let mut p = p;
+        for z in self.zones.iter().filter(|z| z.blocks && !z.cleared) {
+            let line = z.pos.y + BLOCK_GAP;
+            if p.y < line && p.y > line - 60.0 {
+                p.y = line;
+            }
+        }
+        p
     }
 
     /// Scenery that could be on screen: tall props stick up to ~130px
@@ -395,6 +461,13 @@ impl World {
                 .filter(|s| s.state == SpotState::Fresh)
                 .filter(|s| s.pos.y > view.top() - 60.0 && s.pos.y < view.bottom() + 60.0)
                 .map(Tall::Flask),
+        );
+        items.extend(
+            self.zones
+                .iter()
+                .filter(|z| z.blocks && !z.cleared)
+                .filter(|z| z.pos.y > view.top() - 40.0 && z.pos.y < view.bottom() + 160.0)
+                .map(Tall::Blocker),
         );
         items.extend(Self::posts(view).map(|(base, next, lantern)| Tall::Post {
             base,
@@ -482,8 +555,8 @@ impl World {
         manor::draw(vec2(x, y), scale, t, true, reduce_flashing);
     }
 
-    /// The raised cobbled road plus what lies on it: the fern patches and
-    /// the rune stones under the flasks.
+    /// The raised cobbled road plus what lies on it: the fern patches, the
+    /// wards in front of road blockers, and the rune stones under the flasks.
     pub fn draw_road(&self, view: &View, t: f32) {
         let north = view.top() - COBBLE_ROW * 2.0;
         let south = (view.bottom() + COBBLE_ROW * 2.0).min(ROAD_SOUTH_END);
@@ -492,7 +565,11 @@ impl World {
         }
         for zone in &self.zones {
             if zone.pos.y > view.top() - 60.0 && zone.pos.y < view.bottom() + 60.0 {
-                draw_zone(view, zone, t);
+                if zone.blocks {
+                    draw_ward(view, zone, t);
+                } else {
+                    draw_zone(view, zone, t);
+                }
             }
         }
         for spot in &self.spots {
@@ -702,6 +779,63 @@ fn draw_zone(view: &View, zone: &EncounterZone, t: f32) {
             }
         }
     }
+}
+
+/// The ward a road-blocking monster (FR2) holds across the road: a line of
+/// green lab runes from fence to fence just in front of it, which is what
+/// stops the player. Gone, with the monster, once it's beaten.
+fn draw_ward(view: &View, zone: &EncounterZone, t: f32) {
+    if zone.cleared {
+        return;
+    }
+    let lift = vec2(0.0, -ROAD_LIFT);
+    let y = zone.pos.y + BLOCK_GAP - 8.0;
+    let c = path_center(y);
+    let hw = PATH_HALF_W - 8.0;
+    let pulse = 0.6 + 0.4 * (t * 2.6 + zone.pos.y * 0.01).sin();
+    let a = view.to_screen(vec2(c - hw, y)) + lift;
+    let b = view.to_screen(vec2(c + hw, y)) + lift;
+    gfx::glow(
+        a.lerp(b, 0.5),
+        hw * 1.3,
+        16.0,
+        gfx::with_alpha(LAB_GREEN, 0.20 * pulse),
+    );
+    gfx::line(a, b, 3.0, gfx::with_alpha(INK, 0.5));
+    gfx::line(a, b, 1.6, gfx::with_alpha(LAB_GREEN, 0.5 + 0.4 * pulse));
+    // Rune marks along it, drifting slowly.
+    const N: usize = 7;
+    for i in 0..N {
+        let u = (i as f32 + 0.5 + 0.15 * (t * 0.7 + i as f32).sin()) / N as f32;
+        let p = a.lerp(b, u);
+        let r = 4.0;
+        let col = gfx::with_alpha(LAB_GREEN, 0.55 + 0.45 * pulse);
+        gfx::ellipse_outline(p, r, r * 0.55, 1.3, col);
+        gfx::line(p + vec2(0.0, -r * 0.9), p + vec2(0.0, -r * 2.2), 1.2, col);
+    }
+}
+
+/// A road-blocking monster (FR2) standing on the road, idling, with its
+/// shadow on the cobbles.
+fn draw_blocker(view: &View, zone: &EncounterZone, t: f32) {
+    let ground = view.to_screen(zone.pos) + vec2(0.0, -ROAD_LIFT);
+    let scale = if zone.kind.info().boss {
+        BLOCKER_SCALE * 1.3
+    } else {
+        BLOCKER_SCALE
+    };
+    gfx::ellipse(ground + vec2(4.0, 2.0), 30.0 * scale, 8.0 * scale, SHADOW);
+    monster::draw(
+        &zone.canvas,
+        zone.kind,
+        ground,
+        scale,
+        Pose::Idle,
+        Vec2::ZERO,
+        0,
+        t,
+        false,
+    );
 }
 
 /// The raised road: rows of rounded cobbles over dark mortar, with mossy
@@ -1062,7 +1196,7 @@ mod tests {
         for k in CHUNKS {
             let a = encounter_for_chunk(k);
             assert_eq!(a, encounter_for_chunk(k));
-            if let Some((p, _)) = a {
+            if let Some(Encounter { pos: p, .. }) = a {
                 any += 1;
                 assert!(p.y < ROAD_START_Y, "chunk {k}: zone in the hub");
                 assert!(
@@ -1079,8 +1213,9 @@ mod tests {
     fn a_tide_titan_guards_every_500_m() {
         let bosses: Vec<u32> = CHUNKS
             .filter_map(encounter_for_chunk)
-            .filter(|(_, kind)| *kind == MonsterKind::TideTitan)
-            .map(|(p, _)| ((ROAD_START_Y - p.y) / PX_PER_METER) as u32)
+            .filter(|e| e.kind == MonsterKind::TideTitan)
+            .inspect(|e| assert!(e.blocks, "the boss stands across the road"))
+            .map(|e| ((ROAD_START_Y - e.pos.y) / PX_PER_METER) as u32)
             .collect();
         // Chunks up to 300 cover ~4000 m: one boss per milestone, each just
         // past its milestone.
@@ -1096,7 +1231,7 @@ mod tests {
         let mut near = Vec::new();
         let mut far = Vec::new();
         for k in CHUNKS {
-            if let Some((p, kind)) = encounter_for_chunk(k) {
+            if let Some(Encounter { pos: p, kind, .. }) = encounter_for_chunk(k) {
                 let m = ((ROAD_START_Y - p.y) / PX_PER_METER) as u32;
                 assert!(m >= kind.info().min_m, "{kind:?} at {m} m");
                 if m < 300 {
@@ -1113,6 +1248,66 @@ mod tests {
             avg(&near),
             avg(&far)
         );
+    }
+
+    #[test]
+    fn monsters_block_the_road_regularly_and_deterministically() {
+        let blockers: Vec<(i64, Encounter)> = CHUNKS
+            .filter_map(|k| encounter_for_chunk(k).map(|e| (k, e)))
+            .filter(|(_, e)| e.blocks)
+            .collect();
+        assert!(blockers.len() > 40, "only {} blockers", blockers.len());
+        let mut last_m = 0.0;
+        for (k, e) in &blockers {
+            assert_eq!(encounter_for_chunk(*k), Some(*e));
+            assert!(e.pos.y < ROAD_START_Y, "chunk {k}: blocker in the hub");
+            assert!(
+                spot_for_chunk(*k).is_none(),
+                "chunk {k}: shares a flask's chunk"
+            );
+            assert!(
+                (e.pos.x - path_center(e.pos.y)).abs() < 1e-3,
+                "chunk {k}: blocker off the middle of the road"
+            );
+            // One every ~80 m, never a long empty stretch.
+            let m = (ROAD_START_Y - e.pos.y) / PX_PER_METER;
+            assert!(
+                m - last_m < 100.0,
+                "chunk {k}: {} m since the last",
+                m - last_m
+            );
+            last_m = m;
+        }
+        // The first one turns up early, so the player meets it soon.
+        let first_m = (ROAD_START_Y - blockers[0].1.pos.y) / PX_PER_METER;
+        assert!(first_m < 70.0, "first blocker at {first_m} m");
+    }
+
+    #[test]
+    fn a_blocker_shuts_the_road_until_beaten() {
+        let mut world = World::new();
+        world.ensure_generated(-3_000.0);
+        let i = world
+            .zones
+            .iter()
+            .position(|z| z.blocks)
+            .expect("a blocker within the first few chunks");
+        let at = world.zones[i].pos;
+        let line = at.y + BLOCK_GAP;
+
+        // Walking north stops at the line; south of it is untouched.
+        let past = vec2(at.x, line - 5.0);
+        assert_eq!(world.clamp_blocked(past).y, line);
+        let before = vec2(at.x + 20.0, line + 40.0);
+        assert_eq!(world.clamp_blocked(before), before);
+        // Blockers don't ambush, but can be challenged from the line.
+        assert_eq!(world.encounter_at(at), None);
+        assert_eq!(world.blocker_in_reach(vec2(at.x, line)), Some(i));
+        assert_eq!(world.blocker_in_reach(vec2(at.x, line + 200.0)), None);
+
+        world.zones[i].cleared = true;
+        assert_eq!(world.clamp_blocked(past), past);
+        assert_eq!(world.blocker_in_reach(vec2(at.x, line)), None);
     }
 
     #[test]

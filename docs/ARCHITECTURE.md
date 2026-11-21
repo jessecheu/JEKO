@@ -15,8 +15,8 @@ timestamp: 2026-11-21
 > That call runs on a throwaway OS thread and its result comes back over an `mpsc` channel
 > that `TriggerState` polls each frame. When there's no key or the call fails, a fallback
 > bank compiled into the binary steps in. The world isn't stored as a map. The path is a function of `y`, and each chunk's
-> scenery, potion flask and monster zone is a pure function of the chunk index, so the
-> road is endless, the same every run, and unit-testable. The setting is a dark forest
+> scenery, potion flask and monster (hiding in ferns, or blocking the road) is a pure
+> function of the chunk index, so the road is endless, the same every run, and unit-testable. The setting is a dark forest
 > at night (FR24), with the mad scientist's manor drawn as a backdrop across the lake.
 > Once the player steps onto the road, the doctor's curse (FR1) worsens while they
 > linger, which is what keeps them moving.
@@ -93,7 +93,7 @@ The layering holds today, and new code should keep it:
 | `llm/usage.rs` | `RequestUsage` (one call's tokens and speed) and `TokenStats` (session totals plus the last 24 requests). |
 | `game/mod.rs` | `Game`: run state, the per-frame update and draw, the mode precedence, the damage, answer and reset entry points, and the dev events. |
 | `game/task_trigger.rs` | `TriggerState`, the question state machine (§4), and `pick_fallback`. |
-| `game/world.rs` | Coordinates and camera (`View`), path geometry, chunking, potion flasks (`Spot`), encounter zones, the depth-sorted `Tall` items, and drawing the ground, the cobbled road, the light pools, the mist, the bats and fireflies, and where the manor sits on screen. |
+| `game/world.rs` | Coordinates and camera (`View`), path geometry, chunking, potion flasks (`Spot`), encounter zones and road blockers (`EncounterZone`, `clamp_blocked`), the depth-sorted `Tall` items, and drawing the ground, the cobbled road, the light pools, the mist, the bats and fireflies, and where the manor sits on screen. |
 | `game/decor.rs` | Per-chunk forest scenery generation (`generate_chunk`), the hand-placed hub camp (`hub_layout`), how each prop draws, and which props cast light (`Decoration::lights`). |
 | `game/manor.rs` | The gothic manor backdrop (`draw`, with an optional lake reflection), its lightning timing (`lightning`), and the shared `bat` silhouette. |
 | `game/gfx.rs` | The shared drawing vocabulary: the `INK`, `SHADOW`, `MOON`, `LANTERN`, `LAB_GREEN` and `NIGHT` colours, shading, ellipses, ribbons, stars, gradient meshes (`gradient_ring`, `glow`, `vignette`), the potion flask, hearts, the key prompt, the item-get burst, and `hash01`. |
@@ -165,16 +165,20 @@ The road frame, in order:
 1. **Busy check.** While `trigger_state` is `Loading` or `Active`, the player is held
    (`player.stop`). Each flask is a checkpoint, so a fast model means a short stop.
 2. Otherwise `player.update(dt, progression.speed_multiplier() × curse.speed_factor(),
-   world::clamp_to_path)`, then `tick_curse(dt)` (§9). If the curse's drain killed
+   constrain)`, where `constrain` is `world::clamp_to_path` followed by
+   `World::clamp_blocked` (an undefeated road blocker shuts the road, §6), then
+   `tick_curse(dt)` (§9). If the curse's drain killed
    the player, the frame ends here. The curse is ticked only on this branch, so it
    holds still while a question is loading or open, in a battle, in a dialogue and
    while paused.
 3. The camera eases toward the player (anchor 0.66 of screen height, rate `1 − e^(−6·dt)`).
    `world.ensure_generated` keeps one chunk past the top of the screen generated.
 4. `trigger_state.poll(&fallback_tasks)`.
-5. If not busy, stepping into an uncleared encounter zone starts a battle.
-6. Interaction targets: the nearest fresh flask in reach, or else Professor Pebble.
-   E opens the flask, talks to Pebble, or focuses the answer field when a task is open.
+5. If not busy, stepping into an uncleared fern patch starts a battle.
+6. Interaction targets: the nearest fresh flask in reach (`interact_target`), or else
+   an undefeated road blocker in reach (`blocker_target`), or else Professor Pebble.
+   E opens the flask, challenges the blocker (`challenge_blocker`, which starts its
+   battle), talks to Pebble, or focuses the answer field when a task is open.
 7. A `Resolved` cooldown counts down to `Idle`.
 
 **Single entry points.** Several systems have exactly one door, so there's one place
@@ -183,7 +187,7 @@ to change each rule:
 - `Game::damage_player(halves, from)` is the only way HP goes down. It ignores hits
   while dead or while a flicker is active, which is the invulnerability window. It
   starts the damage flicker (`HURT_INVULN_S` = 1 s), knocks the player back 22 px away
-  from `from` (clamped to the path), shakes the screen unless reduce flashing is on,
+  from `from` (clamped to the path and short of any road blocker), shakes the screen unless reduce flashing is on,
   and calls `die()` at 0 HP.
 - `Game::request_task(bias)` is the only way a question starts (§5).
 - `Game::submit_answer()` is the only way an answer is judged, for flasks and battles alike.
@@ -277,7 +281,8 @@ woods. Height is a straight upward lift in screen pixels.
 and lanterns. A black lake lies to the left (west) and the woods to the right
 (east), with open forest floor between each and the road: the *lakeside* (graves,
 pumpkins, giant toadstools) and the *verge*. The question pickups are potion flasks
-hovering over rune stones; monsters hide in patches of ferns.
+hovering over rune stones. Most monsters hide in patches of ferns; now and then one
+stands in the open on the road and blocks it (FR2).
 
 **Geometry as functions of `y`.** Nothing is a tiled map:
 
@@ -287,8 +292,12 @@ hovering over rune stones; monsters hide in patches of ferns.
   start) follow the path with their own wobble, so the ground never pinches shut.
 - `walkable_x(y)` is the road's width (`PATH_HALF_W − WALK_MARGIN`) north of the
   gate. South of it, the width eases out over a 150 px funnel into the hub's open ground.
-- `clamp_to_path(p)` is the only movement constraint. It's passed into `Player::update`
-  as a closure and also used for knockback.
+- `clamp_to_path(p)` keeps the player on the walkable ground. With
+  `World::clamp_blocked` after it, it's passed into `Player::update` as a closure and
+  also used for knockback.
+- `World::clamp_blocked(p)` stops the player `BLOCK_GAP` (44 px) south of every
+  undefeated road blocker. It only acts in a 60 px band just past that line, so it
+  can't yank back a player who is already north of one (a dev teleport).
 
 **Landmarks** (all on the y axis):
 
@@ -316,10 +325,17 @@ gets:
 |---|---|---|
 | Scenery | `decor::generate_chunk(k, spot)` | `StdRng` seeded from `k`. Props go in zones relative to the path and the bank (lake, shallows, bank, lakeside, verge, woods, plus `Far*` zones only a wide window shows), and never on the road or around the flask. A pair of lampposts frames each flask, and a stone milestone stands every 50 m. |
 | A potion flask (`Spot`) | `world::spot_for_chunk(k)` | Even chunks with `k ≥ 0`, positioned with `gfx::hash01`. Chunk 0's flask is fixed just past the gate, near the middle of the road. Its potion colour (`flask_color`) is a hash of its position. |
-| An encounter zone | `world::encounter_for_chunk(k)` | Odd chunks with `k ≥ 1`. A Tide Titan always guards the first odd chunk at or past each 500 m mark. Otherwise there's a 70% chance of a zone, with the monster from `MonsterKind::pick(roll, meters)`. |
+| An encounter (`Encounter`) | `world::encounter_for_chunk(k)` | Odd chunks with `k ≥ 1`, in the middle of the road. A Tide Titan always guards the first odd chunk at or past each 500 m mark, as a road blocker. Every sixth chunk from chunk 3 (`k % 6 == 3`, about every 80 m, the first at ~48 m) always has a monster, and it blocks the road. Otherwise there's a 70% chance of a fern patch. The monster comes from `MonsterKind::pick(roll, meters)`. |
 
-Because flasks take even chunks and zones take odd ones, they never crowd each
-other. The same seed gives the same world on every run and every restart.
+Because flasks take even chunks and monsters take odd ones, they never crowd each
+other.
+
+**Road blockers** (FR2). An `EncounterZone` with `blocks` set is a monster standing on
+the road instead of hiding in ferns. It doesn't ambush: `encounter_at` skips it. The
+player is stopped short of it (`clamp_blocked`), and within `BLOCKER_REACH` (70 px)
+along the road `blocker_in_reach` makes it the E target. Its battle is the same as a
+fern patch's (§8), and winning marks it `cleared`, which opens the road. While the
+player stands at one, the curse keeps rising (§9), which is the point. The same seed gives the same world on every run and every restart.
 
 ---
 
@@ -341,13 +357,16 @@ The night (FR24) comes from a dark palette, pools of light, and a vignette.
    always ahead. Lightning flashes behind it every ~9 s (`manor::lightning`, timed by
    `hash01` on the game clock).
 3. `world.draw_road`: the cobbles and curbs, the fern patches of encounter zones,
-   and the rune stones under the flasks.
+   the green rune ward across the road in front of each undefeated blocker
+   (`draw_ward`), and the rune stones under the flasks.
 4. `world.draw_lights`: soft light pools (`gfx::glow`) on the ground under lampposts,
    fence lanterns, lit pumpkins, the campfire, cottage windows, cauldrons and the
    waiting flasks. Props say what light they cast in `Decoration::lights`.
 5. **The depth-sorted pass.** `world.tall_items(&view)` returns every `Tall` item on
    screen: `Decor` (pines, dead trees, gravestones, cottages, …), fence `Post`s with
-   their rails (every third pair with a lantern), and `Flask`s. The player and their
+   their rails (every third pair with a lantern), `Flask`s, and undefeated road
+   `Blocker`s (the monster idling, drawn through its zone's own `MonsterCanvas`;
+   a boss at 1.3× the size). The player and their
    arrows (keyed by the ground under them) are added, everything is sorted by
    `sort_y()`, and the items are drawn in order. The player walks behind a tree north
    of them and in front of one south of them. The sort is stable and arrows go in
@@ -362,7 +381,8 @@ The night (FR24) comes from a dark palette, pools of light, and a vignette.
    edges with the curse level, which pulses at full unless reduce flashing is on.
 8. `world.draw_overhead`: bats crossing the screen and fireflies over the ground,
    on top of the darkness.
-9. Key prompts (E) over the flask or NPC in reach, drawn last so they're never hidden.
+9. Key prompts (E) over the flask, road blocker or NPC in reach, drawn last so
+   they're never hidden.
 10. The item-get burst and banner, then the hearts and, once the curse has started,
    the curse meter under them (`curse::draw_meter`, with a tick where the fever starts).
    Both are always shown whatever the HUD setting. Then the skill bar (`skills::draw_bar`)
@@ -402,7 +422,8 @@ check it.
 
 ## 8. Battles and monsters (`game/battle.rs`, `game/monster.rs`)
 
-Walking into an uncleared zone calls `Game::start_battle(kind, zone)`, which clears
+Walking into an uncleared fern patch, or pressing E at a road blocker
+(`challenge_blocker`), calls `Game::start_battle(kind, zone)`, which clears
 the trigger, input and action, turns the player to face the monster on the right,
 and sets `battle = Some(Battle::new(..))`. The battle
 reuses the question pipeline (§5) for every question.
@@ -432,7 +453,7 @@ impact star. The player stays on their pad. The shot is drawing only: the hit is
 counted by the phase timer, as before.
 
 On victory the zone is marked `cleared`, a stolen hat comes back, `monsters_beaten`
-goes up, and a toast shows. There's no fleeing. Dev battles (`JEKO_DEV=jelly@…`) use
+goes up, and a toast shows ("The road is open." after a road blocker). There's no fleeing. Dev battles (`JEKO_DEV=jelly@…`) use
 zone index `usize::MAX`, so nothing gets cleared.
 
 `MonsterKind::info()` holds all the gameplay numbers. `MonsterKind::pick` weights the
@@ -446,7 +467,7 @@ roster by distance: Pinchlings thin out, and the tough ones grow common further 
 | Puffspike | 2 | 1 + misses | grows with each wrong answer | 70 m | 1 | 20 |
 | Coco Knight | 3 | 2 | stun 2.0 s | 140 m | 1 | 25 |
 | Dune Wyrm | 3 | 2 | rare mini-boss | 400 m | 2 | 30 |
-| Tide Titan | 4 | 2 | boss, only at each 500 m mark | 500 m | 2 | 40 |
+| Tide Titan | 4 | 2 | boss, only at each 500 m mark, blocking the road | 500 m | 2 | 40 |
 
 ---
 
@@ -570,7 +591,8 @@ driving the window:
   stamina, to show the skill bar recovering), `restart`, `pause`, `settings`, battles
   (`pinch`, `jelly`, `puff`, `coco`, `gull`, `wyrm`, `titan`), answers through the
   real submit path (`right`, `wrong`), `e` (press E), teleports (`toflask`,
-  `tozone`, `topebble`), the curse (`curse` at 0.75, the fever stage; `cursefull`
+  `tozone` to the first fern patch, `toblocker` to the line in front of the first
+  road blocker, `topebble`), the curse (`curse` at 0.75, the fever stage; `cursefull`
   at 1.0), and display settings: `nohud` (hide both side panels, so
   a shot shows the whole world) and `calm` (turn on reduce flashing).
 - With either variable set, the loop steps a fixed 1/60 s, so a run is repeatable
@@ -582,7 +604,7 @@ driving the window:
 
 | Module | What's covered |
 |---|---|
-| `game/world.rs` (10) | Scenery never lands on the road. Every flask is reachable and on the road. Generation is deterministic. Interact reaches only nearby fresh flasks. The clamp keeps the player on the road. Encounters are on the road and deterministic. A Titan guards every 500 m. Tougher monsters appear further up. The hub is wide, dry and bounded. The walkable width is continuous through the gate. |
+| `game/world.rs` (12) | Scenery never lands on the road. Every flask is reachable and on the road. Generation is deterministic. Interact reaches only nearby fresh flasks. The clamp keeps the player on the road. Encounters are on the road and deterministic. A Titan guards every 500 m, blocking the road. Monsters block the road regularly (no gap over 100 m, the first under 70 m) and deterministically. A blocker shuts the road, can be challenged but doesn't ambush, and opens once beaten. Tougher monsters appear further up. The hub is wide, dry and bounded. The walkable width is continuous through the gate. |
 | `game/manor.rs` (1) | Lightning strikes now and then (under 12% of frames), stays in 0..1, and is the same every run. |
 | `llm/usage.rs` (5) | Provider-timed vs round-trip speed, zero time ignored, no usage block, the capped history. |
 | `game/bow.rs` (2) | The shot draws, then releases, then lowers. An arrow flies the way it was loosed, comes down a believable distance away, then goes away. |
@@ -615,8 +637,8 @@ the owner, and update this section if it goes ahead.
    the same fallback.
 3. **The world is a pure function of `y` and the chunk index.** Generation uses only
    seeded `StdRng` or `gfx::hash01`, never `thread_rng`, so it's the same every run and
-   the placement tests stay meaningful. New placed things (blockers, cages,
-   shells) should follow `spot_for_chunk` / `encounter_for_chunk` and get a
+   the placement tests stay meaningful. New placed things (like the road blockers,
+   and the planned cages and shells) should follow `spot_for_chunk` / `encounter_for_chunk` and get a
    determinism test.
 4. **The hub is a safe zone.** Nothing hostile spawns south of `ROAD_SOUTH_END`
    (chunk `k < 1`), the curse doesn't start until the player first leaves it, and it
@@ -648,14 +670,12 @@ still to make:
   new answer type through the prompt, the parser, `task_panel` and `submit_answer`.
 - **One thread and one HTTP client per request**, with no cancellation or retry. That's
   fine at one request at a time; it should be revisited if requests ever overlap or prefetch.
-- **No road blockers yet** (FR2). Encounter zones are the only hostile placement.
-  The curse (FR1) pushes the player forward but nothing blocks the way.
 - **The difficulty cap is 5** and comes from level plus monster bias only. It doesn't
   rise with distance.
 - **The hero and the monsters still dress for the beach.** FR24 changed the world
   but not the characters: the hero wears a straw sun hat and swim shorts, and the
   roster is crabs, jellyfish, pufferfish, coconuts, gulls, a sand worm and a Tide
   Titan. Restyling them is FR25.
-- **The settled-for-now defaults** from FR1, FR5–FR15, FR20 and FR24 are listed for the owner in FR16.
+- **The settled-for-now defaults** from FR1, FR2, FR5–FR15, FR20, FR24 and FR26 are listed for the owner in FR16.
 
 See [FeatureRequestToDo.md](../FeatureRequestToDo.md) for the backlog.

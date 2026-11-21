@@ -132,6 +132,9 @@ pub struct Game {
     /// Flask that pressing E would open right now — drawn with a key
     /// prompt over it.
     interact_target: Option<usize>,
+    /// Road-blocking monster (FR2) that pressing E would challenge right
+    /// now: an index into `world.zones`, drawn with a key prompt over it.
+    blocker_target: Option<usize>,
     client: CerebrasClient,
     fallback_tasks: Vec<MathTask>,
     /// World y at the top of the screen.
@@ -178,6 +181,7 @@ impl Game {
             typing: false,
             time: 0.0,
             interact_target: None,
+            blocker_target: None,
             client,
             fallback_tasks,
             cam_y: camera_target(start.y),
@@ -267,11 +271,12 @@ impl Game {
         if busy {
             self.player.stop(dt);
         } else {
-            self.player.update(
-                dt,
-                self.progression.speed_multiplier() * self.curse.speed_factor(),
-                world::clamp_to_path,
-            );
+            // The road, and past it nothing: an undefeated monster on the
+            // road (FR2) shuts it.
+            let speed = self.progression.speed_multiplier() * self.curse.speed_factor();
+            let w = &self.world;
+            self.player
+                .update(dt, speed, |p| w.clamp_blocked(world::clamp_to_path(p)));
             // The curse holds still while a question is loading or open
             // (owner, FR1), like the player.
             self.tick_curse(dt);
@@ -294,17 +299,26 @@ impl Game {
             }
         }
 
-        self.interact_target = match self.trigger_state {
-            TriggerState::Idle => self.world.interactable_spot(self.player.pos),
-            _ => None,
+        let idle = matches!(self.trigger_state, TriggerState::Idle);
+        self.interact_target = match idle {
+            true => self.world.interactable_spot(self.player.pos),
+            false => None,
         };
-        self.npc_in_reach = matches!(self.trigger_state, TriggerState::Idle)
+        self.blocker_target = match idle && self.interact_target.is_none() {
+            true => self.world.blocker_in_reach(self.player.pos),
+            false => None,
+        };
+        self.npc_in_reach = idle
             && self.interact_target.is_none()
+            && self.blocker_target.is_none()
             && self.player.pos.distance(world::pebble_pos()) < world::NPC_TALK_DIST;
 
         if is_key_pressed(INTERACT_KEY) {
             match (&self.trigger_state, self.interact_target) {
                 (TriggerState::Idle, Some(i)) => self.open_spot(i),
+                (TriggerState::Idle, None) if self.blocker_target.is_some() => {
+                    self.challenge_blocker()
+                }
                 (TriggerState::Idle, None) if self.npc_in_reach => self.talk_to_pebble(),
                 (TriggerState::Active(_), _) => self.focus_answer = true,
                 _ => {}
@@ -367,11 +381,20 @@ impl Game {
         }
     }
 
+    /// Fights the road-blocking monster in reach (FR2); beating it clears
+    /// the road.
+    fn challenge_blocker(&mut self) {
+        if let Some(z) = self.blocker_target.take() {
+            self.start_battle(self.world.zones[z].kind, Some(z));
+        }
+    }
+
     /// Starts a battle with `kind`. `zone` is the encounter zone to clear
     /// on victory (`None` for a scripted dev battle).
     fn start_battle(&mut self, kind: MonsterKind, zone: Option<usize>) {
         self.trigger_state = TriggerState::Idle;
         self.interact_target = None;
+        self.blocker_target = None;
         self.input_buffer.clear();
         self.player.action = player::Action::None;
         // The battle view puts the monster on the right.
@@ -461,12 +484,18 @@ impl Game {
             if self.player.hat_stolen {
                 self.player.hat_stolen = false;
             }
+            let mut opened = false;
             if let Some(z) = self.world.zones.get_mut(zone) {
                 z.cleared = true;
+                opened = z.blocks;
             }
             self.run.monsters_beaten += 1;
             self.trigger_state = TriggerState::Idle;
-            self.toast = Some((format!("You beat the {}!", kind.info().name), 2.5));
+            let line = match opened {
+                true => format!("You beat the {}! The road is open.", kind.info().name),
+                false => format!("You beat the {}!", kind.info().name),
+            };
+            self.toast = Some((line, 2.5));
         }
         if done {
             self.battle = None;
@@ -529,7 +558,8 @@ impl Game {
             .start_flicker(FlickerKind::Damage, HURT_INVULN_S);
         if let Some(src) = from {
             let away = (self.player.pos - src).normalize_or(vec2(0.0, 1.0));
-            self.player.pos = world::clamp_to_path(self.player.pos + away * KNOCKBACK_PX);
+            let pushed = world::clamp_to_path(self.player.pos + away * KNOCKBACK_PX);
+            self.player.pos = self.world.clamp_blocked(pushed);
         }
         if !self.settings.reduce_flashing {
             self.shake = 0.25;
@@ -572,6 +602,7 @@ impl Game {
         self.game_over = None;
         self.shake = 0.0;
         self.interact_target = None;
+        self.blocker_target = None;
         self.cam_y = camera_target(start.y);
         self.active_spot = None;
         self.battle = None;
@@ -592,7 +623,7 @@ impl Game {
         format!(
             "STATE hp={}/{} level={} xp={} streak={} dist={}m flasks={} beaten={} \
              zones_cleared={} battle={:?} trigger={} dialogue={} game_over={} hat_stolen={} \
-             arrows={} curse={:.2}",
+             arrows={} curse={:.2} blocker_in_reach={} blockers_left={}",
             self.health.current,
             self.health.max,
             self.progression.level,
@@ -609,6 +640,12 @@ impl Game {
             self.player.hat_stolen,
             self.player.arrows.len(),
             self.curse.level,
+            self.blocker_target.is_some(),
+            self.world
+                .zones
+                .iter()
+                .filter(|z| z.blocks && !z.cleared)
+                .count(),
         )
     }
 
@@ -656,8 +693,17 @@ impl Game {
             // update then reacts as if the player had walked there.
             "tozone" => {
                 self.world.ensure_generated(-20_000.0);
-                if let Some(z) = self.world.zones.iter().find(|z| !z.cleared) {
+                if let Some(z) = self.world.zones.iter().find(|z| !z.cleared && !z.blocks) {
                     self.player.pos = z.pos + vec2(0.0, 10.0);
+                    self.cam_y = camera_target(self.player.pos.y);
+                }
+            }
+            // To just short of the first undefeated road blocker (FR2), at
+            // the line it holds.
+            "toblocker" => {
+                self.world.ensure_generated(-20_000.0);
+                if let Some(z) = self.world.zones.iter().find(|z| !z.cleared && z.blocks) {
+                    self.player.pos = z.pos + vec2(0.0, world::BLOCK_GAP + 4.0);
                     self.cam_y = camera_target(self.player.pos.y);
                 }
             }
@@ -680,6 +726,9 @@ impl Game {
                 _ if self.can_restart() => self.reset(),
                 _ if self.dialogue.is_some() => self.advance_dialogue(),
                 (TriggerState::Idle, Some(i)) => self.open_spot(i),
+                (TriggerState::Idle, None) if self.blocker_target.is_some() => {
+                    self.challenge_blocker()
+                }
                 (TriggerState::Idle, None) if self.npc_in_reach => self.talk_to_pebble(),
                 _ => {}
             },
@@ -868,6 +917,11 @@ impl Game {
         if let Some(i) = self.interact_target {
             let base = view.to_screen(self.world.spots[i].pos);
             gfx::key_prompt(base - vec2(0.0, world::ROAD_LIFT + 54.0), "E", t);
+        }
+        if let Some(z) = self.blocker_target.and_then(|z| self.world.zones.get(z)) {
+            let tall = if z.kind.info().boss { 120.0 } else { 74.0 };
+            let base = view.to_screen(z.pos);
+            gfx::key_prompt(base - vec2(0.0, world::ROAD_LIFT + tall), "E", t);
         }
         if self.npc_in_reach && self.dialogue.is_none() {
             let base = view.to_screen(world::pebble_pos());

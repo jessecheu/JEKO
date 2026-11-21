@@ -37,7 +37,7 @@ src/
     task_gen.rs           prompt templates + JSON extraction helpers
     usage.rs              per-request token counts + tokens/sec, session totals (feeds the token panel)
   game/
-    world.rs              endless cobbled road, camera view, chunked scenery, potion-flask triggers, lake/ground/road drawing, light pools, mist, bats and fireflies
+    world.rs              endless cobbled road, camera view, chunked scenery, potion-flask triggers, encounter zones and road-blocking monsters, lake/ground/road drawing, light pools, mist, bats and fireflies
     decor.rs              forest props (pines, gravestones, pumpkins, cottages, lampposts...) and the hub camp — per-chunk generation + drawing
     manor.rs              the gothic manor backdrop across the lake (and on the battle horizon), its lightning, bats
     gfx.rs                shared drawing helpers (night palette, ink outline, shadows, ribbons, stars, glows, vignette, potion flask)
@@ -111,7 +111,9 @@ hunting required.
    The run starts in Professor Pebble's camp at the forest edge (press E by
    Professor Pebble for a quick tutorial); walk north through the iron gate
    signed "THE ROAD". Patches of ferns on the road hide monsters:
-   step in and answer questions to beat them. Past the gate the doctor's
+   step in and answer questions to beat them. Every so often a monster
+   stands right on the road behind a glowing ward and won't let you by:
+   press E next to it to fight, and beat it to open the road. Past the gate the doctor's
    curse sets in: it worsens while you linger, eases as you reach new
    ground or solve a flask, lifts back in the camp, and drains hearts at
    full. Wrong answers cost hearts,
@@ -122,7 +124,7 @@ hunting required.
    `kill`, `restart`, `jump`, `roll`, `shoot`, `stun`, `cheer`, `spent`, `pause`, `settings`,
    battles `pinch`/`jelly`/`puff`/`coco`/`gull`/`wyrm`/`titan`, `right`/
    `wrong` answers through the real submit path, `e` presses E, and
-   teleports `toflask`/`tozone`/`topebble`, `nohud` hides the side panels,
+   teleports `toflask`/`tozone`/`toblocker`/`topebble`, `nohud` hides the side panels,
    `calm` turns on reduce flashing, `curse`/`cursefull` set the curse to
    the fever stage or full) at those frames, stepping a
    fixed 1/60 s per frame. At the shot it prints a `STATE ...` line of run

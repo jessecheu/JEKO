@@ -45,43 +45,14 @@ reused or renumbered when an entry is removed. Take the next number, not the fir
 
 **Goal:** make the player feel urgency so they keep moving up the road.
 The doctor's curse (FR1, built) now wears the player down while they linger on the
-road. FR2 and FR3 block the way ahead.
-
-## FR2. Monsters blocking the road ahead
-
-**Status.** **Not started.**
-
-**Depends on:** [] _(FR3 makes the battle itself; until FR3 lands, a placeholder interaction can clear a monster)_
-
-**Motivation.** The curse (FR1) worsens while the player lingers; a monster on the road
-ahead is something the player has to deal with *now*, with the curse taking hold.
-
-**Proposed approach.** *(suggested, not decided)* Spawn monsters per chunk the way
-flasks are (`spot_for_chunk` in `src/game/world.rs`), so placement stays
-deterministic and testable like the existing `every_flask_is_reachable_and_on_the_road`
-test. An undefeated monster blocks the road: clamp the player's `y` so they can't
-pass it (alongside `world::clamp_to_path`). Walking up to it and pressing E starts
-the battle, through the same interact flow as `interactable_spot`. Draw it with
-flat primitives like the rest of the world (`gfx.rs`, `decor.rs`).
-
-**Open questions.**
-
-- Do monsters replace flasks, or do both appear on the road?
-- How often do monsters appear, and does that scale with distance or level?
-
-**Acceptance criteria.**
-
-- [ ] Monsters show up on the road in front of the player.
-- [ ] The player can't get past a monster without battling it.
-- [ ] Monster placement is deterministic and covered by a test, like the flasks'.
-
----
+road, and monsters standing on the road (FR2, built) shut it until they're beaten.
+FR3 is the battle itself.
 
 ## FR3. A battle is an education Q&A
 
-**Status.** **Partly built via FR10.** Wild-encounter battles (`src/game/battle.rs`) already ask questions through the flask pipeline, with the fallback bank, and a monster is beaten by enough correct answers. Still open: tie this to FR2's road-blocking monsters, and the open questions (non-math subjects, cost of a wrong answer; FR10 provisionally uses monster damage).
+**Status.** **Partly built via FR10; unblocked now FR2 has landed.** Wild-encounter battles (`src/game/battle.rs`) already ask questions through the flask pipeline, with the fallback bank, and a monster is beaten by enough correct answers. FR2's road blockers start the same battle (E at the monster), and winning opens the road. Still open: check this against the criteria below, and the open questions (non-math subjects, cost of a wrong answer; FR10 provisionally uses monster damage).
 
-**Depends on:** [FR2]
+**Depends on:** [FR2] _(built)_
 
 **Motivation.** The game's premise is learning through play: the battle should be the
 same question-answering the flasks do, with higher stakes because the road is shut
@@ -188,7 +159,7 @@ its "help" is animation. It never changes XP, speed, answers or battle outcomes.
 (see [Completed](#completed)), each on a provisional answer so the work could
 land; this entry keeps the questions so they are answered, not settled silently.
 
-## FR16. Confirm the provisional answers from FR1, FR5–FR15, FR20, FR24 and FR26
+## FR16. Confirm the provisional answers from FR1, FR2, FR5–FR15, FR20, FR24 and FR26
 
 **Status.** **Waiting on the owner.** Every default below is live in the code.
 Tick an item once the owner confirms it, or replace it with the owner's answer
@@ -196,7 +167,7 @@ and file the change as its own FR if it needs code.
 
 **Depends on:** [] _(answers here may spawn small follow-up FRs)_
 
-**Motivation.** FR5–FR15 were built in one pass, and FR1, FR20, FR24 and FR26 later on their own. Their open questions are the
+**Motivation.** FR5–FR15 were built in one pass, and FR1, FR2, FR20, FR24 and FR26 later on their own. Their open questions are the
 owner's to answer, so each was given a reasonable, easily changed default and
 recorded here.
 
@@ -209,6 +180,15 @@ recorded here.
   rising up to ×1.5 by 2,000 m; each metre of new ground lifts 0.006; the hub lifts
   0.05/s; slows from 0.5 down to ×0.85 at full; at full, ½ heart every 3 s.*
 
+- [ ] **FR2** Do road blockers replace flasks, or do both appear? *Both. Blockers
+  replace the fern patch in some odd chunks; flasks keep the even ones.* How often?
+  *Every sixth chunk from chunk 3 (`k % 6 == 3`), about every 80 m, the first at
+  ~48 m, plus the Tide Titan at each 500 m mark, which now stands on the road too.*
+  Does it scale with distance or level? *The spacing doesn't; which monster it is
+  scales with distance (`MonsterKind::pick`), as for the fern patches.* How is the
+  fight started? *E within 70 px of it; it never ambushes.* What stops the player?
+  *A green rune ward across the road, 44 px in front of the monster.*
+
 - [ ] **FR5** Jump/roll while standing still? *Yes.* Roll as a dodge later? *Not now;
   the roll has a defined start/end (`Action::Roll { t }`) so one can hook in.*
 - [ ] **FR6** Pause with a flask task open? *Allowed* (the problem stays readable).
@@ -220,7 +200,7 @@ recorded here.
 - [ ] **FR9** Hero: refresh or new character? *Refresh* (bolder ink, bigger head and
   eyes, pouch). Pixel font? *No, egui default with chunkier frames.* Collectibles?
   *Filed as FR17, not built.*
-- [ ] **FR10** Wild encounters vs FR2 blockers? *Both can coexist; FR2 not built.*
+- [ ] **FR10** Wild encounters vs FR2 blockers? *Both coexist; see FR2 above.*
   Run from a battle? *No.* Catch/befriend? *No.* How often? *~70% of odd road
   chunks; flasks take the even ones.* Roster? *All 7 shipped: Pinchling,
   Jellyglow, Puffspike, Coco Knight, Gull Bandit, Dune Wyrm (rare from 400 m),
@@ -760,7 +740,8 @@ way ahead that's closer than the castle.
 **Status.** **Not started.** Requested by the owner; the approach is suggested only.
 
 **Depends on:** [] _(touches FR28's clearings and FR27's map, which both read
-`path_center`; FR2's blockers and FR29's obstacles share the collision work)_
+`path_center`; FR29's obstacles can share the collision work with FR2's built
+blockers, `World::clamp_blocked`)_
 
 **Motivation.** The road today is almost a straight line north. `path_center` is two
 slow sines with at most ±88 px of sway, `PATH_HALF_W` never changes, and the fence is
@@ -1463,6 +1444,15 @@ monsters for tomorrow").
 
 When an entry is fully built, delete it above and add one line here, newest
 first: `FR<n> — title — date — why it closed (commit)`. Its number stays retired.
+
+- FR2 — Monsters blocking the road ahead — 2026-11-21 — built on FR10's encounter
+  zones rather than as a new system: an `EncounterZone` with `blocks` set stands in
+  the open in the middle of the road (every sixth chunk from chunk 3, ~80 m apart, and
+  every Tide Titan), drawn in the depth sort with its own `MonsterCanvas` behind a
+  green rune ward. `World::clamp_blocked` stops the player 44 px short of it until it's
+  beaten, E within reach starts the usual battle, and winning opens the road. Tests
+  for placement and determinism and for the clamp; new dev event `toblocker`;
+  provisional answers to its open questions are in FR16
 
 - FR1 — The doctor's curse: a sickness that sets in once the player is on the road —
   2026-11-21 — reworked from rising lava at the owner's request; owner chose the
