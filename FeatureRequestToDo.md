@@ -2,7 +2,7 @@
 type: Feature Request
 title: JEKO — Feature Requests
 description: Concrete, actionable feature requests for JEKO (Math Quest) — work that is scoped and wanted but not yet built. Each entry states the motivation, a proposed approach, and what "done" looks like. Maintained as the shared agent todo list.
-tags: [feature-request, backlog, gameplay, urgency, lava, monsters, battle, education, minigames, pets, controls, pause, settings, health, death, art-direction, spawn, tooling, ci-cd, dagger, content-generation, hot-reload, live-content, villain, story, live-dialogue, setting, forest, manor, map, exploration, regions, village, castle, rest-stops, road, obstacles, agents, openclaw, hud, goalposts]
+tags: [feature-request, backlog, gameplay, urgency, lava, monsters, battle, education, minigames, pets, controls, pause, settings, health, death, art-direction, spawn, tooling, ci-cd, dagger, content-generation, hot-reload, live-content, villain, story, live-dialogue, setting, forest, manor, map, exploration, regions, village, castle, rest-stops, road, obstacles, agents, openclaw, hud, goalposts, prefetch, latency, liveness]
 timestamp: 2026-11-21
 ---
 
@@ -36,7 +36,7 @@ Entries are grouped by area. Numbering is stable; don't renumber when one is rem
 
 ## Numbering
 
-**The next free number is FR32**; bump it when you file one. Numbers are never
+**The next free number is FR33**; bump it when you file one. Numbers are never
 reused or renumbered when an entry is removed. Take the next number, not the first gap.
 
 ---
@@ -99,7 +99,9 @@ flasks are (`spot_for_chunk` in `src/game/world.rs`), so placement stays
 deterministic and testable like the existing `every_flask_is_reachable_and_on_the_road`
 test. An undefeated monster blocks the road: clamp the player's `y` so they can't
 pass it (alongside `world::clamp_to_path`). Walking up to it and pressing E starts
-the battle, through the same interact flow as `interactable_spot`. Draw it with
+the battle, through the same interact flow as `interactable_spot`. FR32's look-ahead
+treats a blocker like a zone and buffers its questions as it comes into view, so
+the fight starts with no wait. Draw it with
 flat primitives like the rest of the world (`gfx.rs`, `decor.rs`).
 
 **Open questions.**
@@ -337,7 +339,10 @@ in the foreground: the player stands still while it answers (`Game::update`'s bu
 check). Every monster is Rust code (`MonsterKind`, `draw_pinchling` … in
 `src/game/monster.rs`). FR21 makes monsters data that can be generated and reloaded.
 FR22 uses the same worker to generate lessons ahead of time, so questions are ready
-when needed and teach more than a bare number.
+when needed and teach more than a bare number. FR32 comes first and needs neither: it
+requests questions before the player reaches a flask or monster and overlaps them with
+the battle's own animations. It also sets one priority order for every model call, so
+the studio's background work never delays a question.
 
 **Design in one picture** *(suggested, not decided)*:
 
@@ -357,11 +362,146 @@ when needed and teach more than a bare number.
  Game::update drains with try_recv ─▶ Roster (Arc<MonsterSpec>) · LessonPool ─▶ encounters, battles, flasks
 ```
 
-Rules this design keeps: the frame never waits (invariant 1). Everything falls back
+Rules this design keeps: the frame never waits (invariant 1), and the player
+doesn't either (FR32: everything is ready before the encounter, and the studio takes
+the lowest lane). Everything falls back
 to the built-in roster and `assets/tasks_fallback.json` (invariant 2). The model never
 sets a gameplay number directly (invariant 6). `content` stays plain Rust with no
 macroquad or egui, and only `game` draws a spec (invariant 10). One part relaxes
 invariant 3 and needs the owner's decision (see FR21's open questions).
+
+## FR32. No waiting at an encounter: get questions and monsters ready before the player arrives
+
+**Status.** **Not started.** Requested by the owner; the approach is suggested only.
+Milestone A needs no new module and no FR21 work, so start there.
+
+**Depends on:** [] _(the base for FR21's studio and FR22's lesson packs, which feed
+the same buffer; shares its upcoming-things scan with FR31's `next_goalpost`; warms
+FR2's road blockers once they exist)_
+
+**Motivation.** The game exists so that a fresh problem shows up without breaking the
+walk (README, and §5 of the architecture doc), but every question is requested only
+at the moment it's needed, so the player sees the whole round trip each time. From
+the code as it stands:
+
+| Where | When the request starts | What hides it | What the player sees |
+|---|---|---|---|
+| A battle's first question | `update_battle`, at `Enter` → `Intro` | `INTRO_S`, 0.8 s | A spinner if the model takes longer than 0.8 s |
+| Every later battle question | `update_battle`, when `PlayerAttack` / `MonsterAttack` *ends* | Nothing: the 0.8 s / 0.9 s attack plays before the request starts | The full round trip, every turn |
+| A flask | `open_spot`, when E is pressed | Nothing | The player frozen by the busy check, "Asking the tutor…" |
+| A slow or failed call | `request_raw_blocking`'s 8 s timeout | Nothing | Up to 8 s of spinner before the fallback bank steps in |
+
+Encounter zones and flasks are pure functions of the chunk index (invariant 3), so
+the game knows where every one is, and the monster in it, long before the player
+gets there. The waits come from the timing, not from the model being slow.
+
+**Proposed approach.** *(suggested, not decided)*
+
+- **A question buffer on `Game`.** `QuestionBuffer` (new `game/prefetch.rs`, or
+  plain Rust in `llm` if it holds no game types) keeps a few ready `MathTask`s per
+  difficulty 1–5, plus the prefetch receivers in flight. `Game::request_task(bias)`
+  stays the only door (invariant 6): it takes a buffered task at that difficulty
+  and returns `Active` on the same frame. Otherwise it makes a live request as today,
+  and with no key it uses the fallback bank as today (invariant 2). Prefetching only
+  fills the buffer. It never starts a question.
+- **Overlap the battle's own animations** (milestone A, the cheapest win). Request
+  the first question in `start_battle`, not at `Enter` → `Intro`, which gives it
+  1.8 s of cover instead of 0.8 s. Request the next one in `battle_answer`, when the
+  answer is submitted, not when the attack ends, so the request runs during the
+  0.8–0.9 s attack. Skip it when that answer lands the last hit.
+  The arrival waits in a "next" slot until the phase reaches `Question`.
+- **Look ahead on the road** (milestone B). Each road frame, after
+  `world.ensure_generated`, scan what's coming. A pure
+  `world::upcoming(y, range_px) -> Vec<Upcoming { kind, y, difficulty_bias }>`
+  could share its chunk scan with FR31's `next_goalpost`. For each uncleared zone
+  within about 1.5 screens, keep its monster's `hits` worth of questions buffered
+  at `level + bias`, plus one spare for a miss. For each fresh flask in range, keep
+  one at `level`. A pure, unit-tested `plan_prefetch(upcoming, buffered, in_flight,
+  caps) -> Vec<difficulty>` decides what to ask for, so the policy is testable
+  without a network.
+- **Limits.** At most 2 prefetches in flight, a per-minute cap
+  (`JEKO_PREFETCH_RPM`, default 20), at most 3 buffered per difficulty, and
+  `JEKO_PREFETCH=off` to turn it off. No new requests start while paused, but
+  receivers are still polled, as `trigger_state` is. A live request beats a
+  prefetch: none starts while `trigger_state` is `Loading`.
+- **A soft deadline.** If a live request isn't back within `SOFT_DEADLINE_S`
+  (about 1.5 s in a battle, 2.5 s at a flask), show a fallback-bank question
+  straight away. Keep the late live answer in the buffer for next time instead of
+  dropping it. The hard 8 s timeout stays as the backstop.
+- **Monsters ready before their zone.** *(builds on FR21 milestones B and C)* A
+  zone's species is bound when its chunk is generated, which is already one chunk
+  above the top of the screen, and only to specs that are already in the `roster`.
+  An encounter never waits on a `GenMonster` job. The studio's job is to keep a
+  stock of unused species per tier ahead of the tiers the next zones need, and a
+  zone with nothing in stock gets a built-in, as today. A parsed spec draws on the
+  frame it's bound (`monster_rig`), so nothing loads at the encounter.
+- **One priority order for every model call.** Live question > question prefetch >
+  villain lines (FR23) > studio jobs (FR21's monsters, FR22's packs). It replaces
+  each FR's own "live questions always win" check with one rule. Until FR21's
+  `Studio` exists, this is just the in-flight check above. Once it does, the studio's
+  queue takes the lower lanes, and prefetches can move onto its thread. That also
+  settles the known limit "one thread and one HTTP client per request", which says
+  to revisit it once requests prefetch.
+- **Make the wait measurable.** Record where each shown question came from
+  (`buffer | live | fallback | deadline`) and how long the player waited for it.
+  The token panel shows something like "ready on arrival 18/20 · longest wait
+  0.3 s". Tag prefetch requests in `RequestUsage`, the same kind tag FR21 and FR23
+  propose. A dev hook `JEKO_DEV=fakemodel:<ms>` answers from the fallback bank after
+  a delay on a thread, so the buffer, the deadline and the panel can be tested and
+  screenshotted with no key.
+- **When a wait still happens, keep it in the world.** In a battle, swap the spinner
+  for the monster taunting or winding up, with "The Bramblehog is thinking…" on
+  the nameplate (cosmetic, invariant 7). At a flask, the flask bubbles.
+
+**Milestones** (each lands on its own):
+
+1. **A: overlap the battle.** Request at `start_battle` and at `battle_answer`, the
+   "next" slot, and the wait measurement and `fakemodel` hook. No look-ahead and no
+   new limits.
+2. **B: road look-ahead.** `QuestionBuffer`, `world::upcoming`, `plan_prefetch`
+   with tests, the limits, and flasks opening from the buffer.
+3. **C: the soft deadline and lanes.** The deadline swap and keeping late answers.
+   The shared priority order lands when FR21's studio does, and the monster stock
+   lands with FR21 milestone C.
+
+**Open questions.**
+
+- **Wasted calls.** Look-ahead asks for questions the player may never reach, for
+  example when they die first or skip a flask. Is about 1.5× the calls acceptable,
+  and what RPM and session token budget are fine?
+- **The soft deadline.** It means a slow model gets a bank question instead of a
+  fresh one. Is that the right trade, and are 1.5 s and 2.5 s right?
+- **Level-ups.** A question buffered at difficulty 2 is one level too easy after a
+  level-up. Use it anyway, drop it, or keep it for a lower-bias monster?
+  Provisional: take the exact difficulty, else one below, else ask live.
+- **Across runs.** Does the buffer survive `reset()`, like the client and the
+  roster? Provisional: yes. The questions aren't run state, and that makes the
+  first battle of a new run instant.
+- **An invariant?** Should "the player never waits on the network when a buffered
+  or fallback question could be shown" become invariant 11, next to invariant 1's
+  "the frame never waits"?
+
+**Acceptance criteria.**
+
+- [ ] In a battle with an API key, each question after the first is requested when
+  the previous answer is submitted, and the first in `start_battle`. With
+  `fakemodel:700` no spinner shows in a battle.
+- [ ] With look-ahead on, a flask or zone the player walks up to normally opens
+  `Active` on the same frame, as measured by the wait readout.
+- [ ] `request_task` is still the only way a question starts, and with no key, no
+  network or `JEKO_PREFETCH=off` the game plays exactly as it does today.
+- [ ] `plan_prefetch` and `world::upcoming` are pure and unit-tested, including the
+  caps and the hub (nothing is prefetched for chunk `k < 1`).
+- [ ] A live call slower than the soft deadline is replaced by a bank question, and
+  its late answer is kept for later.
+- [ ] Once FR21 milestone C lands, a zone's species is bound off screen from the
+  loaded roster only, and no encounter waits on a generation job.
+- [ ] `docs/ARCHITECTURE.md` is updated: §5 (the buffer before the live call, the
+  deadline), §4 (where `update_battle` and the road frame request), §11 (the env
+  vars and the `fakemodel` hook), §13 (the one-thread-per-request limit), and
+  §12 if the owner adds an invariant.
+
+---
 
 ## FR21. Generated monsters, hot-reloaded into the running game
 
@@ -401,9 +541,11 @@ Provisional choices for the owner (change freely):
 `GenMonster` job that writes `monsters/<id>.json` through `parse`. The watcher
 already loads whatever it writes. Ask the owner the open questions on moderation,
 which specials generated monsters may use, and `JEKO_STUDIO_MODEL` first. The `reload`
-and `genmonster` dev events, and `gen_content --monsters`, aren't built.
+and `genmonster` dev events, and `gen_content --monsters`, aren't built. FR32 milestones A and B can land
+before B or alongside it. Build the studio's queue with FR32's priority lanes, not a
+separate "sleep while `Loading`" check.
 
-**Depends on:** [] _(FR22 builds on its `Studio` and watcher; generated monsters fill FR10's encounter zones and, later, FR2's road blockers)_
+**Depends on:** [] _(FR22 builds on its `Studio` and watcher; generated monsters fill FR10's encounter zones and, later, FR2's road blockers; FR32 sets the studio's priority lane and the rule that zones bind only ready species)_
 
 **Motivation.** Seven hand-drawn monsters get repetitive a few hundred metres up the
 road. Cerebras is fast enough to design a new creature in the background while the
@@ -460,16 +602,20 @@ no rebuild. Today the assets are `include_str!`'d, so any change means a recompi
   show. The worker parses the reply with `extract_json_object`, validates it, and
   writes `monsters/<id>.json` atomically. The watcher then loads it like any other
   file, so a generated monster and a hand-written one take the same path into the game.
-  - **Live questions always win.** The studio sleeps while `trigger_state` is
-    `Loading`, and it keeps at most one request in flight, under a per-minute cap
+  - **Live questions always win.** The studio runs in the lowest of FR32's lanes
+    (live question > question prefetch > villain > studio), so it sleeps while a
+    live question is `Loading` or a prefetch is due. It keeps at most one request in flight, under a per-minute cap
     (`JEKO_STUDIO_RPM`, default 6) and a session token budget.
-  - **Look-ahead.** Each frame, `Game` checks how many generated species are
-    eligible for the next few encounter zones. Below a small target (e.g. 3), it
-    enqueues a `GenMonster` for the tier those zones need.
+  - **Look-ahead.** Each frame, `Game` checks how many unused generated species are
+    eligible for the next few encounter zones, using FR32's `world::upcoming`. Below
+    a small target (e.g. 3), it enqueues a `GenMonster` for the tier those zones need.
+    The stock has to be built well before a zone, because a zone never waits for one.
   - `JEKO_STUDIO=off` disables it. No API key means it never starts.
 - **How generated monsters reach the road** (keeps invariant 3 as far as possible).
   `encounter_for_chunk` stays pure, so where zones are and their `roll` don't change.
-  The first time a zone comes on screen, `Game` decides its species once:
+  When a zone's chunk is generated (one chunk above the top of the screen, so off
+  screen), `Game` decides its species once, from specs already in the roster
+  (FR32: an encounter never waits on a generation job):
   `MonsterKind::pick` as today, or, with a share set by `GENERATED_SHARE` (e.g. 40%),
   a generated species of the right tier chosen by hashing the zone's roll over
   the roster sorted by id. The choice is stored on the zone, and chunks are never
@@ -529,6 +675,8 @@ no rebuild. Today the assets are `include_str!`'d, so any change means a recompi
   never delayed by a studio request.
 - [ ] Generated monsters appear in encounter zones. Revisiting a zone shows the same
   monster, and zone placement is still covered by the existing determinism tests.
+  A zone's species is bound off screen from the loaded roster, so no battle waits on
+  a `GenMonster` job (FR32).
 - [ ] With no key, no network or an empty content dir, the game plays exactly as it
   does today.
 - [ ] The token panel splits usage by request kind.
@@ -542,7 +690,8 @@ no rebuild. Today the assets are `include_str!`'d, so any change means a recompi
 
 **Status.** **Not started.** Designed only.
 
-**Depends on:** [FR21] _(reuses its `Studio`, content dir and watcher; the themed questions need FR21's `MonsterSpec.theme`; touches FR3's open question on non-math subjects)_
+**Depends on:** [FR21, FR32] _(reuses FR21's `Studio`, content dir and watcher, and
+fills FR32's `QuestionBuffer` instead of keeping a pool of its own; the themed questions need FR21's `MonsterSpec.theme`; touches FR3's open question on non-math subjects)_
 
 **Motivation.** Each question today is a single live call, made while the player
 stands still and waits. All it teaches is a hint and right or wrong. Fast inference
@@ -554,11 +703,12 @@ gets wrong can steer what gets generated next.
 
 - **Lesson packs, prefetched.** A `GenLessons { topic, level, n }` job asks for a
   batch (e.g. 8) of problems for one topic and difficulty. The studio writes them to
-  `lessons/<topic>-<level>.json`, and the watcher loads them into a `LessonPool` on
-  `Game`. `Game::request_task` (still the only door, invariant 6) takes from the pool
-  first, falls back to a live request when the pool is empty, and to the fallback bank
-  when that fails. The studio refills a pool when it runs low, so questions are
-  normally ready before the player reaches the flask and the busy-check stop is short.
+  `lessons/<topic>-<level>.json`, and the watcher loads them into FR32's
+  `QuestionBuffer`, keyed by topic as well as difficulty. `Game::request_task` (still
+  the only door, invariant 6) already takes from that buffer first, then asks live,
+  then uses the fallback bank (FR32). Packs add bulk, verified answers, explanations
+  and topics. FR32's look-ahead already makes the single-question version instant, so
+  the studio refills a pack when FR32's planner reports a topic running low.
 - **Answers are checked before a child sees them.** Each generated problem also
   carries an `expression` (e.g. `"(12 + 8) / 4"`). A tiny pure evaluator in
   `content` (numbers, `+ − × ÷`, parentheses) computes it, and the problem is dropped
@@ -596,8 +746,9 @@ gets wrong can steer what gets generated next.
 
 **Acceptance criteria.**
 
-- [ ] With an API key, most flasks open from a prefetched pool, with no visible wait.
-  The live call and the fallback bank still cover an empty pool or no key.
+- [ ] With an API key, most flasks open from a prefetched pack in FR32's buffer, with
+  no visible wait. FR32's single prefetches, the live call and the fallback bank still
+  cover an empty pack or no key.
 - [ ] Every generated problem's `answer` is verified by evaluating its `expression`,
   and failures are dropped (unit-tested).
 - [ ] A wrong answer shows a short worked explanation, and the fallback bank still
@@ -1134,8 +1285,9 @@ with one JSON object that's validated before use:
   `CerebrasClient::request_villain_async(cue) -> Receiver<Result<VillainBeat>>`
   reuses `request_raw_blocking` on a thread. `Game::update` polls it with `try_recv`
   next to `trigger_state.poll`, and still polls while paused, so a reply isn't lost.
-- **Live questions always win.** No villain request starts while `trigger_state`
-  is `Loading`. At most one villain request is in flight. Cues that arrive while
+- **Live questions always win.** Villain lines take the third of FR32's lanes, after
+  live questions and question prefetches. No villain request starts while
+  `trigger_state` is `Loading` or a question prefetch is due. At most one villain request is in flight. Cues that arrive while
   one is busy coalesce (the newest, highest-priority cue wins). There's a minimum
   gap of about 8 s between bubbles and a cap of `JEKO_VILLAIN_RPM` (default 6).
   `JEKO_VILLAIN=off` turns the live lines off; the doctor still appears, using the
@@ -1409,7 +1561,7 @@ monsters for tomorrow").
 
 | Job | Today / planned | As an OpenClaw agent? |
 |---|---|---|
-| Live questions at a flask or in a battle | `CerebrasClient::request_task_async`, `llm/task_gen.rs` | **No, stays direct.** It's on the play path: the player is frozen until it arrives, and the offline fallback has to be instant (invariants 1 and 2). A gateway hop adds latency and a moving part. An agent can *pre-generate* question packs instead (see lessons). |
+| Live questions at a flask or in a battle | `CerebrasClient::request_task_async`, `llm/task_gen.rs` | **No, stays direct.** It's on the play path: the player is frozen until it arrives, and the offline fallback has to be instant (invariants 1 and 2). A gateway hop adds latency and a moving part. An agent can *pre-generate* question packs instead (see lessons). Those packs land in FR32's `QuestionBuffer`, the same place the game's own prefetches go. |
 | NPC dialogue (`assets/dialogue.json`) | `make gen-content`, run by hand | **Yes, first.** A skill that runs the existing generator, checks the output, and opens a PR or leaves a diff. A cron job can refresh it weekly. |
 | Generated monsters | FR21's `Studio` writing `content/monsters/<id>.json` | **Yes.** A "monster designer" agent writes `MonsterSpec` JSON into the content dir; FR21's watcher and validation load it. The in-game `Studio` stays as the offline-friendly path. |
 | Lesson packs, explanations, field guide | FR22 | **Yes.** A "lesson writer" agent fills `lessons/<topic>-<level>.json`, steered by the run log (topics the player gets wrong). |
