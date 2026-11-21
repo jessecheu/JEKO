@@ -2,7 +2,7 @@
 type: Feature Request
 title: JEKO — Feature Requests
 description: Concrete, actionable feature requests for JEKO (Math Quest) — work that is scoped and wanted but not yet built. Each entry states the motivation, a proposed approach, and what "done" looks like. Maintained as the shared agent todo list.
-tags: [feature-request, backlog, gameplay, urgency, curse, sickness, monsters, battle, education, minigames, pets, controls, pause, settings, health, death, art-direction, spawn, tooling, ci-cd, dagger, content-generation, hot-reload, live-content, villain, story, live-dialogue, setting, forest, manor, map, exploration, regions, village, castle, rest-stops, road, obstacles, agents, openclaw, hud, goalposts]
+tags: [feature-request, backlog, gameplay, urgency, curse, sickness, monsters, battle, education, minigames, pets, cat, controls, pause, settings, health, death, art-direction, spawn, tooling, ci-cd, dagger, content-generation, hot-reload, live-content, villain, story, live-dialogue, setting, forest, manor, map, exploration, regions, village, castle, rest-stops, road, obstacles, agents, openclaw, hud, goalposts]
 timestamp: 2026-11-21
 ---
 
@@ -36,7 +36,7 @@ Entries are grouped by area. Numbering is stable; don't renumber when one is rem
 
 ## Numbering
 
-**The next free number is FR32**; bump it when you file one. Numbers are never
+**The next free number is FR33**; bump it when you file one. Numbers are never
 reused or renumbered when an entry is removed. Take the next number, not the first gap.
 
 ---
@@ -51,28 +51,39 @@ in a question battle (FR3, built). Both are done; their open questions are in FR
 # Gameplay — minigames & companions
 
 **Goal:** break up the walk with small optional moments that reward the player
-without changing the game's balance. FR4 is the first: a caged pet lion. It sets
+without changing the game's balance. FR32 is the first: a caged pet cat. It sets
 the pattern (a thing on the road, a quick puzzle in a modal, a cosmetic reward)
 that later minigames can copy.
 
-## FR4. Unlock a pet lion from a cage
+## FR32. Unlock a pet cat from a cage
 
-**Status.** **Not started.**
+**Status.** **Not started.** Reworked from a pet lion to a pet cat at the owner's
+request (2026-11-21), and renumbered from FR4, a number the token usage panel
+already had (see Completed); the approach is suggested only.
 
-**Depends on:** [] _(pairs with FR2/FR3 — the lion's "help" is most visible at a monster battle; until those land, it reacts to flasks)_
+**Depends on:** [] _(FR2 and FR3 are built, so the cat's "help" at a battle can be
+built in the same pass; it reacts to flasks too)_
 
 **Motivation.** A short puzzle on the road is a change of pace from the
 potion-flask problems, and a companion that follows you up the road
-gives the player something to show for it. The lion only *looks* like it helps:
+gives the player something to show for it. The cat only *looks* like it helps:
 its "help" is animation. It never changes XP, speed, answers or battle outcomes.
 
 **Proposed approach.** *(suggested, not decided)*
 
-- **The cage.** Place a locked cage with a lion inside on the road, deterministic
+- **The cat.** A small black cat with big lantern-yellow eyes suits the dark
+  forest: a witch's cat the mad scientist has locked up in one of his lab cages
+  (iron bars, a `LAB_GREEN` padlock). Drawn with flat primitives like the hero,
+  through a render target (as `Player` and `MonsterCanvas` do) so it can squash,
+  stretch and pounce as one piece.
+- **The cage.** Place a locked cage with the cat inside on the road, deterministic
   per chunk like the flasks (`spot_for_chunk` in `src/game/world.rs`), so it can be
-  tested the same way as `every_flask_is_reachable_and_on_the_road`. Draw the cage
-  and the lion with flat primitives (`gfx.rs`, `decor.rs`) and depth-sort them with
-  the player through `Tall` / `tall_items`.
+  tested the same way as `every_flask_is_reachable_and_on_the_road`. Flasks take the
+  even chunks and monsters the odd ones, so the cage needs a chunk rule that
+  doesn't collide with either (or a spot beside the road, see the open questions).
+  Draw the cage with flat primitives (`gfx.rs`, `decor.rs`) and depth-sort it and the
+  cat with the player through `Tall` / `tall_items`. While caged, the cat paces,
+  paws at the bars and meows (a small "!" or "♪" bubble) when the player is near.
 - **The puzzle modal.** Walking up to the cage and pressing E (`INTERACT_KEY`) opens
   an egui modal, built like `src/ui/task_panel.rs` (e.g. a new
   `src/ui/puzzle_panel.rs`). The puzzle is quick and solving it gives the player a
@@ -81,40 +92,49 @@ its "help" is animation. It never changes XP, speed, answers or battle outcomes.
   state rather than reusing `TriggerState`, so it can't collide with an open flask
   task, and add it to the `busy` check in `Game::update` so the player stops while
   the modal is open.
-- **Unlocking.** Using the key opens the cage with a short animation (door swings,
-  lion hops out), and the lion becomes the player's pet.
-- **Following and "helping".** The lion trails the player with a little lag,
-  using `world::clamp_to_path` so it stays on the road, with idle and walk
-  animations (tail swish, pad cycle). Its "help" is animation only: it cheers or
-  pounces when the player answers correctly, droops on a wrong answer, and roars
-  at a monster during a battle (FR2/FR3). Keep the lion out of `Progression` so it
-  can't affect gameplay.
+- **Unlocking.** Using the key opens the cage with a short animation (the padlock
+  pops, the door swings, the cat stretches and hops out), and the cat becomes the
+  player's pet.
+- **Following and "helping".** The cat trails the player with a little lag,
+  using `world::clamp_to_path` so it stays on the road (and `World::clamp_blocked`,
+  so it waits at a road blocker with the player), with idle and walk animations
+  (tail swish, trot cycle, sitting to wash a paw when the player stands still, curling
+  up asleep after a while). Its "help" is animation only: it purrs and rubs
+  against the player's legs on a correct answer, flattens its ears and droops its
+  tail on a wrong one, and arches its back and hisses at a monster in a battle,
+  from beside the player's platform in the battle view (`Battle::draw_scene`). Keep
+  the cat out of `Progression` so it can't affect gameplay (invariant 7).
 
 **Open questions.**
 
+- What does the cat look like: a black cat as suggested, or another colour, and
+  does it have a name (picked by the player, or fixed)?
 - Is the puzzle math (a clue that sets the lock's combination), or a non-math
   logic puzzle such as sliding tiles or matching a key's shape?
 - Does the cage sit on the road and block it until opened, or beside it as an
   optional detour the player can skip?
-- Is there one lion per run, or can more cages (and other pets) show up further
+- Is there one cat per run, or can more cages (and other pets) show up further
   along? How often?
 - What happens on a failed or abandoned puzzle — retry right away, a cooldown like
   the flasks, or the cage is gone?
-- Does the lion survive a curse game-over/restart (FR1)? Nothing is saved between
+- Does the cat survive a curse game-over/restart (FR1)? Nothing is saved between
   runs today.
+- Can the player pet the cat (E next to it) for a purr and a little heart, as a
+  cosmetic touch?
 
 **Acceptance criteria.**
 
-- [ ] A locked cage with a lion appears on the road, placed deterministically and
+- [ ] A locked cage with a cat appears on the road, placed deterministically and
   covered by a test, like the flasks.
 - [ ] Pressing E at the cage opens a puzzle modal, and the player can't move while
   it's open.
 - [ ] Solving the puzzle gives the player a key that opens the cage, with an
   unlock animation.
-- [ ] The freed lion follows the player up the road, stays on the road, and
+- [ ] The freed cat follows the player up the road, stays on the road, and
   draws in the right depth order with the player and scenery.
-- [ ] The lion plays "helping" animations (at least on correct and wrong answers),
-  and having the lion leaves XP, speed and answer checking unchanged.
+- [ ] The cat plays "helping" animations (at least on correct and wrong answers,
+  and at a monster in a battle), and having the cat leaves XP, speed and answer
+  checking unchanged.
 - [ ] The puzzle works without an API key.
 
 ---

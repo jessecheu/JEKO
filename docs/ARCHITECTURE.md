@@ -648,7 +648,7 @@ the owner, and update this section if it goes ahead.
 6. **One door per rule.** HP changes go through `damage_player`, `Health::heal` and
    `Health::refill`. Questions start through `request_task`. Answers are judged in
    `submit_answer`.
-7. **Cosmetic means cosmetic.** `Action`s, the bow's arrows, the planned pet (FR4)
+7. **Cosmetic means cosmetic.** `Action`s, the bow's arrows, the planned pet cat (FR32)
    and visual effects never change XP, speed, answers or battle results.
 8. **Animation runs on the game clock.** Use `Game.time` or per-object timers advanced
    by `dt`, so pausing freezes everything.
