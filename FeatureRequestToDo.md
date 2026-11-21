@@ -45,42 +45,8 @@ reused or renumbered when an entry is removed. Take the next number, not the fir
 
 **Goal:** make the player feel urgency so they keep moving up the road.
 The doctor's curse (FR1, built) now wears the player down while they linger on the
-road, and monsters standing on the road (FR2, built) shut it until they're beaten.
-FR3 is the battle itself.
-
-## FR3. A battle is an education Q&A
-
-**Status.** **Partly built via FR10; unblocked now FR2 has landed.** Wild-encounter battles (`src/game/battle.rs`) already ask questions through the flask pipeline, with the fallback bank, and a monster is beaten by enough correct answers. FR2's road blockers start the same battle (E at the monster), and winning opens the road. Still open: check this against the criteria below, and the open questions (non-math subjects, cost of a wrong answer; FR10 provisionally uses monster damage).
-
-**Depends on:** [FR2] _(built)_
-
-**Motivation.** The game's premise is learning through play: the battle should be the
-same question-answering the flasks do, with higher stakes because the road is shut
-until the player answers correctly.
-
-**Proposed approach.** *(suggested, not decided)* Reuse the flask pipeline: the
-`TriggerState` machine (`src/game/task_trigger.rs`), the Cerebras request
-(`CerebrasClient::request_task_async`, prompt in `src/llm/task_gen.rs`), the fallback
-bank (`assets/tasks_fallback.json`), and the answer panel (`src/ui/task_panel.rs`).
-A correct answer defeats the monster, unblocks the road, and awards XP through
-`progression.record_correct`. On a wrong answer the monster stays and the player
-retries with a fresh question after the cooldown, while the curse keeps its pressure.
-
-**Open questions.**
-
-- Are the questions math only (what the prompt asks for today), or other school
-  subjects too? Today `MathTask.answer` is a number, so non-math questions would
-  need a different answer type, such as multiple choice.
-- What does a wrong answer cost — just time, or also HP or the streak?
-
-**Acceptance criteria.**
-
-- [ ] Fighting a monster means answering education questions.
-- [ ] Answering correctly wins the battle and clears the road.
-- [ ] A battle works without an API key or when the live call fails (fallback bank),
-  like the flasks do.
-
----
+road, and monsters standing on the road (FR2, built) shut it until they're beaten
+in a question battle (FR3, built). Both are done; their open questions are in FR16.
 
 # Gameplay — minigames & companions
 
@@ -159,7 +125,7 @@ its "help" is animation. It never changes XP, speed, answers or battle outcomes.
 (see [Completed](#completed)), each on a provisional answer so the work could
 land; this entry keeps the questions so they are answered, not settled silently.
 
-## FR16. Confirm the provisional answers from FR1, FR2, FR5–FR15, FR20, FR24 and FR26
+## FR16. Confirm the provisional answers from FR1–FR3, FR5–FR15, FR20, FR24 and FR26
 
 **Status.** **Waiting on the owner.** Every default below is live in the code.
 Tick an item once the owner confirms it, or replace it with the owner's answer
@@ -167,7 +133,7 @@ and file the change as its own FR if it needs code.
 
 **Depends on:** [] _(answers here may spawn small follow-up FRs)_
 
-**Motivation.** FR5–FR15 were built in one pass, and FR1, FR2, FR20, FR24 and FR26 later on their own. Their open questions are the
+**Motivation.** FR5–FR15 were built in one pass, and FR1–FR3, FR20, FR24 and FR26 later on their own. Their open questions are the
 owner's to answer, so each was given a reasonable, easily changed default and
 recorded here.
 
@@ -188,6 +154,13 @@ recorded here.
   scales with distance (`MonsterKind::pick`), as for the fern patches.* How is the
   fight started? *E within 70 px of it; it never ambushes.* What stops the player?
   *A green rune ward across the road, 44 px in front of the monster.*
+
+- [ ] **FR3** Math only, or other school subjects too? *Math only, as the prompt
+  asks today; other subjects need a new answer type (multiple choice), see
+  ARCHITECTURE's known limits.* What does a wrong answer cost? *The monster's hit:
+  its damage in half-hearts (1–2, more for a grown Puffspike), a stun from Jellyglow
+  and Coco Knight, the hat from a Gull Bandit, and the streak.* One right answer or
+  several? *Several: the monster's `hits` (1–4).*
 
 - [ ] **FR5** Jump/roll while standing still? *Yes.* Roll as a dodge later? *Not now;
   the roll has a defined start/end (`Action::Roll { t }`) so one can hook in.*
@@ -1444,6 +1417,14 @@ monsters for tomorrow").
 
 When an entry is fully built, delete it above and add one line here, newest
 first: `FR<n> — title — date — why it closed (commit)`. Its number stays retired.
+
+- FR3 — A battle is an education Q&A — 2026-11-21 — nothing left to build once FR2
+  landed: FR10's battles already ask every question through the flask pipeline
+  (`request_task`, `submit_answer`) with the fallback bank, and FR2's blockers start
+  the same battle, so winning clears the road. Checked end to end with a key set and
+  an unreachable API (`toblocker`, `e`, `wrong`, `right`): fallback questions, a wrong
+  answer cost the monster's hit, the right one won and opened the road. Its open
+  questions (subjects, the cost of a wrong answer) are in FR16
 
 - FR2 — Monsters blocking the road ahead — 2026-11-21 — built on FR10's encounter
   zones rather than as a new system: an `EncounterZone` with `blocks` set stands in

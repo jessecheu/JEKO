@@ -666,7 +666,7 @@ still to make:
 - **No persistence.** Progress, settings and best distance live only in memory (FR14
   and FR16 record this as provisional).
 - **Answers are numeric only.** `MathTask.answer` is an `f64` with an exact-match
-  check. Non-math subjects or multiple choice (an FR3 open question) would need a
+  check. Non-math subjects or multiple choice (an FR3 question, open in FR16) would need a
   new answer type through the prompt, the parser, `task_panel` and `submit_answer`.
 - **One thread and one HTTP client per request**, with no cancellation or retry. That's
   fine at one request at a time; it should be revisited if requests ever overlap or prefetch.
@@ -676,6 +676,6 @@ still to make:
   but not the characters: the hero wears a straw sun hat and swim shorts, and the
   roster is crabs, jellyfish, pufferfish, coconuts, gulls, a sand worm and a Tide
   Titan. Restyling them is FR25.
-- **The settled-for-now defaults** from FR1, FR2, FR5–FR15, FR20, FR24 and FR26 are listed for the owner in FR16.
+- **The settled-for-now defaults** from FR1–FR3, FR5–FR15, FR20, FR24 and FR26 are listed for the owner in FR16.
 
 See [FeatureRequestToDo.md](../FeatureRequestToDo.md) for the backlog.
