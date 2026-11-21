@@ -43,6 +43,11 @@ impl CerebrasClient {
         self.fake_delay.is_some()
     }
 
+    /// How long the stand-in model takes per call, if it's on.
+    pub fn fake_delay(&self) -> Option<Duration> {
+        self.fake_delay
+    }
+
     /// True when calls can be made: there is a key, or the stand-in model is
     /// on. Without one the game plays from the fallback bank.
     pub fn has_api_key(&self) -> bool {
@@ -175,17 +180,28 @@ impl CerebrasClient {
             .cloned()
             .expect("fallback task bank must not be empty");
         task.difficulty = difficulty;
-        let completion_tokens = 60;
-        let secs = started.elapsed().as_secs_f64().max(0.001);
+        self.record_fake(kind, 140, 60, started.elapsed());
+        task
+    }
+
+    /// Books a made-up call into the token stats (the stand-in model has no
+    /// `usage` block to read), so the panel and the studio's budget see it.
+    pub fn record_fake(
+        &self,
+        kind: RequestKind,
+        prompt_tokens: u64,
+        completion_tokens: u64,
+        round_trip: Duration,
+    ) {
+        let secs = round_trip.as_secs_f64().max(0.001);
         self.stats().record(RequestUsage {
             kind,
-            prompt_tokens: 140,
+            prompt_tokens,
             completion_tokens,
             tokens_per_sec: completion_tokens as f64 / secs,
             provider_timed: false,
-            round_trip: started.elapsed(),
+            round_trip,
         });
-        task
     }
 
     fn post_chat(&self, api_key: &str, body: &Value) -> anyhow::Result<Value> {

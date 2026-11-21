@@ -484,45 +484,49 @@ gets there. The waits come from the timing, not from the model being slow.
 
 ## FR21. Generated monsters, hot-reloaded into the running game
 
-**Status.** **Milestone A built (2026-11-21); B and C not started.** Done: the
-`content` module (`MonsterSpec`, `parse`/validation with 7 hostile-input tests, the
-tier table in `MonsterSpec::info`, `Roster`, `ContentEvent`), the polling watcher
-thread (`content/watcher.rs`, every 0.5 s, by mtime and length), `game/monster_rig.rs`
-(every shape, part, eye look, accessory, idle and attack in the spec), `Species` on
-`Battle` with the rules frozen in `Battle.info` at the start of a fight, the
-live-swap rule (`Battle::respec`), the `battle:<id>` dev event, four hand-written
-specs in `content/monsters/` (Mossmunch, Lantern Moth, Bramblehog, Inkwisp, one per
-special), and the docs. Checked by screenshot: idle, intro, every attack style, hurt,
-faint, the grows special and a stolen hat, plus a mid-battle edit (new look at once,
-same rules) and a broken edit (logged, last good version kept, no crash).
+**Status.** **Milestones A and B built (2026-11-21); C not started.** A: the
+`content` module (`MonsterSpec`, `parse`/validation, the tier table, `Roster`,
+`ContentEvent`), the polling watcher, `game/monster_rig.rs`, `Species` on `Battle`, the
+live-swap rule, the `battle:<id>` dev event, four hand-written specs. B: the `Studio`
+(`content/studio.rs`: one thread, a job queue, the `live_busy` gate that keeps it behind
+live questions and look-ahead, `JEKO_STUDIO_RPM` and `JEKO_STUDIO_TOKENS`),
+`content/prompts.rs` (the kid-safe, original-creature prompt with a shipped spec as the
+shape), `finish_monster` (forces the tier, limits the special, vets the text, runs
+`parse`, writes atomically as `monsters/gen-<name>.json`), `Game::tick_studio` (keeps 3
+unseen generated monsters ready for the tier ahead), `RequestKind::Monster` tags, the
+token panel's studio line and per-kind split, the `genmonster` dev event, and the
+stand-in model writing made-up creatures under `JEKO_DEV=fakemodel`. Checked end to end
+offline: the studio wrote three `gen-*` files, the watcher loaded them, and a generated
+creature fought in a battle with the right nameplate and blurb.
 
-Built differently from the sketch below: the variant is `Species::Spec` (it covers
-hand-written and generated specs alike), not `Generated`. `EncounterZone` still holds
-a `MonsterKind`, because putting specs in zones is Milestone C and waits on the
-invariant 3 question. `MonsterInfo` moved to `content::monster_spec` (minus its
-name; `Species::name()` and `MonsterKind::name()` give names) so that `content`
-stays free of `game`.
+Built differently from the sketch: the variant is `Species::Spec` (it covers
+hand-written and generated specs alike), not `Generated`. `EncounterZone` still holds a
+`MonsterKind`, because putting specs in zones is Milestone C and waits on the invariant 3
+question. `MonsterInfo` lives in `content::monster_spec` so that `content` stays free of
+`game`. Generated ids are `gen-<name>`, which is how the game and `.gitignore` tell them
+from hand-written ones.
 
 Provisional choices for the owner (change freely):
 
 - *Content dir:* `JEKO_CONTENT_DIR`, else `./content`, else the build checkout's
-  `content/` (not "next to the binary", which is `target/debug/` under cargo). The
-  hand-written specs are committed. Whether generated ones are is still open below.
-- *Invalid-file toast:* shown always, not only in dev mode, since there's no dev mode
-  flag and only someone editing the files can trigger it.
-- *Specials:* hand-written specs may use all four. Whether generated ones may is
-  still open below.
-- *Tier table:* tier 1 = 1 hit/1 dmg/0 m/bias 0/15 XP, tier 2 = 2/1/50 m/0/20,
-  tier 3 = 3/2/140 m/1/25, tier 4 = 3/2/400 m/2/30; stun is 2.0 s. Never a boss.
-- *Fit:* a file's `id` must match its file name, or it's rejected.
+  `content/`. Hand-written specs are committed. **Generated ones are a per-machine
+  cache:** they persist in the dir between runs and `gen-*.json` is gitignored; rename one
+  to keep it for committing.
+- *Specials:* hand-written specs may use all four. **Generated ones may use `none` and
+  `grows` only**; the studio turns anything else into `none`.
+- *Moderation:* the kid-safe, original-creature prompt, a whole-word blocklist (other
+  people's characters and anything not for children) on name, blurb, fact and topic, and
+  the schema. No human approval step (`approved` flag) yet.
+- *Studio model:* it uses `CEREBRAS_MODEL` like everything else; no `JEKO_STUDIO_MODEL`.
+- *Limits:* 6 requests a minute, 60,000 tokens a session, one in flight, one job queued
+  at a time.
+- *Invalid-file toast:* shown always. *Tier table:* tier 1 = 1 hit/1 dmg/0 m/bias 0/15 XP,
+  tier 2 = 2/1/50 m/0/20, tier 3 = 3/2/140 m/1/25, tier 4 = 3/2/400 m/2/30; stun is 2.0 s.
+  Never a boss. *Fit:* a file's `id` must match its file name, or it's rejected.
 
-**Next step:** Milestone B, the `Studio` worker (`src/content/studio.rs`) with a
-`GenMonster` job that writes `monsters/<id>.json` through `parse`. The watcher
-already loads whatever it writes. Ask the owner the open questions on moderation,
-which specials generated monsters may use, and `JEKO_STUDIO_MODEL` first. The `reload`
-and `genmonster` dev events, and `gen_content --monsters`, aren't built. FR32 milestones A and B can land
-before B or alongside it. Build the studio's queue with FR32's priority lanes, not a
-separate "sleep while `Loading`" check.
+**Next step:** Milestone C. It puts species in zones, which relaxes invariant 3, so ask
+the owner first (see the open questions). Not built: the `reload` dev event, and
+`gen_content --monsters`. FR32's lanes can now move look-ahead onto one shared queue.
 
 **Depends on:** [] _(FR22 builds on its `Studio` and watcher; generated monsters fill FR10's encounter zones and, later, FR2's road blockers; FR32 sets the studio's priority lane and the rule that zones bind only ready species)_
 
@@ -649,16 +653,18 @@ no rebuild. Today the assets are `include_str!`'d, so any change means a recompi
 - [x] Spec validation is a pure, unit-tested function: hostile input (huge sizes,
   unknown enums, invisible colours, long names) is clamped or rejected, and stats
   always come from the tier table.
-- [ ] With an API key, the studio generates new monsters in the background while
+- [x] With an API key, the studio generates new monsters in the background while
   the player walks. The frame never blocks (invariant 1), and a live question is
-  never delayed by a studio request.
+  never delayed by a studio request. *(Checked offline with the stand-in model: it
+  holds its job while a question is loading, a test covers that. Not yet watched with the
+  real model during play.)*
 - [ ] Generated monsters appear in encounter zones. Revisiting a zone shows the same
   monster, and zone placement is still covered by the existing determinism tests.
   A zone's species is bound off screen from the loaded roster, so no battle waits on
   a `GenMonster` job (FR32).
-- [ ] With no key, no network or an empty content dir, the game plays exactly as it
-  does today.
-- [ ] The token panel splits usage by request kind.
+- [x] With no key, no network or an empty content dir, the game plays exactly as it
+  does today. *(No key: no studio starts. An empty dir: the roster is empty and zones are unchanged.)*
+- [x] The token panel splits usage by request kind.
 - [ ] `docs/ARCHITECTURE.md` (new `content` module, the watcher in the frame,
   `Species`, env vars and dev events, invariant 3 as decided) and the README layout
   are updated. *(Done for Milestone A; the studio, zones and invariant 3 remain.)*

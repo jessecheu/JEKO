@@ -4,6 +4,8 @@
 //! egui, like `config` and `llm`. `game` draws and fights what's here.
 
 pub mod monster_spec;
+pub mod prompts;
+pub mod studio;
 pub mod watcher;
 
 pub use monster_spec::{MonsterInfo, MonsterSpec};

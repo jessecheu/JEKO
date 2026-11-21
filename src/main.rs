@@ -39,9 +39,17 @@ async fn main() {
         client = client.with_fake_model(std::time::Duration::from_millis(ms));
     }
     let fallback_tasks = jeko::llm::fallback_bank();
-    let mut game = Game::new(client, fallback_tasks);
     let content_dir = content::content_dir();
     eprintln!("content dir {}", content_dir.display());
+    // The studio designs new monsters in the background when there's a key (or
+    // the stand-in model) to ask with; the watcher below loads what it writes.
+    let studio = content::studio::Studio::spawn(
+        client.clone(),
+        content_dir.clone(),
+        content::studio::StudioConfig::from_env(),
+    );
+    let mut game = Game::new(client, fallback_tasks);
+    game.attach_studio(studio);
     game.watch_content(content::watcher::spawn(content_dir));
 
     // Dev aid: `JEKO_SHOT=out.png:60` saves a screenshot at frame 60 and
@@ -105,7 +113,7 @@ async fn main() {
             };
             ui::hud::draw_toast(ctx, &game.toast, toast_top);
             if game.settings.show_token_panel && !in_battle {
-                ui::token_panel::draw(ctx, game.llm(), &game.waits);
+                ui::token_panel::draw(ctx, game.llm(), &game.waits, game.studio_status().as_ref());
             }
             if let Some(d) = &game.dialogue {
                 ui::dialogue_panel::draw(ctx, d);

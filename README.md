@@ -36,6 +36,8 @@ src/
     mod.rs                content events, the roster of loaded spec monsters, where the content dir is (JEKO_CONTENT_DIR)
     monster_spec.rs       a monster as JSON data: parse + validate (clamped, unit-tested), stats from a tier table
     watcher.rs            background thread that rescans content/monsters/*.json and hot-reloads edits
+    studio.rs             background thread that has the model design new monsters and writes them to content/monsters/gen-*.json
+    prompts.rs            what the studio asks the model for
   llm/
     buffer.rs             ready-question buffer, the pure look-ahead planner, and the wait readout
     cerebras_client.rs    OpenAI-compatible chat-completions call to Cerebras, async wrapper

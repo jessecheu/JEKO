@@ -2,3 +2,7 @@
 .env
 /result
 .direnv/
+
+# Monsters the studio designs (FR21): a per-machine cache. Rename one (drop the
+# "gen-" prefix and fix its id) to keep it and commit it.
+/content/monsters/gen-*.json

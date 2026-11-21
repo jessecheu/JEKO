@@ -1,3 +1,4 @@
+use crate::content::studio::StudioStatus;
 use crate::llm::buffer::WaitStats;
 use crate::llm::cerebras_client::CerebrasClient;
 use crate::llm::usage::{RequestKind, RequestUsage, TokenStats, HISTORY_LEN};
@@ -18,7 +19,12 @@ const BAR_RADIUS: u8 = 3;
 /// per recent request, and session token totals. Sits bottom-right, under
 /// the Progress panel. Cerebras' speed is what makes a mid-walk problem
 /// possible, so it's shown directly.
-pub fn draw(ctx: &egui::Context, client: &CerebrasClient, waits: &WaitStats) {
+pub fn draw(
+    ctx: &egui::Context,
+    client: &CerebrasClient,
+    waits: &WaitStats,
+    studio: Option<&StudioStatus>,
+) {
     let stats = client.token_stats();
 
     egui::Window::new("Token Usage")
@@ -56,6 +62,9 @@ pub fn draw(ctx: &egui::Context, client: &CerebrasClient, waits: &WaitStats) {
             by_kind(ui, &stats);
             if let Some(readout) = waits.readout() {
                 ui.label(egui::RichText::new(readout).small().weak());
+            }
+            if let Some(line) = studio.and_then(studio_line) {
+                ui.label(egui::RichText::new(line).small().weak());
             }
         });
 }
@@ -201,6 +210,26 @@ fn totals(ui: &mut egui::Ui, stats: &TokenStats) {
             ui.label(requests);
             ui.end_row();
         });
+}
+
+/// The studio's queue, in a line: "studio: 3 made · 1 queued". Nothing until
+/// it has something to say.
+fn studio_line(s: &StudioStatus) -> Option<String> {
+    if s.out_of_budget {
+        return Some(format!("studio: {} made · out of token budget", s.made));
+    }
+    let mut parts = Vec::new();
+    if s.made > 0 {
+        parts.push(format!("{} made", s.made));
+    }
+    let waiting = s.queued + usize::from(s.working);
+    if waiting > 0 {
+        parts.push(format!("{waiting} queued"));
+    }
+    if s.rejected + s.failed > 0 {
+        parts.push(format!("{} turned down", s.rejected + s.failed));
+    }
+    (!parts.is_empty()).then(|| format!("studio: {}", parts.join(" · ")))
 }
 
 /// Requests per purpose, shown once the game has asked for anything but

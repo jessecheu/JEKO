@@ -16,6 +16,7 @@ pub mod skills;
 pub mod task_trigger;
 pub mod world;
 
+use crate::content::studio::{self, MonsterJob, Studio, StudioStatus};
 use crate::content::{ContentEvent, Roster};
 use crate::llm::buffer::{Source, WaitStats};
 use crate::llm::cerebras_client::CerebrasClient;
@@ -170,7 +171,23 @@ pub struct Game {
     /// A battle's next question, asked for while the attack animation plays and
     /// shown when the phase reaches `Question` (FR32).
     next_question: Option<(TriggerState, Ask)>,
+    /// The background monster designer (FR21), if there's a key to ask with.
+    studio: Option<Studio>,
+    /// Generated species that have been put in front of the player, so the
+    /// studio stocks up on new ones instead of what's already been seen.
+    seen_generated: std::collections::HashSet<String>,
+    /// The studio's finished count when last looked at, and the seconds left
+    /// before it may be asked for another: a monster it just wrote isn't in
+    /// the roster until the watcher's next scan, and counting it as missing
+    /// would order a second one.
+    studio_made_seen: u32,
+    studio_settle: f32,
 }
+
+/// How many unseen generated monsters of the tier coming up the studio keeps
+/// ready. A zone never waits for one (FR32), so the stock has to be built
+/// ahead of the player.
+const STUDIO_STOCK: usize = 3;
 
 fn camera_target(player_y: f32) -> f32 {
     player_y - screen_height() * CAMERA_ANCHOR
@@ -221,6 +238,10 @@ impl Game {
             waits: WaitStats::default(),
             asking: None,
             next_question: None,
+            studio: None,
+            seen_generated: Default::default(),
+            studio_made_seen: 0,
+            studio_settle: 0.0,
         }
     }
 
@@ -229,6 +250,19 @@ impl Game {
     /// and only the built-in monsters exist.
     pub fn watch_content(&mut self, rx: Receiver<ContentEvent>) {
         self.content_rx = Some(rx);
+    }
+
+    /// Hands the game the studio that designs new monsters in the background
+    /// (`content::studio::Studio::spawn`). Without one only the monsters
+    /// already in the content dir exist.
+    pub fn attach_studio(&mut self, studio: Option<Studio>) {
+        self.studio = studio;
+    }
+
+    /// What the studio has done so far, for the token panel; `None` when
+    /// there isn't one.
+    pub fn studio_status(&self) -> Option<StudioStatus> {
+        self.studio.as_ref().map(Studio::status)
     }
 
     /// Applies whatever the content watcher has found since last frame.
@@ -374,6 +408,7 @@ impl Game {
 
         self.poll_questions(dt);
         self.tick_prefetch();
+        self.tick_studio(dt);
 
         // Stepping into a monster's patch of ferns starts a battle.
         if !busy {
@@ -499,6 +534,9 @@ impl Game {
     /// clear on victory (`None` for a scripted dev battle).
     fn start_battle(&mut self, species: Species, zone: Option<usize>) {
         self.stash_questions();
+        if let Species::Spec(spec) = &species {
+            self.seen_generated.insert(spec.id.clone());
+        }
         self.trigger_state = TriggerState::Idle;
         self.interact_target = None;
         self.blocker_target = None;
@@ -752,7 +790,7 @@ impl Game {
             "STATE hp={}/{} level={} xp={} streak={} dist={}m flasks={} beaten={} \
              zones_cleared={} battle={:?} trigger={} dialogue={} game_over={} hat_stolen={} \
              arrows={} roster={} curse={:.2} blocker_in_reach={} blockers_left={} goalpost={} \
-             questions=[{}] buffered={:?} flying={}",
+             questions=[{}] buffered={:?} flying={} studio={}",
             self.health.current,
             self.health.max,
             self.progression.level,
@@ -787,6 +825,13 @@ impl Game {
                 .unwrap_or_else(|| "none shown yet".into()),
             self.prefetch.buffer.counts(),
             self.prefetch.in_flight(),
+            self.studio_status().map_or_else(
+                || "off".to_string(),
+                |s| format!(
+                    "made={} queued={} working={} rejected={} failed={}",
+                    s.made, s.queued, s.working, s.rejected, s.failed
+                ),
+            ),
         )
     }
 
@@ -903,6 +948,8 @@ impl Game {
                 (TriggerState::Idle, None) if self.npc_in_reach => self.talk_to_pebble(),
                 _ => {}
             },
+            // Ask the studio for a tier 2 monster now, whatever the stock.
+            "genmonster" => self.enqueue_monster(2),
             "stun" => self.player.stun(2.5),
             "cheer" => {
                 self.player.cheer();
@@ -1042,6 +1089,70 @@ impl Game {
         let wants = prefetch::demand(&upcoming, self.progression.level);
         self.prefetch
             .tick(&self.client, &wants, std::time::Instant::now());
+    }
+
+    /// Keeps the studio's stock of unseen generated monsters topped up for the
+    /// tier the player is heading into, and tells it when a question outranks
+    /// it. It's the lowest lane (FR32): it waits while a question is loading,
+    /// a look-ahead is in flight, or the game is paused.
+    fn tick_studio(&mut self, dt: f32) {
+        let Some(studio) = &self.studio else {
+            return;
+        };
+        let loading = |s: &TriggerState| matches!(s, TriggerState::Loading(_));
+        let busy = self.is_paused()
+            || loading(&self.trigger_state)
+            || self.next_question.as_ref().is_some_and(|(s, _)| loading(s))
+            || self.prefetch.in_flight() > 0;
+        studio.set_live_busy(busy);
+
+        // One job at a time keeps the queue short and the stock honest, and a
+        // new file gets a moment to reach the roster (the watcher scans every
+        // `watcher::POLL`) before the stock is counted again.
+        let status = studio.status();
+        if status.made != self.studio_made_seen {
+            self.studio_made_seen = status.made;
+            self.studio_settle = crate::content::watcher::POLL.as_secs_f32() * 3.0;
+        }
+        self.studio_settle = (self.studio_settle - dt).max(0.0);
+        if status.queued + usize::from(status.working) > 0 || self.studio_settle > 0.0 {
+            return;
+        }
+        let tier = crate::content::monster_spec::tier_for_meters(self.distance_m() + 100);
+        let stock = self
+            .roster
+            .iter()
+            .filter(|s| {
+                studio::is_generated(&s.id)
+                    && s.tier == tier
+                    && !self.seen_generated.contains(&s.id)
+            })
+            .count();
+        if stock < STUDIO_STOCK {
+            self.enqueue_monster(tier);
+        }
+    }
+
+    /// Asks the studio for a monster of `tier`, on a maths topic that fits
+    /// it, avoiding every name already taken.
+    fn enqueue_monster(&self, tier: u32) {
+        let Some(studio) = &self.studio else {
+            return;
+        };
+        use crate::content::prompts::TOPICS;
+        let made = studio.status().made as usize;
+        let band = (tier.clamp(1, 4) as usize - 1) * 2;
+        let topic = TOPICS[(band + made % 2) % TOPICS.len()];
+        let mut avoid: Vec<String> = MonsterKind::ALL
+            .iter()
+            .map(|k| k.name().to_string())
+            .collect();
+        avoid.extend(self.roster.iter().map(|s| s.name.clone()));
+        studio.enqueue(studio::Job::Monster(MonsterJob {
+            tier,
+            topic: topic.to_string(),
+            avoid,
+        }));
     }
 
     /// Lets go of the question in flight and the battle's next one, keeping

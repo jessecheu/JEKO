@@ -452,6 +452,18 @@ fn validate(raw: RawSpec) -> Result<MonsterSpec, String> {
     })
 }
 
+/// The toughest tier that can appear `meters` up the road: the tier table's
+/// `min_m` bands (0, 50, 140 and 400 m). What the studio uses to decide which
+/// tier to stock up on.
+pub fn tier_for_meters(meters: u32) -> u32 {
+    match meters {
+        0..=49 => 1,
+        50..=139 => 2,
+        140..=399 => 3,
+        _ => 4,
+    }
+}
+
 impl MonsterSpec {
     /// The gameplay numbers, from the tier table alone: a spec can't set
     /// them. The tiers follow the shipped roster's bands (tier 1 plays like
@@ -597,6 +609,18 @@ mod tests {
         // A colour that already reads is left alone.
         let s = parse(GOOD).unwrap();
         assert_eq!(s.palette.main, Rgb::parse_hex("#6fae4f").unwrap());
+    }
+
+    #[test]
+    fn the_tier_for_a_distance_matches_the_tier_table() {
+        for tier in 1..=4 {
+            let spec = parse(&with("tier", &tier.to_string())).unwrap();
+            let min_m = spec.info().min_m;
+            assert_eq!(tier_for_meters(min_m), tier, "from {min_m} m");
+            if min_m > 0 {
+                assert_eq!(tier_for_meters(min_m - 1), tier - 1);
+            }
+        }
     }
 
     #[test]

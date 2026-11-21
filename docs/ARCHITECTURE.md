@@ -22,7 +22,8 @@ timestamp: 2026-11-21
 > at night (FR24), with the mad scientist's manor drawn as a backdrop across the lake.
 > Besides the hand-drawn monsters, monsters can be defined as JSON specs in a content
 > dir (FR21). A watcher thread reloads them while the game runs, over the same kind
-> of polled channel.
+> of polled channel, and a studio thread designs new ones with the model in the
+> background and writes them to that dir, lowest priority, never in a question's way.
 > Once the player steps onto the road, the doctor's curse (FR1) worsens while they
 > linger, which is what keeps them moving.
 
@@ -60,6 +61,10 @@ Game::tick_prefetch ── world.upcoming(1.5 screens) ─▶ plan_prefetch ─�
 
 content::watcher thread ── rescans <content dir>/monsters/*.json every 0.5 s
   └─ ContentEvent over mpsc ── Game::poll_content, try_recv() each frame ──▶ Game.roster
+
+content::studio thread ── waits for a job and for the model to be free (Game::tick_studio)
+  └─ prompt ─▶ model ─▶ finish_monster (tier forced, special limited, text vetted, parse)
+       └─ writes <content dir>/monsters/gen-<name>.json ──▶ the watcher above loads it
 ```
 
 *Figure: the frame loop and its two background paths: questions from Cerebras (asked
@@ -84,7 +89,7 @@ main.rs ──▶ ui ──▶ game ──▶ llm ──▶ config
   │         │        ├────▶ progression
   │         │        └────▶ content
   │         └──────────────▶ progression, llm   (read-only, for the HUD and token panel)
-  └──▶ content   (starts the watcher)
+  └──▶ content   (starts the watcher and the studio)
 gen_content.rs ──▶ llm, config
 ```
 
@@ -92,7 +97,7 @@ The layering holds today, and new code should keep it:
 
 - **`config`, `content`, `llm`, `progression`** know nothing about macroquad or egui. They're
   plain Rust, so they can be tested and reused without a window (`gen_content` uses
-  `llm` this way).
+  `llm` this way). The studio thread lives in `content` and uses `llm` for the call.
 - **`game`** uses macroquad (input, drawing, render targets) and never egui. It
   mentions egui only in comments.
 - **`ui`** is the only module that imports egui. Its panels are functions, not
@@ -103,6 +108,8 @@ The layering holds today, and new code should keep it:
 | `config.rs` | `Config::load()`: reads `CEREBRAS_API_KEY`, `CEREBRAS_MODEL`, `CEREBRAS_BASE_URL` from the environment, after `dotenvy` loads `.env`. An empty key counts as no key. `instance_name()`: `JEKO_INSTANCE`, else the folder the binary was built from (`CARGO_MANIFEST_DIR`), shown in the window title. |
 | `content/mod.rs` | `ContentEvent` (a spec loaded or reloaded, a file removed, a file rejected), `Roster` (the loaded specs by id, sorted), and `content_dir()`. |
 | `content/monster_spec.rs` | `MonsterSpec`, a monster as data, and `parse`, the only way in: JSON in, a clamped and validated spec out. `MonsterInfo`, the gameplay numbers every monster has, and the tier table (`MonsterSpec::info`). |
+| `content/studio.rs` | `Studio`, the background designer: one thread, a job queue (`Job::Monster`), the gate that keeps it behind live questions (`set_live_busy`), the per-minute cap and token budget (`StudioConfig`), and `StudioStatus`. `finish_monster` turns a model reply into a spec file (the only writer of generated specs), `vet_text` is the word blocklist, and `fake_monster_json` is the stand-in model's creature. |
+| `content/prompts.rs` | `monster_prompt`: what the studio asks the model for (a kid-safe, original creature in the spec's own vocabulary, with a shipped spec as the shape to follow), the lists of allowed values, and the maths topics. |
 | `content/watcher.rs` | `Scanner` (one rescan of `monsters/*.json`, by modification time and length) and `spawn`, the thread that runs it every `POLL` (0.5 s). |
 | `llm/mod.rs` | `MathTask { topic, problem, answer: f64, hint, difficulty, explanation, expression }`, the one task type every question path produces (the last two are FR22's and default to empty), and `fallback_bank()`, the compiled-in bank. |
 | `llm/buffer.rs` | `QuestionBuffer` (ready questions per difficulty), `plan_prefetch` (the pure look-ahead policy and its `PrefetchCaps`), and `WaitStats` (where each shown question came from and how long the player waited). |
@@ -134,8 +141,9 @@ The layering holds today, and new code should keep it:
 
 ## 3. The frame loop (`src/main.rs`)
 
-Before the loop, `main` builds `Game` and starts the content watcher on
-`content::content_dir()` (`Game::watch_content`). macroquad's `#[macroquad::main]` gives an `async fn main`, but `next_frame().await`
+Before the loop, `main` builds `Game`, starts the content watcher on
+`content::content_dir()` (`Game::watch_content`) and, when there's a key (or the
+stand-in model), the studio (`Game::attach_studio`). macroquad's `#[macroquad::main]` gives an `async fn main`, but `next_frame().await`
 only yields once per frame. **It isn't an executor that can drive other futures**,
 which is why network work goes to a thread (§4). Each iteration does this, in order:
 
@@ -169,7 +177,7 @@ Two consequences of this order:
 Everything that changes during a run is a field on `Game`, or is owned by one: `player`,
 `world`, `progression`, `health`, `curse`, `trigger_state`, `battle`, `dialogue`, `settings`,
 `run` stats, the camera (`cam_y`, `shake`), toasts, the goalpost `Tracker`, the game clock `time`, and the
-spec monster `roster` with the watcher's channel, and the question `prefetch` buffer with its `waits` readout. The UI
+spec monster `roster` with the watcher's channel, the `studio` handle, and the question `prefetch` buffer with its `waits` readout. The UI
 gets it by reference. Nothing else holds gameplay state.
 
 `Game::update` runs these checks in a fixed order. The first one that matches decides
@@ -199,7 +207,7 @@ The road frame, in order:
    while paused.
 3. The camera eases toward the player (anchor 0.66 of screen height, rate `1 − e^(−6·dt)`).
    `world.ensure_generated` keeps one chunk past the top of the screen generated.
-4. `poll_questions(dt)`, then `tick_prefetch` (§5).
+4. `poll_questions(dt)`, then `tick_prefetch` (§5), then `tick_studio(dt)` (§8).
 5. If not busy, stepping into an uncleared fern patch starts a battle.
 6. Interaction targets: the nearest fresh flask in reach (`interact_target`), or else
    an undefeated road blocker in reach (`blocker_target`), or else Professor Pebble.
@@ -596,6 +604,36 @@ Encounter zones still pick from the built-in roster only. Spec monsters are foug
 through the `battle:<id>` dev event until FR21's later milestones put them on the
 road.
 
+**The studio** (FR21, `content/studio.rs`). With a key (or `JEKO_DEV=fakemodel`) and
+unless `JEKO_STUDIO=off`, `main` starts one long-lived thread that designs monsters.
+`Game::tick_studio` runs on the road frame:
+
+- **Lowest lane.** It sets the studio's `live_busy` flag while the game is paused, a
+  question is loading (the shown one or a battle's next) or a look-ahead is in flight
+  (§5). The worker starts no request while it's set. It keeps at most one request in
+  flight, stays under `JEKO_STUDIO_RPM` (6 a minute) and stops for the session once
+  `JEKO_STUDIO_TOKENS` (60,000, about 60 monsters) are spent on monsters and lessons.
+- **Stock.** It looks at the tier the player is heading into
+  (`monster_spec::tier_for_meters(distance + 100 m)`) and, if fewer than 3 generated
+  monsters of that tier haven't been fought yet, queues a `Job::Monster` for it, one job
+  at a time, waiting about 1.5 s after a finished job for the watcher to load its file
+  before counting the stock again. The job carries a maths topic that fits the tier and
+  the names already taken. The dev event `genmonster` queues one for tier 2.
+- **What the model returns is data, and the game keeps the rules.** `finish_monster`
+  forces the requested tier, limits `special` to `none` or `grows` (`stun` and
+  `steals_hat` stay with hand-written specs, provisionally), fills in the theme, makes
+  the id itself (`gen-<name>`, unique) and runs `monster_spec::parse` before anything is
+  written. The name, blurb, fact and theme topic are vetted against a whole-word
+  blocklist (other people's characters, and anything not for a children's game). The
+  prompt asks for an original, kind creature. The file is written beside its final name
+  and renamed, so the watcher never sees half a spec.
+- **Persistence.** Generated specs are plain files in `content/monsters/`, so they
+  survive between runs and are loaded at startup like any other; the checkout's
+  `.gitignore` leaves `gen-*.json` out. Renaming one (dropping the prefix, fixing its
+  `id`) keeps it for committing.
+- The token panel shows "studio: 3 made · 1 queued", and the `STATE` line the counts.
+  Every studio call is tagged `RequestKind::Monster`.
+
 ---
 
 ## 9. Player, health and effects
@@ -715,7 +753,8 @@ rebuild. The exception is the content dir, which is read at runtime and hot-relo
 environment, a `.env` file, or secretspec (`secretspec.toml`). See the README.
 `JEKO_CONTENT_DIR` points the content watcher at another folder (§8).
 `JEKO_PREFETCH=off` turns the question look-ahead off, and `JEKO_PREFETCH_RPM` (default 20)
-caps its requests per minute (§5).
+caps its requests per minute (§5). `JEKO_STUDIO=off` turns the monster studio off, and
+`JEKO_STUDIO_RPM` (6) and `JEKO_STUDIO_TOKENS` (60,000) bound it (§8).
 `JEKO_INSTANCE` names the checkout for the window title (`JEKO — Math Quest [name]`)
 and the startup stderr line. It defaults to the build folder's name, so two clones
 run side by side can be told apart. Nothing else is shared between clones: each has
@@ -740,7 +779,9 @@ driving the window:
   a shot shows the whole world) and `calm` (turn on reduce flashing).
 - `JEKO_DEV=fakemodel:700` (no `@frame`) swaps the model for a stand-in that answers every
   call from the fallback bank after 700 ms, with made-up token counts, so the buffer, the
-  soft deadline and the token panel's wait readout can be tried with no key.
+  soft deadline and the token panel's wait readout can be tried with no key. The studio
+  uses it too: it writes made-up creatures, so the whole path from job to a fightable
+  monster runs offline. `genmonster@N` queues one tier 2 job.
 - With either variable set, the loop steps a fixed 1/60 s, so a run is repeatable
   frame by frame. Without an API key, questions come straight from the fallback
   bank, so `right`/`wrong` work on the next frame.
@@ -750,8 +791,10 @@ driving the window:
 
 | Module | What's covered |
 |---|---|
-| `content/monster_spec.rs` (7) | A good spec loads with defaults. Huge and negative numbers are clamped. Unknown enum values are rejected. Bad ids, empty names and malformed colours are rejected. Long or multi-line text is cut and cleaned. Too-dark colours are lightened until they read against `INK`. Stats come from the tier table only, whatever extra fields say. |
+| `content/monster_spec.rs` (8) | A good spec loads with defaults. Huge and negative numbers are clamped. Unknown enum values are rejected. Bad ids, empty names and malformed colours are rejected. Long or multi-line text is cut and cleaned. Too-dark colours are lightened until they read against `INK`. Stats come from the tier table only, whatever extra fields say. The tier for a distance matches the table's `min_m`. |
 | `content/watcher.rs` (3) | A missing dir is empty. A file loads, an edit reloads it, a broken edit and a mismatched id are reported, and a delete is reported. The specs shipped in `content/monsters/` all load. |
+| `content/studio.rs` (12) | A good reply becomes a loadable file with the tier forced and the special limited. Ids are unique, fit the limit and alphabet. Bad, off-limits and hostile replies are rejected or clamped and write nothing. Whole-word vetting. The stand-in model's creatures always pass. The worker writes one file per job, holds jobs while a live question is loading, obeys the minute cap and stops at the token budget. No key or switched off means no studio. |
+| `content/prompts.rs` (4) | The shipped example is valid, every value the prompt lists is accepted by the parser, the prompt carries the tier, topic and names to avoid. |
 | `content/mod.rs` (1) | A rejected file keeps the last good version in the roster; a delete removes it. |
 | `game/monster_rig.rs` (2) | The palette check's `INK_RGB` matches `gfx::INK`; parts spread evenly. |
 | `game/world.rs` (24) | Scenery never lands on the road. Every flask is reachable and on the road. Generation is deterministic. Interact reaches only nearby fresh flasks. The clamp keeps the player on the road. Encounters are on the road and deterministic. A Titan guards every 500 m, blocking the road. Monsters block the road regularly (no gap over 100 m, the first under 70 m) and deterministically. A blocker shuts the road, can be challenged but doesn't ambush, and opens once beaten. Tougher monsters appear further up. The hub is wide, dry and bounded. The walkable width is continuous through the gate. Goalposts are deterministic and stand in their chunk, nothing hostile is one in the hub, the pick is always north of the player, nearest first and the bigger event first within 25 m, a solved flask or beaten monster is never offered again, and a blocker counts down to its line. `upcoming_in` is nearest first and in range, matches where the world places things, shows no monster in the hub, takes a monster's hits and bias from its stats, and `World::upcoming` leaves out what's been dealt with. |
@@ -824,7 +867,9 @@ still to make:
   new answer type through the prompt, the parser, `task_panel` and `submit_answer`.
 - **One thread and one HTTP client per request**, with no cancellation or retry. Look-ahead
   now overlaps requests (at most two prefetches plus a live one), which is still fine. The
-  fix, one long-lived worker with a priority queue, comes with FR21's studio.
+  fix, one long-lived worker with a priority queue, is half there: the studio is a long-lived
+  thread, but live and look-ahead questions still spawn a thread each, and the studio's
+  lane is kept by a flag (`live_busy`), not by a shared queue.
 - **Look-ahead can waste calls.** It asks for questions the player may never reach (they die
   first, or skip a flask), so it costs up to about 1.5 times the calls. `JEKO_PREFETCH_RPM`
   bounds it.
