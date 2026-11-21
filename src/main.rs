@@ -83,7 +83,22 @@ async fn main() {
             if game.settings.show_hud && !in_battle {
                 ui::hud::draw(ctx, &game.progression, game.distance_m());
             }
-            ui::hud::draw_toast(ctx, &game.toast);
+            // The goalpost tracker (FR31) and the toast share the top centre,
+            // so the toast steps down while the tracker is up.
+            let tracker = if game.game_over.is_none() && !in_battle {
+                game.goalpost.view()
+            } else {
+                None
+            };
+            if let Some(v) = &tracker {
+                ui::goalpost_panel::draw(ctx, v);
+            }
+            let toast_top = if tracker.is_some() {
+                ui::goalpost_panel::TOAST_BELOW_BADGE
+            } else {
+                12.0
+            };
+            ui::hud::draw_toast(ctx, &game.toast, toast_top);
             if game.settings.show_token_panel && !in_battle {
                 ui::token_panel::draw(ctx, game.llm());
             }

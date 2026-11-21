@@ -38,11 +38,13 @@ pub fn draw(ctx: &egui::Context, progression: &Progression, distance_m: u32) {
 }
 
 /// The unlock / event toast, top center. Drawn whatever the HUD setting.
-pub fn draw_toast(ctx: &egui::Context, toast: &Option<(String, f32)>) {
+/// `top` is its distance from the top edge: lower than usual while the
+/// goalpost tracker (FR31) is up in the same spot.
+pub fn draw_toast(ctx: &egui::Context, toast: &Option<(String, f32)>, top: f32) {
     if let Some((msg, _)) = toast {
         egui::Window::new("toast")
             .title_bar(false)
-            .anchor(egui::Align2::CENTER_TOP, egui::vec2(0.0, 12.0))
+            .anchor(egui::Align2::CENTER_TOP, egui::vec2(0.0, top))
             .show(ctx, |ui| {
                 ui.label(egui::RichText::new(msg).strong().size(18.0));
             });

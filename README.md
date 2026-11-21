@@ -47,6 +47,7 @@ src/
     gfx.rs                shared drawing helpers (night palette, ink outline, shadows, ribbons, stars, glows, vignette, potion flask)
     player.rs             WASD/arrow movement along the path, speed multiplier from upgrades and Shift sprint, player sprite, jump/roll/shoot
     skills.rs             roll charges and sprint stamina, and the skill bar at the bottom centre
+    goalpost.rs           the goalpost tracker's state: the next thing up the road, metres left, its pop/unroll/"Now!" animation
     bow.rs                the bow: shot timing, bow and arrow drawing, cosmetic arrows that arc and stick where they land
     flicker.rs            reusable flicker look (spawn ghost, damage blink), honours "reduce flashing"
     health.rs             player HP in half-hearts (damage/heal/refill, clamped, unit-tested)
@@ -62,6 +63,7 @@ src/
     upgrades.rs             upgrade definitions (just "Quickstep Boots" for the vertical slice)
   ui/
     hud.rs                  progress bar + streak + upgrade list + unlock toast
+    goalpost_panel.rs        the goalpost badge at the top centre: a circle that unrolls into "name · N m"
     settings_panel.rs        settings modal (O): panel toggles, reduce flashing, controls reference
     game_over_panel.rs       Game Over screen: run stats, try again
     dialogue_panel.rs        NPC dialogue box
@@ -132,7 +134,7 @@ hunting required.
    battles `pinch`/`jelly`/`puff`/`coco`/`gull`/`wyrm`/`titan`, `battle:<id>`
    for a monster from `content/monsters/`, `right`/
    `wrong` answers through the real submit path, `e` presses E, and
-   teleports `toflask`/`tozone`/`toblocker`/`topebble`, `nohud` hides the side panels,
+   teleports `toflask`/`tozone`/`toblocker`/`topebble`/`toroad`/`neargoal`/`atgoal`, `nohud` hides the side panels,
    `calm` turns on reduce flashing, `curse`/`cursefull` set the curse to
    the fever stage or full) at those frames, stepping a
    fixed 1/60 s per frame. At the shot it prints a `STATE ...` line of run
@@ -215,6 +217,9 @@ without re-checking this.
 
 - **Progress bar** — always-visible XP bar toward the next level
   (`ui/hud.rs`), so "how close am I" is never a question.
+- **Goalpost tracker** — a badge at the top centre names the next thing up the
+  road (a flask, ferns, a monster, a milestone, the Tide Titan) and counts down
+  the metres to it (`ui/goalpost_panel.rs`, `game/goalpost.rs`).
 - **Streak multiplier** — consecutive correct answers raise XP gain up to
   +100% (`Progression::streak_multiplier`). Getting one wrong resets it to
   zero — this is what makes stopping mid-streak feel costly, which is the

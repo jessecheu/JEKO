@@ -105,7 +105,7 @@ The layering holds today, and new code should keep it:
 | `llm/usage.rs` | `RequestUsage` (one call's tokens and speed) and `TokenStats` (session totals plus the last 24 requests). |
 | `game/mod.rs` | `Game`: run state, the per-frame update and draw, the mode precedence, the damage, answer and reset entry points, and the dev events. |
 | `game/task_trigger.rs` | `TriggerState`, the question state machine (§4), and `pick_fallback`. |
-| `game/world.rs` | Coordinates and camera (`View`), path geometry, chunking, potion flasks (`Spot`), encounter zones and road blockers (`EncounterZone`, `clamp_blocked`), the depth-sorted `Tall` items, and drawing the ground, the cobbled road, the light pools, the mist, the bats and fireflies, and where the manor sits on screen. |
+| `game/world.rs` | Coordinates and camera (`View`), path geometry, chunking, potion flasks (`Spot`), encounter zones and road blockers (`EncounterZone`, `clamp_blocked`), the goalposts the tracker counts down to (`Goalpost`, `goalposts_in_chunk`, `pick_goalpost`, `World::next_goalpost`), the depth-sorted `Tall` items, and drawing the ground, the cobbled road, the light pools, the mist, the bats and fireflies, and where the manor sits on screen. |
 | `game/decor.rs` | Per-chunk forest scenery generation (`generate_chunk`), the hand-placed hub camp (`hub_layout`), how each prop draws, and which props cast light (`Decoration::lights`). |
 | `game/manor.rs` | The gothic manor backdrop (`draw`, with an optional lake reflection), its lightning timing (`lightning`), and the shared `bat` silhouette. |
 | `game/gfx.rs` | The shared drawing vocabulary: the `INK`, `SHADOW`, `MOON`, `LANTERN`, `LAB_GREEN` and `NIGHT` colours, shading, ellipses, ribbons, stars, gradient meshes (`gradient_ring`, `glow`, `vignette`), the potion flask, hearts, the key prompt, the item-get burst, and `hash01`. |
@@ -113,6 +113,7 @@ The layering holds today, and new code should keep it:
 | `game/skills.rs` | Movement skills (FR26): `RollCharges` (3 rolls, a trickle, a lockout) and `Stamina` (sprint drain, regen, winded), held together in `Skills`, and `draw_bar`, the skill bar at the bottom centre. |
 | `game/bow.rs` | The bow: the shot's timing (`aim`, `SHOOT_S`, `RELEASE_S`), drawing the bow slung and held and an arrow (`draw_arrow`), and `Arrow`, a cosmetic projectile that arcs, then sticks in the ground or splashes in the lake. |
 | `game/flicker.rs` | `Flicker` / `FlickerKind` (spawn ghost, damage blink). It turns elapsed time into a `Look` (tint and alpha) and honours reduce flashing. |
+| `game/goalpost.rs` | `Tracker` (FR31): which goalpost the top-centre badge shows, the metres left, and its pop, unroll, "Now!" and close animation. It produces a `TrackerView` and draws nothing. |
 | `game/health.rs` | `Health`, counted in half-hearts: damage, heal, refill, clamped. |
 | `game/curse.rs` | `Curse` (FR1): the curse level and its rules (`tick` returns a `Tick` for `Game` to act on, `cleanse`, `speed_factor`), its `Stage`s, and its drawing (`draw_tint`, `draw_wisps`, `draw_meter`). |
 | `game/monster.rs` | `Species` (a built-in `MonsterKind` or a `MonsterSpec`), the `MonsterKind` roster and its stats, distance-weighted `pick`, the shared canvas and poses, and per-monster drawing and animation. |
@@ -120,7 +121,7 @@ The layering holds today, and new code should keep it:
 | `game/battle.rs` | `Battle` and its `Phase`s, the iris transition, and the battle-view drawing. |
 | `game/dialogue.rs` | `Dialogue` (typewriter reveal), the `PEBBLE_TUTORIAL` lines, and `load_bank()` for `assets/dialogue.json`. |
 | `progression/` | `Progression` (XP, level curve, streak multiplier, upgrade unlocks) and `upgrades.rs` (upgrade definitions). |
-| `ui/` | One egui function per panel (`hud`, `task_panel`, `token_panel`, `settings_panel`, `dialogue_panel`, `game_over_panel`), plus `style::apply`. |
+| `ui/` | One egui function per panel (`hud`, `goalpost_panel`, `task_panel`, `token_panel`, `settings_panel`, `dialogue_panel`, `game_over_panel`), plus `style::apply`. |
 
 ---
 
@@ -141,7 +142,8 @@ which is why network work goes to a thread (§4). Each iteration does this, in o
 6. `game.draw_pause_overlay()`: the pause dim, or the dim behind Game Over.
 7. **egui pass** (`egui_macroquad::ui`): `ui::style::apply`, then set
    `game.typing = ctx.wants_keyboard_input()`, then draw the panels. The HUD and token
-   panel are hidden during a battle or dialogue. The task panel returns
+   panel are hidden during a battle or dialogue. The goalpost badge (`goalpost_panel`, FR31) shows when
+   `game.goalpost.view()` has something, and the toast steps down below it. The task panel returns
    `TaskPanelEvent::Submit`, which calls `game.submit_answer()`. The Game Over panel
    returns `true`, which calls `game.reset()`.
 8. `egui_macroquad::draw()`, then the `JEKO_SHOT` screenshot check, then `next_frame().await`.
@@ -159,7 +161,7 @@ Two consequences of this order:
 
 Everything that changes during a run is a field on `Game`, or is owned by one: `player`,
 `world`, `progression`, `health`, `curse`, `trigger_state`, `battle`, `dialogue`, `settings`,
-`run` stats, the camera (`cam_y`, `shake`), toasts, the game clock `time`, and the
+`run` stats, the camera (`cam_y`, `shake`), toasts, the goalpost `Tracker`, the game clock `time`, and the
 spec monster `roster` with the watcher's channel. The UI
 gets it by reference. Nothing else holds gameplay state.
 
@@ -172,7 +174,7 @@ what the frame does:
 | 1 | **Game over** | `game_over.is_some()` | Only the death animation advances. After `DEATH_ANIM_S` (1.2 s), E or Enter calls `reset()`. |
 | 2 | Toggles | not `typing` | O toggles `settings_open`, and Esc closes it. With settings closed, P toggles `paused`. |
 | 3 | **Paused** | `paused \|\| settings_open` | Only `trigger_state.poll()` runs, so a response that arrives isn't lost. The clock doesn't advance. |
-| 4 | (every unpaused frame) | | Advance `time`, shake, the toast and the item-get timers. |
+| 4 | (every unpaused frame) | | Advance `time`, shake, the toast and the item-get timers, then `tick_goalpost` (the tracker, §10). |
 | 5 | **Battle** | `battle.is_some()` | `update_battle`: the player is held, phases advance (§8), and new questions are requested. |
 | 6 | **Dialogue** | `dialogue.is_some()` | The player is held. E reveals the line, then advances, then closes. |
 | 7 | **Road** | otherwise | See below. |
@@ -346,6 +348,17 @@ gets:
 
 Because flasks take even chunks and monsters take odd ones, they never crowd each
 other.
+
+**Goalposts** (FR31). `goalposts_in_chunk(k)` lists what the tracker can point at in chunk `k`,
+from the same pure functions that place the things: a milestone stone every
+`GOAL_MILESTONE_EVERY_M` (100 m; the road has a stone every 50 m, too often for a goal), the
+flask, and the encounter as a `Patch`, a `Blocker` or the `Titan`. Each has `y`, the
+world y at which the player has *arrived* (a blocker's is its `BLOCK_GAP` line, so the
+count reaches 0 m where the road stops them), and `at`, where the thing stands.
+`World::next_goalpost(y)` scans the next `GOAL_SCAN_CHUNKS` chunks north, drops flasks that
+are no longer `Fresh` and zones that are `cleared`, and `pick_goalpost` chooses: the nearest
+north of the player, unless a higher-ranked kind (Titan, blocker, milestone, patch, flask) is
+within `GOAL_RANK_SLACK_M` (25 m) of being as near. A new placed thing adds a `GoalKind`.
 
 **Road blockers** (FR2). An `EncounterZone` with `blocks` set is a monster standing on
 the road instead of hiding in ferns. It doesn't ambush: `encounter_at` skips it. The
@@ -617,12 +630,22 @@ values passed to it as `&mut`.
 | Panel | Anchor | Reads | Writes / returns |
 |---|---|---|---|
 | `hud::draw` | top right | `Progression`, `distance_m` | none |
-| `hud::draw_toast` | | `game.toast` | none |
+| `hud::draw_toast` | top centre (below the badge while it's up) | `game.toast`, a top offset | none |
+| `goalpost_panel::draw` | top centre | `game.goalpost.view()` (`TrackerView`) | none |
 | `task_panel::draw` | left centre (bottom centre in a battle) | `TriggerState` | `input_buffer`, `focus_answer`; returns `Submit` |
 | `token_panel::draw` | bottom right | `CerebrasClient::token_stats()`, model, base URL | none |
 | `dialogue_panel::draw` | | `Dialogue` | none |
 | `settings_panel::draw` | modal | | `Settings`, `settings_open` |
 | `game_over_panel::draw` | modal | `Game` (run stats, best distance) | returns `true` to restart |
+
+**The goalpost badge** (FR31). `Game::tick_goalpost` asks `World::next_goalpost` for the next
+thing up the road (§6) and feeds it to `goalpost::Tracker`, which owns the animation: a
+circle pops in holding the goalpost's icon, unrolls into a pill (`name · N m`, metres rounded
+up so it reads 0 on arrival), a ring around the circle fills as the player closes in and
+pulses under 10 m, "Now!" shows for 0.8 s on arrival, then it rolls up, shrinks away and the
+next one pops in. It steps aside (rolls up and stays gone) in a battle, a dialogue, while a
+flask's problem is loading or open, in the hub, and when `show_hud` is off. It runs on the
+game clock, so a pause freezes it, and it never changes XP, speed or answers (invariant 7).
 
 `ui::style::apply` sets the theme every frame: pale parchment panels (kept light so
 text reads against the dark world), thick dark-wood borders, hard offset shadows, a
@@ -666,7 +689,8 @@ driving the window:
   spec monster from the content dir), answers through the
   real submit path (`right`, `wrong`), `e` (press E), teleports (`toflask`,
   `tozone` to the first fern patch, `toblocker` to the line in front of the first
-  road blocker, `topebble`), the curse (`curse` at 0.75, the fever stage; `cursefull`
+  road blocker, `topebble`, `toroad` 40 m up the road, `neargoal` 8 m short of the next
+  goalpost, `atgoal` onto it), the curse (`curse` at 0.75, the fever stage; `cursefull`
   at 1.0), and display settings: `nohud` (hide both side panels, so
   a shot shows the whole world) and `calm` (turn on reduce flashing).
 - With either variable set, the loop steps a fixed 1/60 s, so a run is repeatable
@@ -682,7 +706,8 @@ driving the window:
 | `content/watcher.rs` (3) | A missing dir is empty. A file loads, an edit reloads it, a broken edit and a mismatched id are reported, and a delete is reported. The specs shipped in `content/monsters/` all load. |
 | `content/mod.rs` (1) | A rejected file keeps the last good version in the roster; a delete removes it. |
 | `game/monster_rig.rs` (2) | The palette check's `INK_RGB` matches `gfx::INK`; parts spread evenly. |
-| `game/world.rs` (12) | Scenery never lands on the road. Every flask is reachable and on the road. Generation is deterministic. Interact reaches only nearby fresh flasks. The clamp keeps the player on the road. Encounters are on the road and deterministic. A Titan guards every 500 m, blocking the road. Monsters block the road regularly (no gap over 100 m, the first under 70 m) and deterministically. A blocker shuts the road, can be challenged but doesn't ambush, and opens once beaten. Tougher monsters appear further up. The hub is wide, dry and bounded. The walkable width is continuous through the gate. |
+| `game/world.rs` (19) | Scenery never lands on the road. Every flask is reachable and on the road. Generation is deterministic. Interact reaches only nearby fresh flasks. The clamp keeps the player on the road. Encounters are on the road and deterministic. A Titan guards every 500 m, blocking the road. Monsters block the road regularly (no gap over 100 m, the first under 70 m) and deterministically. A blocker shuts the road, can be challenged but doesn't ambush, and opens once beaten. Tougher monsters appear further up. The hub is wide, dry and bounded. The walkable width is continuous through the gate. Goalposts are deterministic and stand in their chunk, nothing hostile is one in the hub, the pick is always north of the player, nearest first and the bigger event first within 25 m, a solved flask or beaten monster is never offered again, and a blocker counts down to its line. |
+| `game/goalpost.rs` (7) | A new goalpost pops in as a circle and then unrolls. The metres go down as the player walks, rounded up, and the ring fills. It pulses under 10 m and says "Now!" on arrival. It closes before the next one appears, hides while a battle or problem is open and comes back, and shows nothing with nothing ahead. Labels. |
 | `game/manor.rs` (1) | Lightning strikes now and then (under 12% of frames), stays in 0..1, and is the same every run. |
 | `llm/usage.rs` (5) | Provider-timed vs round-trip speed, zero time ignored, no usage block, the capped history. |
 | `game/bow.rs` (2) | The shot draws, then releases, then lowers. An arrow flies the way it was loosed, comes down a believable distance away, then goes away. |
@@ -759,6 +784,6 @@ still to make:
   `MonsterKind`, so a spec is only reachable through `battle:<id>`. Putting them in
   zones (and generating them with the model) is the rest of FR21, and needs the
   owner's call on invariant 3.
-- **The settled-for-now defaults** from FR1–FR3, FR5–FR15, FR20, FR24 and FR26 are listed for the owner in FR16.
+- **The settled-for-now defaults** from FR1–FR3, FR5–FR15, FR20, FR24, FR26 and FR31 are listed for the owner in FR16.
 
 See [FeatureRequestToDo.md](../FeatureRequestToDo.md) for the backlog.

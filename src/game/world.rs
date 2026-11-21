@@ -316,6 +316,127 @@ pub fn encounter_for_chunk(k: i64) -> Option<Encounter> {
     })
 }
 
+/// What the goalpost tracker (FR31) can point at.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum GoalKind {
+    /// A potion flask still waiting on the road.
+    Flask,
+    /// A patch of ferns with a monster hiding in it (FR10).
+    Patch,
+    /// The distance marker stone at every `GOAL_MILESTONE_EVERY_M`.
+    Milestone,
+    /// A monster standing on the road, shutting it (FR2).
+    Blocker,
+    /// The Tide Titan at each 500 m mark.
+    Titan,
+}
+
+impl GoalKind {
+    /// Which goalpost wins when several are about the same distance away:
+    /// the bigger event, so the tracker isn't always "flask in 12 m".
+    fn rank(self) -> u8 {
+        match self {
+            GoalKind::Titan => 4,
+            GoalKind::Blocker => 3,
+            GoalKind::Milestone => 2,
+            GoalKind::Patch => 1,
+            GoalKind::Flask => 0,
+        }
+    }
+}
+
+/// A thing up the road for the tracker to count down to (FR31).
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct Goalpost {
+    pub kind: GoalKind,
+    /// The world y at which the player has "arrived": where the flask can be
+    /// opened, the ferns start the battle, or a blocker stops them. Counting
+    /// down to here is what lets the readout reach 0 m on arrival.
+    pub y: f32,
+    /// Where the thing itself stands, to tell which one it is.
+    pub at: Vec2,
+    /// Distance carved on a milestone stone; 0 for everything else.
+    pub meters: u32,
+}
+
+/// The stones the tracker counts down to: every this many meters. The road
+/// has a stone every 50 m, which is too often to be a goal.
+pub const GOAL_MILESTONE_EVERY_M: u32 = 100;
+/// A higher-ranked goalpost beats the nearest one if it is at most this much
+/// farther away.
+const GOAL_RANK_SLACK_M: f32 = 25.0;
+/// How many chunks north of the player `World::next_goalpost` looks: about
+/// 100 m, always enough to find a flask or a patch.
+const GOAL_SCAN_CHUNKS: i64 = 8;
+/// How far past a flask's y the player is when it can be opened.
+const FLASK_GOAL_REACH: f32 = 30.0;
+
+/// Every goalpost in chunk `k`, from the same pure functions that place the
+/// things themselves, so the tracker agrees with the world (invariant 3).
+/// Includes ones the player has already dealt with; `World::next_goalpost`
+/// filters those.
+pub fn goalposts_in_chunk(k: i64) -> Vec<Goalpost> {
+    let mut out = Vec::new();
+    let (north, south) = chunk_span(k);
+    // Milestone stones sit where `decor::generate_chunk` puts them.
+    let step = GOAL_MILESTONE_EVERY_M;
+    let mut m = (((ROAD_START_Y - south) / PX_PER_METER / step as f32)
+        .ceil()
+        .max(1.0) as u32)
+        * step;
+    loop {
+        let y = ROAD_START_Y - m as f32 * PX_PER_METER;
+        if y <= north {
+            break;
+        }
+        if y < south {
+            out.push(Goalpost {
+                kind: GoalKind::Milestone,
+                y,
+                at: vec2(path_center(y) - PATH_HALF_W - 20.0, y),
+                meters: m,
+            });
+        }
+        m += step;
+    }
+    if let Some(pos) = spot_for_chunk(k) {
+        out.push(Goalpost {
+            kind: GoalKind::Flask,
+            y: pos.y + FLASK_GOAL_REACH,
+            at: pos,
+            meters: 0,
+        });
+    }
+    if let Some(e) = encounter_for_chunk(k) {
+        let (kind, y) = match (e.kind, e.blocks) {
+            (MonsterKind::TideTitan, _) => (GoalKind::Titan, e.pos.y + BLOCK_GAP),
+            (_, true) => (GoalKind::Blocker, e.pos.y + BLOCK_GAP),
+            (_, false) => (GoalKind::Patch, e.pos.y + ZONE_HALF_H),
+        };
+        out.push(Goalpost {
+            kind,
+            y,
+            at: e.pos,
+            meters: 0,
+        });
+    }
+    out
+}
+
+/// The goalpost the tracker should show for a player at `y`: of the ones
+/// north of them, the nearest, unless a higher-ranked one is within
+/// `GOAL_RANK_SLACK_M` of being as near. Pure, so it's testable on its own.
+pub fn pick_goalpost(posts: &[Goalpost], y: f32) -> Option<Goalpost> {
+    let ahead = || posts.iter().filter(|g| g.y < y);
+    let nearest = ahead().map(|g| y - g.y).fold(f32::INFINITY, f32::min);
+    let limit = nearest + GOAL_RANK_SLACK_M * PX_PER_METER;
+    ahead()
+        .filter(|g| y - g.y <= limit)
+        // Highest rank first; among equals the nearer one (larger y).
+        .max_by(|a, b| a.kind.rank().cmp(&b.kind.rank()).then(a.y.total_cmp(&b.y)))
+        .copied()
+}
+
 pub struct World {
     /// `chunks[i]` holds the scenery for chunk `FIRST_CHUNK + i`.
     chunks: Vec<Vec<Decoration>>,
@@ -363,6 +484,33 @@ impl World {
                     cleared: false,
                     canvas: MonsterCanvas::default(),
                 });
+            }
+        }
+    }
+
+    /// What the goalpost tracker (FR31) should point at for a player at `y`:
+    /// the next thing up the road they haven't dealt with. Solved flasks and
+    /// beaten monsters are skipped.
+    pub fn next_goalpost(&self, y: f32) -> Option<Goalpost> {
+        let first = chunk_of(y).max(FIRST_CHUNK);
+        let posts: Vec<Goalpost> = (first..first + GOAL_SCAN_CHUNKS)
+            .flat_map(goalposts_in_chunk)
+            .filter(|g| !self.goal_done(g))
+            .collect();
+        pick_goalpost(&posts, y)
+    }
+
+    /// True once the player has dealt with `g`: opened the flask, or beaten
+    /// the monster. Milestones are never done; they're just passed.
+    fn goal_done(&self, g: &Goalpost) -> bool {
+        match g.kind {
+            GoalKind::Milestone => false,
+            GoalKind::Flask => self
+                .spots
+                .iter()
+                .any(|s| s.pos == g.at && s.state != SpotState::Fresh),
+            GoalKind::Patch | GoalKind::Blocker | GoalKind::Titan => {
+                self.zones.iter().any(|z| z.pos == g.at && z.cleared)
             }
         }
     }
@@ -1342,5 +1490,142 @@ mod tests {
             prev = w;
             y += 2.0;
         }
+    }
+
+    // ---- goalposts (FR31) ----
+
+    fn post(kind: GoalKind, y: f32) -> Goalpost {
+        Goalpost {
+            kind,
+            y,
+            at: vec2(0.0, y),
+            meters: 0,
+        }
+    }
+
+    #[test]
+    fn goalposts_are_deterministic_and_stand_in_their_chunk() {
+        for k in FIRST_CHUNK..300 {
+            let a = goalposts_in_chunk(k);
+            assert_eq!(a, goalposts_in_chunk(k));
+            let (north, south) = chunk_span(k);
+            for g in &a {
+                assert!(g.at.y > north && g.at.y < south, "{k}: {g:?}");
+                assert!(g.y >= g.at.y, "arrive at or south of the thing: {g:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn goalposts_cover_milestones_bosses_and_blockers() {
+        let all: Vec<Goalpost> = (FIRST_CHUNK..300).flat_map(goalposts_in_chunk).collect();
+        let stones: Vec<u32> = all
+            .iter()
+            .filter(|g| g.kind == GoalKind::Milestone)
+            .map(|g| g.meters)
+            .collect();
+        assert_eq!(stones[0], GOAL_MILESTONE_EVERY_M);
+        assert!(
+            stones
+                .windows(2)
+                .all(|w| w[1] == w[0] + GOAL_MILESTONE_EVERY_M),
+            "{stones:?}"
+        );
+        for g in all.iter().filter(|g| g.kind == GoalKind::Milestone) {
+            assert!((ROAD_START_Y - g.y - g.meters as f32 * PX_PER_METER).abs() < 1e-2);
+        }
+        for kind in [
+            GoalKind::Titan,
+            GoalKind::Blocker,
+            GoalKind::Patch,
+            GoalKind::Flask,
+        ] {
+            assert!(all.iter().any(|g| g.kind == kind), "{kind:?}");
+        }
+    }
+
+    #[test]
+    fn nothing_hostile_is_a_goalpost_in_the_hub() {
+        for k in FIRST_CHUNK..1 {
+            for g in goalposts_in_chunk(k) {
+                assert!(
+                    !matches!(
+                        g.kind,
+                        GoalKind::Patch | GoalKind::Blocker | GoalKind::Titan
+                    ),
+                    "{g:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn pick_goalpost_is_always_north_and_takes_the_nearest() {
+        let y = -1000.0;
+        let posts = [
+            post(GoalKind::Flask, -900.0),  // behind the player
+            post(GoalKind::Flask, -1000.0), // level: already reached
+            post(GoalKind::Flask, -1300.0),
+            post(GoalKind::Flask, -1600.0),
+        ];
+        assert_eq!(pick_goalpost(&posts, y).unwrap().y, -1300.0);
+        assert_eq!(pick_goalpost(&[], y), None);
+        assert_eq!(pick_goalpost(&posts[..2], y), None);
+    }
+
+    #[test]
+    fn pick_goalpost_ranks_the_bigger_event_first() {
+        let m = |n: f32| -n * PX_PER_METER;
+        // A Titan 20 m farther than a flask beats it; 40 m farther doesn't.
+        let flask = post(GoalKind::Flask, m(10.0));
+        let near_titan = post(GoalKind::Titan, m(30.0));
+        let far_titan = post(GoalKind::Titan, m(50.0));
+        assert_eq!(
+            pick_goalpost(&[flask, near_titan], 0.0).unwrap().kind,
+            GoalKind::Titan
+        );
+        assert_eq!(
+            pick_goalpost(&[flask, far_titan], 0.0).unwrap().kind,
+            GoalKind::Flask
+        );
+        // Equal rank: the nearer.
+        let a = post(GoalKind::Patch, m(20.0));
+        let b = post(GoalKind::Patch, m(15.0));
+        assert_eq!(pick_goalpost(&[a, b], 0.0).unwrap().y, m(15.0));
+    }
+
+    #[test]
+    fn next_goalpost_skips_flasks_and_monsters_already_dealt_with() {
+        let mut world = World::new();
+        world.ensure_generated(-8000.0);
+        let mut y = 0.0;
+        let mut seen: Vec<Vec2> = Vec::new();
+        for _ in 0..40 {
+            let g = world.next_goalpost(y).expect("the road is endless");
+            assert!(g.y < y, "always north of the player: {g:?}");
+            assert!(!seen.contains(&g.at), "{g:?} came back after it was done");
+            seen.push(g.at);
+            // Deal with it the way the game does, then walk on.
+            for s in world.spots.iter_mut().filter(|s| s.pos == g.at) {
+                s.state = SpotState::Solved;
+            }
+            for z in world.zones.iter_mut().filter(|z| z.pos == g.at) {
+                z.cleared = true;
+            }
+            y = g.y - 1.0;
+        }
+    }
+
+    #[test]
+    fn a_blocker_goalpost_is_reached_at_the_line_it_holds() {
+        let mut world = World::new();
+        world.ensure_generated(-8000.0);
+        let z = world.zones.iter().find(|z| z.blocks).unwrap();
+        let g = goalposts_in_chunk(chunk_of(z.pos.y))
+            .into_iter()
+            .find(|g| g.at == z.pos)
+            .unwrap();
+        // The player's feet stop BLOCK_GAP south of it, so that is "0 m".
+        assert_eq!(g.y, z.pos.y + BLOCK_GAP);
     }
 }

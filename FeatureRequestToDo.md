@@ -145,7 +145,7 @@ its "help" is animation. It never changes XP, speed, answers or battle outcomes.
 (see [Completed](#completed)), each on a provisional answer so the work could
 land; this entry keeps the questions so they are answered, not settled silently.
 
-## FR16. Confirm the provisional answers from FR1–FR3, FR5–FR15, FR20, FR24 and FR26
+## FR16. Confirm the provisional answers from FR1–FR3, FR5–FR15, FR20, FR24, FR26 and FR31
 
 **Status.** **Waiting on the owner.** Every default below is live in the code.
 Tick an item once the owner confirms it, or replace it with the owner's answer
@@ -229,6 +229,16 @@ recorded here.
   the bar too? *No, they stay unlimited.* When is the bar shown? *Always on the
   road; hidden in a battle, while the dialogue box is open, and after death.* Do
   skills recover while held at a flask or in a battle? *Yes.*
+- [ ] **FR31** Does the badge start as a circle? *Yes: it pops in as a circle with the
+  goalpost's icon, unrolls into a pill with the name and metres, shows "Now!" on
+  arrival, then closes back to a circle before the next one; a ring around the circle
+  fills as you close in and pulses under 10 m.* Which goalposts show? *Stones every
+  100 m (not the 50 m ones), flasks, fern patches, road blockers and the Tide Titan,
+  not the hub; the nearest wins unless a bigger one (Titan, then blocker, milestone,
+  patch, flask) is within 25 m of being as near.* One at a time or a queue? *One.*
+  Does "Show progress panel" hide it? *Yes (`show_hud`); it's also hidden in a battle,
+  a dialogue and while a flask's problem is open.* Keep the distance line in the
+  Progress panel? *Yes.* The toast? *Steps down below the badge while it's up.*
 
 **Acceptance criteria.**
 
@@ -316,7 +326,7 @@ invariant 3 and needs the owner's decision (see FR21's open questions).
 Milestone A needs no new module and no FR21 work, so start there.
 
 **Depends on:** [] _(the base for FR21's studio and FR22's lesson packs, which feed
-the same buffer; shares its upcoming-things scan with FR31's `next_goalpost`; warms
+the same buffer; can reuse FR31's `goalposts_in_chunk` scan; warms
 FR2's road blockers once they exist)_
 
 **Motivation.** The game exists so that a fresh problem shows up without breaking the
@@ -353,7 +363,7 @@ gets there. The waits come from the timing, not from the model being slow.
 - **Look ahead on the road** (milestone B). Each road frame, after
   `world.ensure_generated`, scan what's coming. A pure
   `world::upcoming(y, range_px) -> Vec<Upcoming { kind, y, difficulty_bias }>`
-  could share its chunk scan with FR31's `next_goalpost`. For each uncleared zone
+  could share its chunk scan with FR31's built `goalposts_in_chunk` / `World::next_goalpost`. For each uncleared zone
   within about 1.5 screens, keep its monster's `hits` worth of questions buffered
   at `level + bias`, plus one spare for a miss. For each fresh flask in range, keep
   one at `level`. A pure, unit-tested `plan_prefetch(upcoming, buffered, in_flight,
@@ -814,6 +824,8 @@ extend, not a hand-drawn picture.
 - [ ] `docs/ARCHITECTURE.md` (the road is no longer endless, the new modules, the
   panel, the region table, the dev events, *Known limits*) and the README layout are
   updated.
+- [ ] The castle, the village and region borders are goalposts for the tracker
+  (FR31: a new `GoalKind` in `world::goalposts_in_chunk`).
 
 ---
 
@@ -910,6 +922,8 @@ way ahead that's closer than the castle.
   it can be checked by screenshot.
 - [ ] `docs/ARCHITECTURE.md` (*World model* table, invariant 4, the curse's rule
   at a stop, the new `decor` kinds, the dev event) is updated.
+- [ ] A safe stop is a goalpost for the tracker (FR31: a new `GoalKind` in
+  `world::goalposts_in_chunk`).
 
 ---
 
@@ -1005,94 +1019,8 @@ and gives the player something to steer around.
 - [ ] The hub and the gate look and play as they do today.
 - [ ] `docs/ARCHITECTURE.md` (*World model*: path geometry, the camera, the new
   placement and collision; *Rendering*: the fence) is updated.
-
----
-
-# UI — the HUD
-
-**Goal:** always show the player the next goalpost, so the walk has a "just a bit
-further" pull. Today the only sense of progress is the `Distance: N m` line in the
-Progress panel (`ui/hud.rs`, `draw`). Nothing says what is coming up or how far away it is.
-
-## FR31. A goalpost tracker at the top centre: what's next and how far
-
-**Status.** **Not started.** Requested by the owner; the approach is suggested only.
-
-**Depends on:** [] _(useful on its own with today's milestones, flasks, encounter
-zones and Tide Titans. It grows with FR28's stops, FR29's obstacles and FR27's
-village and castle: each new placed thing is one more kind of goalpost)_
-
-**Motivation.** The road is endless and every stretch looks alike, so the player can't
-tell how close the next thing is. A small tracker at the top centre that names the
-next goalpost and counts down the metres to it gives the player a short-range goal
-to walk towards, alongside the long-range ones (the castle, the next level).
-
-**What the owner asked for.**
-
-- At the top middle of the screen, show which milestone, obstacle or encounter is
-  about to start.
-- When it appears, it should start as a circle.
-- Show how many metres are left until the obstacle or milestone starts.
-- The point is to mark goalposts.
-
-**Proposed approach.** *(suggested, not decided)*
-
-- **What counts as a goalpost.** Everything is already placed by pure per-chunk
-  functions (invariant 3), so the next one can be found by scanning chunks north
-  of the player, without touching `World`'s state:
-  - the 50 m milestone stones (`decor.rs`, the "Milestones every 50 m" loop)
-  - the Tide Titan at each 500 m (`world::encounter_for_chunk`, `BOSS_EVERY_M`)
-  - wild encounter zones (`encounter_for_chunk`), skipping zones already `cleared`
-  - potion flasks (`spot_for_chunk`), skipping solved ones
-  - later: FR28 safe stops, FR29 obstacles, FR27's village and castle
-  A small `world::next_goalpost(y) -> Option<Goalpost { kind, y, label }>` (or
-  the next few) keeps this in one place, unit-testable. Milestones and the Titan
-  probably rank above a plain flask, so the tracker isn't always "flask in 12 m".
-  The owner picks which kinds show (see open questions).
-- **How it looks.** A badge anchored `CENTER_TOP`. When a new goalpost becomes the
-  target, it pops in as a **circle** holding the goalpost's icon (a milestone stone,
-  a fern patch, the Titan's silhouette, a flask, a house), then unrolls sideways into
-  a pill with the label and the countdown: `⬤ Tide Titan · 38 m`. A ring around
-  the circle could fill as the distance closes, and pulse when it's under about 10 m.
-  When the player reaches it, the badge shows "Now!" or the name briefly, then closes
-  back into a circle and pops out before the next one appears.
-- **Metres.** From the player's y to the goalpost's y, `/ PX_PER_METER`, rounded
-  up so it reaches 0 m on arrival, not before. With FR29's winding road, straight-line
-  y still reads fine.
-- **Where it's drawn.** Either as egui (next to `ui::hud::draw_toast`) or in world
-  draw code like `skills::draw_bar` if the circle animation is easier in macroquad.
-  The toast is also `CENTER_TOP`, so one of them moves (the toast drops below the
-  tracker, or the tracker hides while a toast is up).
-- **When it hides.** In a battle (like the Progress panel), while a problem is
-  open, and in the hub before the gate (or it shows "The road: 0 m" pointing at the
-  gate). Whether `show_hud` hides it too is the owner's call.
-
-**Open questions.**
-
-- **"Start with a circle"**: is the reading above right (it pops in as a circle and
-  then opens into a label)? Or should it *stay* a circle, such as a ring that fills up
-  as you get closer with the metres in the middle?
-- **Which goalposts show?** Every 50 m milestone, or only the bigger ones (100 m,
-  500 m)? Every flask and fern patch, or only bosses, stops and obstacles?
-- **One at a time or a short queue?** Just the next goalpost, or the next two or three
-  in a row (`Flask 12 m · Stop 140 m · Titan 380 m`)?
-- **Does "Show progress panel" hide it too**, or is it always on like the toast?
-- **Should the distance line in the Progress panel stay** once this exists?
-
-**Acceptance criteria.**
-
-- [ ] A tracker at the top centre names the next goalpost and the metres left to it,
-  and the count goes down as the player walks north.
-- [ ] A new goalpost appears as a circle first, then shows its label, as decided
-  above, and the change between goalposts is animated, not a jump.
-- [ ] Milestones, the Tide Titan and encounter zones are tracked. Cleared zones and
-  solved flasks are skipped. FR28, FR29 and FR27 things are added when those land.
-- [ ] The tracker and the toast never overlap.
-- [ ] It hides in battles and while a problem is open.
-- [ ] `next_goalpost` is unit-tested: deterministic, always north of the player, never
-  a cleared or solved one, and the right one ranks first.
-- [ ] `docs/ARCHITECTURE.md` (*Progression and the UI layer*: the new panel and what
-  it reads; *World model*, if a lookahead function is added) is updated.
+- [ ] Solid obstacles are goalposts for the tracker (FR31: a new `GoalKind` in
+  `world::goalposts_in_chunk`).
 
 ---
 
@@ -1623,6 +1551,17 @@ monsters for tomorrow").
 
 When an entry is fully built, delete it above and add one line here, newest
 first: `FR<n> — title — date — why it closed (commit)`. Its number stays retired.
+
+- FR31 — A goalpost tracker at the top centre — 2026-11-21 — built in one pass:
+  `World::next_goalpost` (with the pure `goalposts_in_chunk` and `pick_goalpost`, 7
+  tests: deterministic, always north, never a solved flask or beaten monster, the
+  bigger event ranks first, a blocker counts down to the line it holds) feeds
+  `game/goalpost.rs` (`Tracker`, 7 tests for the pop, unroll, countdown, pulse,
+  "Now!", close and hide), painted by `ui/goalpost_panel.rs`; the toast steps down
+  below it. New dev events `toroad`, `neargoal`, `atgoal`. Checked by screenshot:
+  the circle, the pill with its ring, "Now!". Provisional answers to its open
+  questions are in FR16. FR27's regions, FR28's stops and FR29's obstacles each add a
+  `GoalKind` when they land
 
 - FR3 — A battle is an education Q&A — 2026-11-21 — nothing left to build once FR2
   landed: FR10's battles already ask every question through the flask pipeline

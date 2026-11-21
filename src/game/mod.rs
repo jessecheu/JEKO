@@ -5,6 +5,7 @@ pub mod decor;
 pub mod dialogue;
 pub mod flicker;
 pub mod gfx;
+pub mod goalpost;
 pub mod health;
 pub mod manor;
 pub mod monster;
@@ -21,6 +22,7 @@ use crate::progression::Progression;
 use battle::{Battle, Phase};
 use curse::Curse;
 use flicker::FlickerKind;
+use goalpost::Tracker;
 use health::Health;
 use macroquad::prelude::*;
 use monster::{MonsterKind, Species};
@@ -150,6 +152,9 @@ pub struct Game {
     pub roster: Roster,
     /// The content watcher's channel, drained every frame.
     content_rx: Option<Receiver<ContentEvent>>,
+    /// The goalpost tracker at the top centre (FR31): what's next up the
+    /// road and how far. Painted by `ui::goalpost_panel`.
+    pub goalpost: Tracker,
 }
 
 fn camera_target(player_y: f32) -> f32 {
@@ -196,6 +201,7 @@ impl Game {
             active_spot: None,
             roster: Roster::default(),
             content_rx: None,
+            goalpost: Tracker::new(),
         }
     }
 
@@ -304,6 +310,7 @@ impl Game {
                 self.item_get = None;
             }
         }
+        self.tick_goalpost(dt);
         if self.battle.is_some() {
             self.update_battle(dt);
             return;
@@ -388,6 +395,28 @@ impl Game {
                 self.trigger_state = TriggerState::Idle;
             }
         }
+    }
+
+    /// Advances the goalpost tracker (FR31). It steps aside in a battle, a
+    /// dialogue, while a flask's problem is loading or open, in the hub
+    /// (nothing is placed there) and when the HUD is hidden.
+    fn tick_goalpost(&mut self, dt: f32) {
+        let y = self.player.pos.y;
+        let busy = matches!(
+            self.trigger_state,
+            TriggerState::Loading(_) | TriggerState::Active(_)
+        );
+        let visible = self.settings.show_hud
+            && self.battle.is_none()
+            && self.dialogue.is_none()
+            && !busy
+            && !world::in_hub(y);
+        let target = if visible {
+            self.world.next_goalpost(y)
+        } else {
+            None
+        };
+        self.goalpost.update(dt, y, target, visible);
     }
 
     /// Advances the curse (FR1) and acts on what it reports: a toast as it
@@ -666,6 +695,7 @@ impl Game {
         self.item_get = None;
         self.dialogue = None;
         self.npc_in_reach = false;
+        self.goalpost = Tracker::new();
     }
 
     /// One line of run state, printed by the `JEKO_SHOT` hook so scripted
@@ -680,7 +710,7 @@ impl Game {
         format!(
             "STATE hp={}/{} level={} xp={} streak={} dist={}m flasks={} beaten={} \
              zones_cleared={} battle={:?} trigger={} dialogue={} game_over={} hat_stolen={} \
-             arrows={} roster={} curse={:.2} blocker_in_reach={} blockers_left={}",
+             arrows={} roster={} curse={:.2} blocker_in_reach={} blockers_left={} goalpost={}",
             self.health.current,
             self.health.max,
             self.progression.level,
@@ -706,6 +736,10 @@ impl Game {
                 .iter()
                 .filter(|z| z.blocks && !z.cleared)
                 .count(),
+            self.goalpost
+                .view()
+                .map(|v| format!("{} {}m open={:.1}", v.label, v.meters, v.open))
+                .unwrap_or_else(|| "none".into()),
         )
     }
 
@@ -773,6 +807,28 @@ impl Game {
                 if let Some(z) = self.world.zones.iter().find(|z| !z.cleared && z.blocks) {
                     self.player.pos = z.pos + vec2(0.0, world::BLOCK_GAP + 4.0);
                     self.cam_y = camera_target(self.player.pos.y);
+                }
+            }
+            // Onto the road, 40 m up from the gate, for the goalpost tracker.
+            "toroad" => {
+                let y = world::ROAD_START_Y - 40.0 * world::PX_PER_METER;
+                self.player.pos = vec2(world::path_center(y), y);
+                self.cam_y = camera_target(y);
+            }
+            // To 8 m short of the next goalpost, to see the pulse close up.
+            "neargoal" => {
+                if let Some(g) = self.world.next_goalpost(self.player.pos.y) {
+                    let y = g.y + 8.0 * world::PX_PER_METER;
+                    self.player.pos = vec2(world::path_center(y), y);
+                    self.cam_y = camera_target(y);
+                }
+            }
+            // Onto the next goalpost, for the "Now!" state.
+            "atgoal" => {
+                if let Some(g) = self.world.next_goalpost(self.player.pos.y) {
+                    let y = g.y - 1.0;
+                    self.player.pos = vec2(world::path_center(y), y);
+                    self.cam_y = camera_target(y);
                 }
             }
             "toflask" => {
