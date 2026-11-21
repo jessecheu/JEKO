@@ -13,7 +13,9 @@ timestamp: 2026-11-21
 > which updates and paints the world each frame. egui panels are drawn on top as
 > thin views of that state. Only one thing is slow: asking Cerebras for a math problem.
 > That call runs on a throwaway OS thread and its result comes back over an `mpsc` channel
-> that `TriggerState` polls each frame. When there's no key or the call fails, a fallback
+> that `TriggerState` polls each frame. The game asks ahead, too: it looks up the road for flasks
+> and monsters and keeps their questions ready in a buffer (FR32), so most questions are on screen
+> the frame they're needed. When there's no key or the call fails, a fallback
 > bank compiled into the binary steps in. The world isn't stored as a map. The path is a function of `y`, and each chunk's
 > scenery, potion flask and monster (hiding in ferns, or blocking the road) is a pure
 > function of the chunk index, so the road is endless, the same every run, and unit-testable. The setting is a dark forest
@@ -50,15 +52,18 @@ src/main.rs: one macroquad loop, one iteration per frame
                                 returns an mpsc::Receiver        (blocking reqwest, 8 s timeout)
                                                 │
                    TriggerState::Loading(rx) ── try_recv() each frame ──▶ Active(MathTask)
-                                                │ error, or no API key
+                                                │ error, no API key, or past the soft deadline
                                                 └──▶ random task from assets/tasks_fallback.json
+
+Game::tick_prefetch ── world.upcoming(1.5 screens) ─▶ plan_prefetch ─▶ prefetch_task_async
+  └─ answers land in prefetch.buffer (QuestionBuffer); request_task takes from it first
 
 content::watcher thread ── rescans <content dir>/monsters/*.json every 0.5 s
   └─ ContentEvent over mpsc ── Game::poll_content, try_recv() each frame ──▶ Game.roster
 ```
 
-*Figure: the frame loop and its two background paths: questions from Cerebras, and
-monster specs from the content dir.*
+*Figure: the frame loop and its two background paths: questions from Cerebras (asked
+for live or ahead of need), and monster specs from the content dir.*
 
 ---
 
@@ -99,13 +104,15 @@ The layering holds today, and new code should keep it:
 | `content/mod.rs` | `ContentEvent` (a spec loaded or reloaded, a file removed, a file rejected), `Roster` (the loaded specs by id, sorted), and `content_dir()`. |
 | `content/monster_spec.rs` | `MonsterSpec`, a monster as data, and `parse`, the only way in: JSON in, a clamped and validated spec out. `MonsterInfo`, the gameplay numbers every monster has, and the tier table (`MonsterSpec::info`). |
 | `content/watcher.rs` | `Scanner` (one rescan of `monsters/*.json`, by modification time and length) and `spawn`, the thread that runs it every `POLL` (0.5 s). |
-| `llm/mod.rs` | `MathTask { topic, problem, answer: f64, hint, difficulty }`, the one task type every question path produces. |
-| `llm/cerebras_client.rs` | `CerebrasClient`: the async wrapper, the blocking chat-completions call, and the shared token stats. |
+| `llm/mod.rs` | `MathTask { topic, problem, answer: f64, hint, difficulty, explanation, expression }`, the one task type every question path produces (the last two are FR22's and default to empty), and `fallback_bank()`, the compiled-in bank. |
+| `llm/buffer.rs` | `QuestionBuffer` (ready questions per difficulty), `plan_prefetch` (the pure look-ahead policy and its `PrefetchCaps`), and `WaitStats` (where each shown question came from and how long the player waited). |
+| `llm/cerebras_client.rs` | `CerebrasClient`: the async wrappers (live and look-ahead), the blocking chat-completions call with its `RequestKind` tag, the shared token stats, and the `fakemodel` stand-in. |
 | `llm/task_gen.rs` | The prompt template (`build_prompt(difficulty)`) and lenient JSON extraction (`extract_json_object` / `_array`). |
-| `llm/usage.rs` | `RequestUsage` (one call's tokens and speed) and `TokenStats` (session totals plus the last 24 requests). |
+| `llm/usage.rs` | `RequestKind` (question, prefetch, monster, lesson), `RequestUsage` (one call's tokens and speed) and `TokenStats` (session totals, per-kind totals, and the last 24 requests). |
 | `game/mod.rs` | `Game`: run state, the per-frame update and draw, the mode precedence, the damage, answer and reset entry points, and the dev events. |
-| `game/task_trigger.rs` | `TriggerState`, the question state machine (§4), and `pick_fallback`. |
-| `game/world.rs` | Coordinates and camera (`View`), path geometry, chunking, potion flasks (`Spot`), encounter zones and road blockers (`EncounterZone`, `clamp_blocked`), the goalposts the tracker counts down to (`Goalpost`, `goalposts_in_chunk`, `pick_goalpost`, `World::next_goalpost`), the depth-sorted `Tall` items, and drawing the ground, the cobbled road, the light pools, the mist, the bats and fireflies, and where the manor sits on screen. |
+| `game/task_trigger.rs` | `TriggerState`, the question state machine (§4), `Arrival` (how a `Loading` request ended), and `pick_fallback`. |
+| `game/prefetch.rs` | `Prefetch`: the question buffer, the look-ahead requests in flight and their per-minute budget; `demand` (what the road ahead needs); the soft deadlines; `Ask` (a question asked for and not yet shown). |
+| `game/world.rs` | Coordinates and camera (`View`), path geometry, chunking, potion flasks (`Spot`), encounter zones and road blockers (`EncounterZone`, `clamp_blocked`), the goalposts the tracker counts down to (`Goalpost`, `goalposts_in_chunk`, `pick_goalpost`, `World::next_goalpost`), what will need a question soon (`Upcoming`, `upcoming_in`, `World::upcoming`), the depth-sorted `Tall` items, and drawing the ground, the cobbled road, the light pools, the mist, the bats and fireflies, and where the manor sits on screen. |
 | `game/decor.rs` | Per-chunk forest scenery generation (`generate_chunk`), the hand-placed hub camp (`hub_layout`), how each prop draws, and which props cast light (`Decoration::lights`). |
 | `game/manor.rs` | The gothic manor backdrop (`draw`, with an optional lake reflection), its lightning timing (`lightning`), and the shared `bat` silhouette. |
 | `game/gfx.rs` | The shared drawing vocabulary: the `INK`, `SHADOW`, `MOON`, `LANTERN`, `LAB_GREEN` and `NIGHT` colours, shading, ellipses, ribbons, stars, gradient meshes (`gradient_ring`, `glow`, `vignette`), the potion flask, hearts, the key prompt, the item-get burst, and `hash01`. |
@@ -137,7 +144,7 @@ which is why network work goes to a thread (§4). Each iteration does this, in o
 3. Choose `dt`: a fixed 1/60 s when `JEKO_SHOT` or `JEKO_DEV` is set, so frame numbers
    map to game time; `get_frame_time()` otherwise.
 4. `game.update(dt)`: content events first (§8), then input, simulation, polling the
-   question (§5).
+   questions and starting look-ahead requests (§5).
 5. `game.draw()`: the world or the battle view, in screen space (§7).
 6. `game.draw_pause_overlay()`: the pause dim, or the dim behind Game Over.
 7. **egui pass** (`egui_macroquad::ui`): `ui::style::apply`, then set
@@ -162,7 +169,7 @@ Two consequences of this order:
 Everything that changes during a run is a field on `Game`, or is owned by one: `player`,
 `world`, `progression`, `health`, `curse`, `trigger_state`, `battle`, `dialogue`, `settings`,
 `run` stats, the camera (`cam_y`, `shake`), toasts, the goalpost `Tracker`, the game clock `time`, and the
-spec monster `roster` with the watcher's channel. The UI
+spec monster `roster` with the watcher's channel, and the question `prefetch` buffer with its `waits` readout. The UI
 gets it by reference. Nothing else holds gameplay state.
 
 `Game::update` runs these checks in a fixed order. The first one that matches decides
@@ -173,9 +180,9 @@ what the frame does:
 | 0 | (every frame) | | `poll_content` drains the content watcher into `roster` (§8). It runs before everything else, so an edit shows while paused or after death. |
 | 1 | **Game over** | `game_over.is_some()` | Only the death animation advances. After `DEATH_ANIM_S` (1.2 s), E or Enter calls `reset()`. |
 | 2 | Toggles | not `typing` | O toggles `settings_open`, and Esc closes it. With settings closed, P toggles `paused`. |
-| 3 | **Paused** | `paused \|\| settings_open` | Only `trigger_state.poll()` runs, so a response that arrives isn't lost. The clock doesn't advance. |
+| 3 | **Paused** | `paused \|\| settings_open` | Only `poll_questions(0.0)` runs (the shown question, the battle's next one and the look-ahead receivers), so a response that arrives isn't lost. The clock doesn't advance, and neither does the soft deadline. |
 | 4 | (every unpaused frame) | | Advance `time`, shake, the toast and the item-get timers, then `tick_goalpost` (the tracker, §10). |
-| 5 | **Battle** | `battle.is_some()` | `update_battle`: the player is held, phases advance (§8), and new questions are requested. |
+| 5 | **Battle** | `battle.is_some()` | `update_battle`: the player is held, phases advance (§8), and each question is asked for early and shown when the phase reaches `Question` (§5). |
 | 6 | **Dialogue** | `dialogue.is_some()` | The player is held. E reveals the line, then advances, then closes. |
 | 7 | **Road** | otherwise | See below. |
 
@@ -192,7 +199,7 @@ The road frame, in order:
    while paused.
 3. The camera eases toward the player (anchor 0.66 of screen height, rate `1 − e^(−6·dt)`).
    `world.ensure_generated` keeps one chunk past the top of the screen generated.
-4. `trigger_state.poll(&fallback_tasks)`.
+4. `poll_questions(dt)`, then `tick_prefetch` (§5).
 5. If not busy, stepping into an uncleared fern patch starts a battle.
 6. Interaction targets: the nearest fresh flask in reach (`interact_target`), or else
    an undefeated road blocker in reach (`blocker_target`), or else Professor Pebble.
@@ -208,12 +215,13 @@ to change each rule:
   starts the damage flicker (`HURT_INVULN_S` = 1 s), knocks the player back 22 px away
   from `from` (clamped to the path and short of any road blocker), shakes the screen unless reduce flashing is on,
   and calls `die()` at 0 HP.
-- `Game::request_task(bias)` is the only way a question starts (§5).
+- `Game::request_task(bias, deadline_s)` is the only way a question starts (§5). Look-ahead
+  only fills the buffer it reads from.
 - `Game::submit_answer()` is the only way an answer is judged, for flasks and battles alike.
 - `Game::reset()` starts a new run without relaunching. It keeps the client, the
-  fallback bank, the settings, `best_distance_m` and the content `roster` with its watcher. Everything else is rebuilt (the
-  curse goes back to dormant), and
-  dropping `trigger_state` abandons any request in flight.
+  fallback bank, the settings, `best_distance_m`, the question `prefetch` buffer and the content `roster` with its watcher. Everything else is rebuilt (the
+  curse goes back to dormant). Requests in flight aren't thrown away: `stash_questions`
+  hands their receivers to `prefetch`, so the answers still reach the buffer.
 
 **The game clock.** `Game.time` advances only on unpaused frames, and every animation
 reads it. Lanterns, flasks, lightning, mist and monsters therefore freeze with a pause.
@@ -227,15 +235,17 @@ The game's reason to exist is that a fresh, difficulty-scaled problem shows up w
 the player is still moving. Potion flasks and battles share one path:
 
 ```
-            open_spot / battle phase wants a question
+   open_spot / battle start / battle answer wants a question
                               │
-                   Game::request_task(bias)
-                   difficulty = min(level + bias, 5)
-                 ┌────────────┴─────────────┐
-           API key set                  no API key
-                 │                          │
-   Loading(request_task_async)     Active(pick_fallback)
-                 │ poll() each frame
+                Game::request_task(bias, deadline_s)
+                difficulty = min(level + bias, 5)
+        ┌─────────────────────┼──────────────────────┐
+  buffer has one         API key set             no API key
+  (this level, else           │                       │
+   one below)       Loading(request_task_async)  Active(pick_fallback)
+        │                     │
+  Active(task)                │ poll() each frame; past the soft deadline: Active(pick_fallback),
+                              │ and the late answer goes into the buffer
       ┌──────────┼─────────────────────┐
   Ok(task)    Err(_) / Disconnected   Empty
       │          │                     └─ keep waiting
@@ -248,6 +258,38 @@ the player is still moving. Potion flasks and battles share one path:
 ```
 
 *Figure: `TriggerState` (`game/task_trigger.rs`) from request to resolution.*
+
+**Asking ahead (FR32).** The waits come from timing, not from the model being slow, so
+the game asks before the player needs the answer:
+
+- **Battles overlap their own animations.** The first question is requested in
+  `start_battle` and held in `Game.next_question`. It's shown when the intro ends, so
+  the entry transition and the intro (1.8 s) cover the round trip. Each later question
+  is requested in `battle_answer`, when the answer is submitted, so the 0.8 s player
+  attack or 0.9 s monster attack covers it. The answer that lands the last hit asks for
+  nothing. Both are shown when the phase next reaches `Question`.
+- **Road look-ahead.** Each road frame `tick_prefetch` asks `World::upcoming` for the flasks
+  and monsters up to `LOOKAHEAD_SCREENS` (1.5) screen heights north of the player.
+  `prefetch::demand` turns them into wants (a flask: one question at the player's level; a
+  monster: its `hits` plus a spare, at level + its difficulty bias), and the pure
+  `llm::buffer::plan_prefetch` decides what to request under the caps: 2 in flight, 3
+  ready or in flight per difficulty, `JEKO_PREFETCH_RPM` (20) per minute. Answers land in
+  `Prefetch.buffer` (a `QuestionBuffer`). `JEKO_PREFETCH=off` turns the look-ahead off.
+  `request_task` takes from the buffer first: the exact difficulty, else one below (after a
+  level-up), else it asks live. The buffer survives `reset()`.
+- **A live request beats a look-ahead.** `tick_prefetch` starts nothing while the shown
+  question or the battle's next one is `Loading`, while paused, or in a battle. Receivers
+  are still polled while paused.
+- **The soft deadline.** A live question that hasn't landed after `SOFT_DEADLINE_BATTLE_S`
+  (1.5 s) or `SOFT_DEADLINE_FLASK_S` (2.5 s) of unpaused game time is replaced by a
+  fallback-bank question. The late answer isn't dropped: its receiver is adopted by
+  `Prefetch` and goes into the buffer. The 8 s HTTP timeout remains the backstop. The same
+  adoption saves the answers of requests that a new battle, the end of a battle or a reset
+  abandons (`stash_questions`).
+- **The wait is measured.** `Game.waits` (`llm::buffer::WaitStats`) records where each shown
+  question came from (`Buffer`, `Ready`, `Live`, `Fallback`, `Deadline`) and how long the
+  player watched the spinner. Offline play records nothing. The token panel shows "ready
+  on arrival 18/20 · longest wait 0.3 s" and the request counts per `RequestKind`.
 
 **The request** (`CerebrasClient`, `llm/cerebras_client.rs`):
 
@@ -264,14 +306,15 @@ the player is still moving. Potion flasks and battles share one path:
   `extract_json_object` slices from the first `{` to the last `}`, so stray prose or
   code fences around the object don't matter. serde then parses it into `MathTask`.
 - **Usage accounting.** Every clone shares one `Arc<Mutex<TokenStats>>`. A response
-  with a `usage` block is recorded. Tokens per second come from Cerebras'
+  with a `usage` block is recorded, tagged with its `RequestKind` (the panel splits the
+  session's requests and tokens by it). Tokens per second come from Cerebras'
   `time_info.completion_time` when present, and from the HTTP round trip otherwise.
   The round trip reads lower, and the panel says which one it used. A transport or
   HTTP error is counted with `record_failure`. A poisoned lock is ignored, because the
   numbers only feed a readout.
 
 **The fallback bank.** `assets/tasks_fallback.json` is compiled in with
-`include_str!` in `main.rs` and parsed at startup, where a malformed file panics.
+`include_str!` (`llm::fallback_bank`) and parsed at startup, where a malformed file panics.
 `pick_fallback` panics if the bank is empty.
 `pick_fallback` takes a random entry (`rand::thread_rng`, the only non-deterministic
 randomness in the game). The game must stay fully playable with no key and no network.
@@ -663,7 +706,7 @@ rebuild. The exception is the content dir, which is read at runtime and hot-relo
 
 | File | Loaded by | Used for |
 |---|---|---|
-| `assets/tasks_fallback.json` | `main.rs::load_fallback_tasks` | Questions when there's no key or a call fails. Must deserialize as `Vec<MathTask>` and be non-empty. |
+| `assets/tasks_fallback.json` | `llm::fallback_bank` | Questions when there's no key or a call fails. Must deserialize as `Vec<MathTask>` and be non-empty. |
 | `assets/dialogue.json` | `dialogue::load_bank` | NPC lines. Professor Pebble says the hub tutorial and then rotates through their bank lines. Regenerate it with `make gen-content`. |
 
 **Configuration.** `CEREBRAS_API_KEY` is optional; without it the game runs offline.
@@ -671,6 +714,8 @@ rebuild. The exception is the content dir, which is read at runtime and hot-relo
 `CEREBRAS_BASE_URL` defaults to `https://api.cerebras.ai/v1`. Values come from the
 environment, a `.env` file, or secretspec (`secretspec.toml`). See the README.
 `JEKO_CONTENT_DIR` points the content watcher at another folder (§8).
+`JEKO_PREFETCH=off` turns the question look-ahead off, and `JEKO_PREFETCH_RPM` (default 20)
+caps its requests per minute (§5).
 `JEKO_INSTANCE` names the checkout for the window title (`JEKO — Math Quest [name]`)
 and the startup stderr line. It defaults to the build folder's name, so two clones
 run side by side can be told apart. Nothing else is shared between clones: each has
@@ -693,6 +738,9 @@ driving the window:
   goalpost, `atgoal` onto it), the curse (`curse` at 0.75, the fever stage; `cursefull`
   at 1.0), and display settings: `nohud` (hide both side panels, so
   a shot shows the whole world) and `calm` (turn on reduce flashing).
+- `JEKO_DEV=fakemodel:700` (no `@frame`) swaps the model for a stand-in that answers every
+  call from the fallback bank after 700 ms, with made-up token counts, so the buffer, the
+  soft deadline and the token panel's wait readout can be tried with no key.
 - With either variable set, the loop steps a fixed 1/60 s, so a run is repeatable
   frame by frame. Without an API key, questions come straight from the fallback
   bank, so `right`/`wrong` work on the next frame.
@@ -706,10 +754,12 @@ driving the window:
 | `content/watcher.rs` (3) | A missing dir is empty. A file loads, an edit reloads it, a broken edit and a mismatched id are reported, and a delete is reported. The specs shipped in `content/monsters/` all load. |
 | `content/mod.rs` (1) | A rejected file keeps the last good version in the roster; a delete removes it. |
 | `game/monster_rig.rs` (2) | The palette check's `INK_RGB` matches `gfx::INK`; parts spread evenly. |
-| `game/world.rs` (19) | Scenery never lands on the road. Every flask is reachable and on the road. Generation is deterministic. Interact reaches only nearby fresh flasks. The clamp keeps the player on the road. Encounters are on the road and deterministic. A Titan guards every 500 m, blocking the road. Monsters block the road regularly (no gap over 100 m, the first under 70 m) and deterministically. A blocker shuts the road, can be challenged but doesn't ambush, and opens once beaten. Tougher monsters appear further up. The hub is wide, dry and bounded. The walkable width is continuous through the gate. Goalposts are deterministic and stand in their chunk, nothing hostile is one in the hub, the pick is always north of the player, nearest first and the bigger event first within 25 m, a solved flask or beaten monster is never offered again, and a blocker counts down to its line. |
+| `game/world.rs` (24) | Scenery never lands on the road. Every flask is reachable and on the road. Generation is deterministic. Interact reaches only nearby fresh flasks. The clamp keeps the player on the road. Encounters are on the road and deterministic. A Titan guards every 500 m, blocking the road. Monsters block the road regularly (no gap over 100 m, the first under 70 m) and deterministically. A blocker shuts the road, can be challenged but doesn't ambush, and opens once beaten. Tougher monsters appear further up. The hub is wide, dry and bounded. The walkable width is continuous through the gate. Goalposts are deterministic and stand in their chunk, nothing hostile is one in the hub, the pick is always north of the player, nearest first and the bigger event first within 25 m, a solved flask or beaten monster is never offered again, and a blocker counts down to its line. `upcoming_in` is nearest first and in range, matches where the world places things, shows no monster in the hub, takes a monster's hits and bias from its stats, and `World::upcoming` leaves out what's been dealt with. |
 | `game/goalpost.rs` (7) | A new goalpost pops in as a circle and then unrolls. The metres go down as the player walks, rounded up, and the ring fills. It pulses under 10 m and says "Now!" on arrival. It closes before the next one appears, hides while a battle or problem is open and comes back, and shows nothing with nothing ahead. Labels. |
 | `game/manor.rs` (1) | Lightning strikes now and then (under 12% of frames), stays in 0..1, and is the same every run. |
-| `llm/usage.rs` (5) | Provider-timed vs round-trip speed, zero time ignored, no usage block, the capped history. |
+| `llm/usage.rs` (6) | Provider-timed vs round-trip speed, zero time ignored, no usage block, the capped history, totals split by kind. |
+| `llm/buffer.rs` (10) | The buffer gives the exact difficulty, else one below, never a harder one, and prefers a topic. `plan_prefetch` asks for what's missing nearest first, counts ready and in-flight questions, and obeys the in-flight, per-difficulty and per-minute caps. `WaitStats` reads out as the panel shows it. |
+| `game/prefetch.rs` (4) | A flask wants one question and a monster its hits plus a spare, clamped to difficulty 5. Env switches parse. Landed answers reach the buffer and failures vanish. A disabled prefetcher asks for nothing. |
 | `game/bow.rs` (2) | The shot draws, then releases, then lowers. An arrow flies the way it was loosed, comes down a believable distance away, then goes away. |
 | `game/health.rs` (4) | Starts full; damage, heal and refill clamping. |
 | `game/curse.rs` (8) | Nothing happens in the hub before the road. It starts the first time the player is past the gate. Standing still fills it, then drains on the interval. Walking north holds it back, even at the far end of the ramp. Old ground gives no relief. The hub lifts it. Stage toasts replay only after it clears. Cleanse and speed clamp. |
@@ -752,7 +802,7 @@ the owner, and update this section if it goes ahead.
 6. **One door per rule.** HP changes go through `damage_player`, `Health::heal` and
    `Health::refill`. Questions start through `request_task`. Answers are judged in
    `submit_answer`.
-7. **Cosmetic means cosmetic.** `Action`s, the bow's arrows, the planned pet cat (FR32)
+7. **Cosmetic means cosmetic.** `Action`s, the bow's arrows, the planned pet cat (FR33)
    and visual effects never change XP, speed, answers or battle results.
 8. **Animation runs on the game clock.** Use `Game.time` or per-object timers advanced
    by `dt`, so pausing freezes everything.
@@ -772,8 +822,12 @@ still to make:
 - **Answers are numeric only.** `MathTask.answer` is an `f64` with an exact-match
   check. Non-math subjects or multiple choice (an FR3 question, open in FR16) would need a
   new answer type through the prompt, the parser, `task_panel` and `submit_answer`.
-- **One thread and one HTTP client per request**, with no cancellation or retry. That's
-  fine at one request at a time; it should be revisited if requests ever overlap or prefetch.
+- **One thread and one HTTP client per request**, with no cancellation or retry. Look-ahead
+  now overlaps requests (at most two prefetches plus a live one), which is still fine. The
+  fix, one long-lived worker with a priority queue, comes with FR21's studio.
+- **Look-ahead can waste calls.** It asks for questions the player may never reach (they die
+  first, or skip a flask), so it costs up to about 1.5 times the calls. `JEKO_PREFETCH_RPM`
+  bounds it.
 - **The difficulty cap is 5** and comes from level plus monster bias only. It doesn't
   rise with distance.
 - **The hero and the monsters still dress for the beach.** FR24 changed the world

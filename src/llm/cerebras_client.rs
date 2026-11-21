@@ -1,6 +1,7 @@
 use crate::config::Config;
-use crate::llm::usage::{RequestUsage, TokenStats};
-use crate::llm::{task_gen, MathTask};
+use crate::llm::usage::{RequestKind, RequestUsage, TokenStats};
+use crate::llm::{fallback_bank, task_gen, MathTask};
+use rand::seq::SliceRandom;
 use serde_json::{json, Value};
 use std::sync::mpsc::{self, Receiver};
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -14,6 +15,10 @@ pub struct CerebrasClient {
     /// Shared by every clone, so the request threads spawned by
     /// `request_task_async` report into the same totals the HUD reads.
     usage: Arc<Mutex<TokenStats>>,
+    /// `JEKO_DEV=fakemodel:<ms>`: answer every call from the offline bank
+    /// after this delay, so the question buffer, the soft deadline and the
+    /// wait readout can be tested and screenshotted with no key.
+    fake_delay: Option<Duration>,
 }
 
 impl CerebrasClient {
@@ -23,11 +28,25 @@ impl CerebrasClient {
             model: cfg.model.clone(),
             base_url: cfg.base_url.clone(),
             usage: Arc::default(),
+            fake_delay: None,
         }
     }
 
+    /// Makes this client a stand-in model that answers from the offline bank
+    /// after `delay` (a dev hook; see `fake_delay`).
+    pub fn with_fake_model(mut self, delay: Duration) -> Self {
+        self.fake_delay = Some(delay);
+        self
+    }
+
+    pub fn is_fake(&self) -> bool {
+        self.fake_delay.is_some()
+    }
+
+    /// True when calls can be made: there is a key, or the stand-in model is
+    /// on. Without one the game plays from the fallback bank.
     pub fn has_api_key(&self) -> bool {
-        self.api_key.is_some()
+        self.api_key.is_some() || self.is_fake()
     }
 
     pub fn model(&self) -> &str {
@@ -57,20 +76,41 @@ impl CerebrasClient {
     /// network call runs on a plain OS thread instead of being awaited
     /// in-frame.
     pub fn request_task_async(&self, difficulty: u32) -> Receiver<anyhow::Result<MathTask>> {
+        self.request_task_as(difficulty, RequestKind::Question)
+    }
+
+    /// Like `request_task_async`, but tagged as a look-ahead request (FR32),
+    /// so the token panel can tell it from a question the player waits on.
+    pub fn prefetch_task_async(&self, difficulty: u32) -> Receiver<anyhow::Result<MathTask>> {
+        self.request_task_as(difficulty, RequestKind::Prefetch)
+    }
+
+    fn request_task_as(
+        &self,
+        difficulty: u32,
+        kind: RequestKind,
+    ) -> Receiver<anyhow::Result<MathTask>> {
         let (tx, rx) = mpsc::channel();
         let client = self.clone();
 
         std::thread::spawn(move || {
-            let result = client.request_task_blocking(difficulty);
+            let result = client.request_task_blocking(difficulty, kind);
             let _ = tx.send(result);
         });
 
         rx
     }
 
-    fn request_task_blocking(&self, difficulty: u32) -> anyhow::Result<MathTask> {
+    fn request_task_blocking(
+        &self,
+        difficulty: u32,
+        kind: RequestKind,
+    ) -> anyhow::Result<MathTask> {
+        if let Some(delay) = self.fake_delay {
+            return Ok(self.fake_task(difficulty, kind, delay));
+        }
         let (system, user) = task_gen::build_prompt(difficulty);
-        let content = self.request_raw_blocking(&system, &user)?;
+        let content = self.request_tagged_blocking(kind, &system, &user)?;
 
         let json_slice = task_gen::extract_json_object(&content)
             .ok_or_else(|| anyhow::anyhow!("no JSON object in model response: {content}"))?;
@@ -81,6 +121,17 @@ impl CerebrasClient {
     /// Lower-level call shared by live math-task generation and the
     /// build-time dialogue batch generator (`src/bin/gen_content.rs`).
     pub fn request_raw_blocking(&self, system: &str, user: &str) -> anyhow::Result<String> {
+        self.request_tagged_blocking(RequestKind::Question, system, user)
+    }
+
+    /// `request_raw_blocking`, with the call tagged for the token panel's
+    /// split by kind (FR21, FR32).
+    pub fn request_tagged_blocking(
+        &self,
+        kind: RequestKind,
+        system: &str,
+        user: &str,
+    ) -> anyhow::Result<String> {
         let api_key = self
             .api_key
             .as_ref()
@@ -99,11 +150,11 @@ impl CerebrasClient {
         let resp = match self.post_chat(api_key, &body) {
             Ok(resp) => resp,
             Err(e) => {
-                self.stats().record_failure();
+                self.stats().record_failure(kind);
                 return Err(e);
             }
         };
-        if let Some(usage) = RequestUsage::from_response(&resp, started.elapsed()) {
+        if let Some(usage) = RequestUsage::from_response(&resp, started.elapsed(), kind) {
             self.stats().record(usage);
         }
 
@@ -111,6 +162,30 @@ impl CerebrasClient {
             .as_str()
             .map(str::to_string)
             .ok_or_else(|| anyhow::anyhow!("unexpected response shape: {resp}"))
+    }
+
+    /// The stand-in model: waits, then answers from the offline bank with a
+    /// made-up token count, so the panel has something to show.
+    fn fake_task(&self, difficulty: u32, kind: RequestKind, delay: Duration) -> MathTask {
+        let started = Instant::now();
+        std::thread::sleep(delay);
+        let bank = fallback_bank();
+        let mut task = bank
+            .choose(&mut rand::thread_rng())
+            .cloned()
+            .expect("fallback task bank must not be empty");
+        task.difficulty = difficulty;
+        let completion_tokens = 60;
+        let secs = started.elapsed().as_secs_f64().max(0.001);
+        self.stats().record(RequestUsage {
+            kind,
+            prompt_tokens: 140,
+            completion_tokens,
+            tokens_per_sec: completion_tokens as f64 / secs,
+            provider_timed: false,
+            round_trip: started.elapsed(),
+        });
+        task
     }
 
     fn post_chat(&self, api_key: &str, body: &Value) -> anyhow::Result<Value> {

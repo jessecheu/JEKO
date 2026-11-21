@@ -2,7 +2,6 @@ use jeko::config::{self, Config};
 use jeko::content;
 use jeko::game::Game;
 use jeko::llm::cerebras_client::CerebrasClient;
-use jeko::llm::MathTask;
 use jeko::ui;
 use macroquad::prelude::*;
 
@@ -13,11 +12,6 @@ fn window_conf() -> Conf {
         window_height: 600,
         ..Default::default()
     }
-}
-
-fn load_fallback_tasks() -> Vec<MathTask> {
-    let raw = include_str!("../assets/tasks_fallback.json");
-    serde_json::from_str(raw).expect("assets/tasks_fallback.json must be valid and match MathTask")
 }
 
 #[macroquad::main(window_conf)]
@@ -32,8 +26,19 @@ async fn main() {
         eprintln!("CEREBRAS_API_KEY not set — running on the local fallback task bank only.");
     }
 
-    let client = CerebrasClient::new(&cfg);
-    let fallback_tasks = load_fallback_tasks();
+    // Dev aid: `JEKO_DEV=fakemodel:700` answers every model call from the
+    // offline bank after 700 ms, so the question buffer, the soft deadline and
+    // the token panel's wait readout can be tried with no key.
+    let fake_ms: Option<u64> = std::env::var("JEKO_DEV")
+        .unwrap_or_default()
+        .split(',')
+        .find_map(|e| e.strip_prefix("fakemodel:")?.parse().ok());
+    let mut client = CerebrasClient::new(&cfg);
+    if let Some(ms) = fake_ms {
+        eprintln!("JEKO_DEV: fake model, {ms} ms per call");
+        client = client.with_fake_model(std::time::Duration::from_millis(ms));
+    }
+    let fallback_tasks = jeko::llm::fallback_bank();
     let mut game = Game::new(client, fallback_tasks);
     let content_dir = content::content_dir();
     eprintln!("content dir {}", content_dir.display());
@@ -100,7 +105,7 @@ async fn main() {
             };
             ui::hud::draw_toast(ctx, &game.toast, toast_top);
             if game.settings.show_token_panel && !in_battle {
-                ui::token_panel::draw(ctx, game.llm());
+                ui::token_panel::draw(ctx, game.llm(), &game.waits);
             }
             if let Some(d) = &game.dialogue {
                 ui::dialogue_panel::draw(ctx, d);

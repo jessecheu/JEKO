@@ -11,11 +11,13 @@ pub mod manor;
 pub mod monster;
 pub mod monster_rig;
 pub mod player;
+pub mod prefetch;
 pub mod skills;
 pub mod task_trigger;
 pub mod world;
 
 use crate::content::{ContentEvent, Roster};
+use crate::llm::buffer::{Source, WaitStats};
 use crate::llm::cerebras_client::CerebrasClient;
 use crate::llm::MathTask;
 use crate::progression::Progression;
@@ -27,8 +29,9 @@ use health::Health;
 use macroquad::prelude::*;
 use monster::{MonsterKind, Species};
 use player::Player;
+use prefetch::{Ask, Prefetch, PrefetchConfig};
 use std::sync::mpsc::{Receiver, TryRecvError};
-use task_trigger::TriggerState;
+use task_trigger::{Arrival, TriggerState};
 use world::{SpotState, View, World};
 
 /// The darkness vignette around the player (FR24): clear within the first
@@ -155,6 +158,18 @@ pub struct Game {
     /// The goalpost tracker at the top centre (FR31): what's next up the
     /// road and how far. Painted by `ui::goalpost_panel`.
     pub goalpost: Tracker,
+    /// Questions asked for ahead of need, and the requests that fill them
+    /// (FR32). Content, not run state: `reset` keeps it, since the questions
+    /// aren't tied to a run and it makes the next run's first battle instant.
+    pub prefetch: Prefetch,
+    /// How long the player waited for each question shown (FR32).
+    pub waits: WaitStats,
+    /// The question in `trigger_state` while it's still loading, for the wait
+    /// measurement and the soft deadline.
+    asking: Option<Ask>,
+    /// A battle's next question, asked for while the attack animation plays and
+    /// shown when the phase reaches `Question` (FR32).
+    next_question: Option<(TriggerState, Ask)>,
 }
 
 fn camera_target(player_y: f32) -> f32 {
@@ -202,6 +217,10 @@ impl Game {
             roster: Roster::default(),
             content_rx: None,
             goalpost: Tracker::new(),
+            prefetch: Prefetch::new(PrefetchConfig::from_env()),
+            waits: WaitStats::default(),
+            asking: None,
+            next_question: None,
         }
     }
 
@@ -293,7 +312,7 @@ impl Game {
         if self.is_paused() {
             // Keep polling so a Cerebras response that lands mid-pause is
             // stored, not lost; nothing else advances.
-            self.trigger_state.poll(&self.fallback_tasks);
+            self.poll_questions(0.0);
             return;
         }
         self.time += dt;
@@ -353,7 +372,8 @@ impl Game {
         self.cam_y += (target - self.cam_y) * (1.0 - (-dt * CAMERA_FOLLOW).exp());
         self.world.ensure_generated(self.cam_y - world::CHUNK_H);
 
-        self.trigger_state.poll(&self.fallback_tasks);
+        self.poll_questions(dt);
+        self.tick_prefetch();
 
         // Stepping into a monster's patch of ferns starts a battle.
         if !busy {
@@ -478,6 +498,7 @@ impl Game {
     /// Starts a battle with `species`. `zone` is the encounter zone to
     /// clear on victory (`None` for a scripted dev battle).
     fn start_battle(&mut self, species: Species, zone: Option<usize>) {
+        self.stash_questions();
         self.trigger_state = TriggerState::Idle;
         self.interact_target = None;
         self.blocker_target = None;
@@ -485,14 +506,18 @@ impl Game {
         self.player.action = player::Action::None;
         // The battle view puts the monster on the right.
         self.player.facing = 1.0;
+        // Ask for the first question now: the entry transition and the intro
+        // (1.8 s) cover the round trip. It's shown when the intro ends.
+        let bias = species.info().difficulty_bias;
         self.battle = Some(Battle::new(species, zone.unwrap_or(usize::MAX)));
+        self.next_question = Some(self.request_task(bias, prefetch::SOFT_DEADLINE_BATTLE_S));
     }
 
     /// Advances the battle's phases: transition, intro, attacks, faint.
     /// The player is held still throughout.
     fn update_battle(&mut self, dt: f32) {
         self.player.stop(dt);
-        self.trigger_state.poll(&self.fallback_tasks);
+        self.poll_questions(dt);
         if is_key_pressed(INTERACT_KEY) && matches!(self.trigger_state, TriggerState::Active(_)) {
             self.focus_answer = true;
         }
@@ -502,12 +527,12 @@ impl Game {
 
         let (mut next_question, mut monster_hit, mut won, mut done) = (false, None, false, false);
         b.phase = match b.phase {
-            Phase::Enter(t) if t + dt >= battle::ENTER_S => {
-                next_question = true;
-                Phase::Intro(0.0)
-            }
+            Phase::Enter(t) if t + dt >= battle::ENTER_S => Phase::Intro(0.0),
             Phase::Enter(t) => Phase::Enter(t + dt),
-            Phase::Intro(t) if t + dt >= battle::INTRO_S => Phase::Question,
+            Phase::Intro(t) if t + dt >= battle::INTRO_S => {
+                next_question = true;
+                Phase::Question
+            }
             Phase::Intro(t) => Phase::Intro(t + dt),
             Phase::Question => Phase::Question,
             Phase::PlayerAttack(t) => {
@@ -564,7 +589,11 @@ impl Game {
             }
         }
         if next_question && self.game_over.is_none() {
-            self.trigger_state = self.request_task(info.difficulty_bias);
+            // Usually already asked for, or even back (see `battle_answer`).
+            let asked = self.next_question.take().unwrap_or_else(|| {
+                self.request_task(info.difficulty_bias, prefetch::SOFT_DEADLINE_BATTLE_S)
+            });
+            self.show_question(asked);
         }
         if won {
             if self.player.hat_stolen {
@@ -576,6 +605,7 @@ impl Game {
                 opened = z.blocks;
             }
             self.run.monsters_beaten += 1;
+            self.stash_questions();
             self.trigger_state = TriggerState::Idle;
             let line = match opened {
                 true => format!("You beat the {name}! The road is open."),
@@ -585,6 +615,7 @@ impl Game {
         }
         if done {
             self.battle = None;
+            self.stash_questions();
             self.trigger_state = TriggerState::Idle;
         }
     }
@@ -600,6 +631,9 @@ impl Game {
         }
         b.hit_landed = false;
         let xp = b.info.xp_per_hit;
+        let bias = b.info.difficulty_bias;
+        // The answer that lands the last hit leaves nothing to ask.
+        let last_hit = correct && b.hits_left <= 1;
         if correct {
             b.phase = Phase::PlayerAttack(0.0);
             self.player.shoot_at_monster();
@@ -619,6 +653,12 @@ impl Game {
             cooldown: f32::MAX,
         };
         self.input_buffer.clear();
+        // Ask for the next question now, so the attack that plays next (0.8 s
+        // or 0.9 s) covers the round trip, instead of starting the request
+        // once the attack is over.
+        if !last_hit && self.next_question.is_none() {
+            self.next_question = Some(self.request_task(bias, prefetch::SOFT_DEADLINE_BATTLE_S));
+        }
     }
 
     /// True once the death animation has played and the Game Over panel
@@ -673,6 +713,7 @@ impl Game {
             world::path_center(world::PLAYER_START_Y),
             world::PLAYER_START_Y,
         );
+        self.stash_questions();
         self.player = Player::new(start);
         self.world = World::new();
         self.progression = Progression::new();
@@ -710,7 +751,8 @@ impl Game {
         format!(
             "STATE hp={}/{} level={} xp={} streak={} dist={}m flasks={} beaten={} \
              zones_cleared={} battle={:?} trigger={} dialogue={} game_over={} hat_stolen={} \
-             arrows={} roster={} curse={:.2} blocker_in_reach={} blockers_left={} goalpost={}",
+             arrows={} roster={} curse={:.2} blocker_in_reach={} blockers_left={} goalpost={} \
+             questions=[{}] buffered={:?} flying={}",
             self.health.current,
             self.health.max,
             self.progression.level,
@@ -740,6 +782,11 @@ impl Game {
                 .view()
                 .map(|v| format!("{} {}m open={:.1}", v.label, v.meters, v.open))
                 .unwrap_or_else(|| "none".into()),
+            self.waits
+                .readout()
+                .unwrap_or_else(|| "none shown yet".into()),
+            self.prefetch.buffer.counts(),
+            self.prefetch.in_flight(),
         )
     }
 
@@ -880,18 +927,142 @@ impl Game {
         self.world.spots[i].state = SpotState::Pending;
         self.active_spot = Some(i);
         self.interact_target = None;
-        self.trigger_state = self.request_task(0);
+        let asked = self.request_task(0, prefetch::SOFT_DEADLINE_FLASK_S);
+        self.show_question(asked);
     }
 
-    /// A fresh question: live from the model if there's a key, otherwise
-    /// from the fallback bank. `bias` raises the difficulty (tough
-    /// monsters ask harder questions).
-    fn request_task(&self, bias: u32) -> TriggerState {
+    /// A fresh question, the only way one starts (invariant 6): a ready one
+    /// from the buffer if there is one, otherwise live from the model if
+    /// there's a key, otherwise from the fallback bank. `bias` raises the
+    /// difficulty (tough monsters ask harder questions). `deadline_s` is how
+    /// long a live call may take before a bank question is shown instead.
+    /// The result goes to `show_question`, now or when it's needed.
+    fn request_task(&mut self, bias: u32, deadline_s: f32) -> (TriggerState, Ask) {
         let difficulty = (self.progression.level + bias).min(5);
+        let ask = |source| Ask {
+            difficulty,
+            source,
+            waited: 0.0,
+            deadline: deadline_s,
+            counts: true,
+        };
+        if let Some(task) = self.prefetch.buffer.take(difficulty, None) {
+            return (TriggerState::Active(task), ask(Source::Buffer));
+        }
         if self.client.has_api_key() {
-            TriggerState::Loading(self.client.request_task_async(difficulty))
+            let rx = self.client.request_task_async(difficulty);
+            (TriggerState::Loading(rx), ask(Source::Live))
         } else {
-            TriggerState::Active(task_trigger::pick_fallback(&self.fallback_tasks))
+            let task = task_trigger::pick_fallback(&self.fallback_tasks);
+            let offline = Ask {
+                counts: false,
+                ..ask(Source::Fallback)
+            };
+            (TriggerState::Active(task), offline)
+        }
+    }
+
+    /// Puts a question on screen. One that's already here counts as ready on
+    /// arrival; one still loading is measured until it lands.
+    fn show_question(&mut self, (state, ask): (TriggerState, Ask)) {
+        match state {
+            TriggerState::Loading(_) => self.asking = Some(ask),
+            _ => {
+                self.asking = None;
+                if ask.counts {
+                    self.waits.record(ask.source, ask.waited);
+                }
+            }
+        }
+        self.trigger_state = state;
+    }
+
+    /// Runs every frame, paused or not (`dt` is 0 while paused): collects the
+    /// look-ahead answers, polls the shown question and the battle's next one,
+    /// and applies the soft deadline.
+    fn poll_questions(&mut self, dt: f32) {
+        self.prefetch.poll();
+        if let Some((state, ask)) = &mut self.next_question {
+            match state.poll(&self.fallback_tasks) {
+                // Back before it was needed: the player never sees a wait.
+                Some(Arrival::Live) => ask.source = Source::Ready,
+                Some(Arrival::Fallback) => ask.source = Source::Fallback,
+                None => {}
+            }
+        }
+        if !matches!(self.trigger_state, TriggerState::Loading(_)) {
+            return;
+        }
+        let Some(ask) = &mut self.asking else {
+            self.trigger_state.poll(&self.fallback_tasks);
+            return;
+        };
+        ask.waited += dt;
+        let landed = self.trigger_state.poll(&self.fallback_tasks);
+        let ask = *ask;
+        match landed {
+            Some(arrival) => {
+                self.asking = None;
+                let source = match arrival {
+                    Arrival::Live => Source::Live,
+                    Arrival::Fallback => Source::Fallback,
+                };
+                self.waits.record(source, ask.waited);
+            }
+            None if ask.waited >= ask.deadline => {
+                // Too slow: show a bank question now and keep the late answer
+                // for next time. The hard 8 s timeout stays as the backstop.
+                let bank = TriggerState::Active(task_trigger::pick_fallback(&self.fallback_tasks));
+                if let TriggerState::Loading(rx) = std::mem::replace(&mut self.trigger_state, bank)
+                {
+                    self.prefetch.adopt(ask.difficulty, rx);
+                }
+                self.asking = None;
+                self.waits.record(Source::Deadline, ask.waited);
+            }
+            None => {}
+        }
+    }
+
+    /// Starts look-ahead requests for what's coming up the road (FR32).
+    /// Live questions win: nothing starts while one is loading, or while the
+    /// battle's next one is. Not while paused, and not in a battle.
+    fn tick_prefetch(&mut self) {
+        if !self.prefetch.enabled() || !self.client.has_api_key() || self.is_paused() {
+            return;
+        }
+        let loading = |s: &TriggerState| matches!(s, TriggerState::Loading(_));
+        if loading(&self.trigger_state)
+            || self.next_question.as_ref().is_some_and(|(s, _)| loading(s))
+        {
+            return;
+        }
+        let range = prefetch::LOOKAHEAD_SCREENS * screen_height();
+        let upcoming = self.world.upcoming(self.player.pos.y, range);
+        let wants = prefetch::demand(&upcoming, self.progression.level);
+        self.prefetch
+            .tick(&self.client, &wants, std::time::Instant::now());
+    }
+
+    /// Lets go of the question in flight and the battle's next one, keeping
+    /// whatever answers arrive for the buffer instead of throwing the model's
+    /// work away. For a new battle, the end of one, and a new run.
+    fn stash_questions(&mut self) {
+        if let TriggerState::Loading(rx) =
+            std::mem::replace(&mut self.trigger_state, TriggerState::Idle)
+        {
+            let difficulty = self.asking.map_or(1, |a| a.difficulty);
+            self.prefetch.adopt(difficulty, rx);
+        }
+        self.asking = None;
+        if let Some((state, ask)) = self.next_question.take() {
+            match state {
+                TriggerState::Loading(rx) => self.prefetch.adopt(ask.difficulty, rx),
+                TriggerState::Active(task) if ask.source != Source::Fallback => {
+                    self.prefetch.buffer.push(ask.difficulty, task)
+                }
+                _ => {}
+            }
         }
     }
 

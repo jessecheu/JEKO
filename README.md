@@ -37,6 +37,7 @@ src/
     monster_spec.rs       a monster as JSON data: parse + validate (clamped, unit-tested), stats from a tier table
     watcher.rs            background thread that rescans content/monsters/*.json and hot-reloads edits
   llm/
+    buffer.rs             ready-question buffer, the pure look-ahead planner, and the wait readout
     cerebras_client.rs    OpenAI-compatible chat-completions call to Cerebras, async wrapper
     task_gen.rs           prompt templates + JSON extraction helpers
     usage.rs              per-request token counts + tokens/sec, session totals (feeds the token panel)
@@ -57,6 +58,7 @@ src/
     battle.rs             wild-encounter battle: transition, phases, battle-view drawing (moonlit clearing)
     dialogue.rs           NPC dialogue with typewriter reveal (Professor Pebble in the hub)
     task_trigger.rs        state machine: Idle -> Loading -> Active -> Resolved
+    prefetch.rs            looks up the road and asks for questions ahead of need; soft deadlines
     mod.rs                 ties player/world/progression/trigger together
   progression/
     mod.rs                 XP, levels, streak multiplier, upgrade unlocking

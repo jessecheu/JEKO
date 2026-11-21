@@ -8,9 +8,47 @@ use std::time::Duration;
 /// How many recent requests the token panel's graph keeps.
 pub const HISTORY_LEN: usize = 24;
 
+/// What a model call was for. Tagged on every `RequestUsage`, so the token
+/// panel can split the session's throughput by purpose (FR21, FR32).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum RequestKind {
+    /// A question the player is waiting on, or about to.
+    #[default]
+    Question,
+    /// A question asked ahead of need, to fill the question buffer (FR32).
+    Prefetch,
+    /// A monster designed by the studio (FR21).
+    Monster,
+    /// A lesson pack from the studio (FR22).
+    Lesson,
+}
+
+impl RequestKind {
+    pub const ALL: [RequestKind; 4] = [
+        RequestKind::Question,
+        RequestKind::Prefetch,
+        RequestKind::Monster,
+        RequestKind::Lesson,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            RequestKind::Question => "question",
+            RequestKind::Prefetch => "prefetch",
+            RequestKind::Monster => "monster",
+            RequestKind::Lesson => "lesson",
+        }
+    }
+
+    fn index(self) -> usize {
+        self as usize
+    }
+}
+
 /// What one chat-completions call cost and how fast it generated.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct RequestUsage {
+    pub kind: RequestKind,
     pub prompt_tokens: u64,
     pub completion_tokens: u64,
     /// Output tokens per second.
@@ -26,7 +64,7 @@ pub struct RequestUsage {
 impl RequestUsage {
     /// Reads the OpenAI-style `usage` block of a chat-completions response.
     /// `None` if the provider didn't send one.
-    pub fn from_response(resp: &Value, round_trip: Duration) -> Option<Self> {
+    pub fn from_response(resp: &Value, round_trip: Duration, kind: RequestKind) -> Option<Self> {
         let usage = &resp["usage"];
         let completion_tokens = usage["completion_tokens"].as_u64()?;
         let prompt_tokens = usage["prompt_tokens"].as_u64().unwrap_or(0);
@@ -42,6 +80,7 @@ impl RequestUsage {
         };
 
         Some(Self {
+            kind,
             prompt_tokens,
             completion_tokens,
             tokens_per_sec,
@@ -67,6 +106,16 @@ pub struct TokenStats {
     pub completion_tokens: u64,
     /// Oldest first.
     pub history: VecDeque<RequestUsage>,
+    /// Requests and tokens per `RequestKind`, indexed by it.
+    by_kind: [KindTotals; 4],
+}
+
+/// One kind's share of the session.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct KindTotals {
+    pub requests: u32,
+    pub failures: u32,
+    pub tokens: u64,
 }
 
 impl TokenStats {
@@ -74,14 +123,23 @@ impl TokenStats {
         self.requests += 1;
         self.prompt_tokens += usage.prompt_tokens;
         self.completion_tokens += usage.completion_tokens;
+        let k = &mut self.by_kind[usage.kind.index()];
+        k.requests += 1;
+        k.tokens += usage.total_tokens();
         if self.history.len() == HISTORY_LEN {
             self.history.pop_front();
         }
         self.history.push_back(usage);
     }
 
-    pub fn record_failure(&mut self) {
+    pub fn record_failure(&mut self, kind: RequestKind) {
         self.failures += 1;
+        self.by_kind[kind.index()].failures += 1;
+    }
+
+    /// The session's requests and tokens for one kind of call.
+    pub fn kind(&self, kind: RequestKind) -> KindTotals {
+        self.by_kind[kind.index()]
     }
 
     pub fn last(&self) -> Option<&RequestUsage> {
@@ -121,6 +179,7 @@ mod tests {
 
     fn sample(tps: f64) -> RequestUsage {
         RequestUsage {
+            kind: RequestKind::Question,
             prompt_tokens: 100,
             completion_tokens: 50,
             tokens_per_sec: tps,
@@ -135,7 +194,9 @@ mod tests {
             "usage": {"prompt_tokens": 120, "completion_tokens": 200, "total_tokens": 320},
             "time_info": {"completion_time": 0.1, "total_time": 0.15},
         });
-        let u = RequestUsage::from_response(&resp, Duration::from_millis(400)).unwrap();
+        let u =
+            RequestUsage::from_response(&resp, Duration::from_millis(400), RequestKind::Question)
+                .unwrap();
         assert_eq!(u.prompt_tokens, 120);
         assert_eq!(u.completion_tokens, 200);
         assert_eq!(u.total_tokens(), 320);
@@ -146,7 +207,9 @@ mod tests {
     #[test]
     fn speed_falls_back_to_round_trip() {
         let resp = json!({"usage": {"prompt_tokens": 10, "completion_tokens": 100}});
-        let u = RequestUsage::from_response(&resp, Duration::from_millis(500)).unwrap();
+        let u =
+            RequestUsage::from_response(&resp, Duration::from_millis(500), RequestKind::Question)
+                .unwrap();
         assert!((u.tokens_per_sec - 200.0).abs() < 1e-6);
         assert!(!u.provider_timed);
     }
@@ -157,7 +220,8 @@ mod tests {
             "usage": {"prompt_tokens": 10, "completion_tokens": 100},
             "time_info": {"completion_time": 0.0},
         });
-        let u = RequestUsage::from_response(&resp, Duration::from_secs(1)).unwrap();
+        let u = RequestUsage::from_response(&resp, Duration::from_secs(1), RequestKind::Question)
+            .unwrap();
         assert!((u.tokens_per_sec - 100.0).abs() < 1e-6);
         assert!(!u.provider_timed);
     }
@@ -165,7 +229,12 @@ mod tests {
     #[test]
     fn no_usage_block_means_no_sample() {
         let resp = json!({"choices": [{"message": {"content": "{}"}}]});
-        assert!(RequestUsage::from_response(&resp, Duration::from_millis(100)).is_none());
+        assert!(RequestUsage::from_response(
+            &resp,
+            Duration::from_millis(100),
+            RequestKind::Question
+        )
+        .is_none());
     }
 
     #[test]
@@ -188,5 +257,22 @@ mod tests {
             stats.request_number(HISTORY_LEN - 1) as usize,
             HISTORY_LEN + 5
         );
+    }
+
+    #[test]
+    fn totals_are_split_by_kind() {
+        let mut stats = TokenStats::default();
+        stats.record(sample(10.0));
+        stats.record(RequestUsage {
+            kind: RequestKind::Monster,
+            ..sample(10.0)
+        });
+        stats.record_failure(RequestKind::Prefetch);
+        assert_eq!(stats.kind(RequestKind::Question).requests, 1);
+        assert_eq!(stats.kind(RequestKind::Monster).tokens, 150);
+        assert_eq!(stats.kind(RequestKind::Prefetch).failures, 1);
+        assert_eq!(stats.kind(RequestKind::Lesson), KindTotals::default());
+        assert_eq!(stats.requests, 2);
+        assert_eq!(stats.failures, 1);
     }
 }

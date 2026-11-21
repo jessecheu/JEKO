@@ -437,6 +437,61 @@ pub fn pick_goalpost(posts: &[Goalpost], y: f32) -> Option<Goalpost> {
         .copied()
 }
 
+/// Something up the road that will need questions (FR32): a flask, or a
+/// monster to fight.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct Upcoming {
+    /// `Flask`, or the kind of monster goalpost (`Patch`, `Blocker`, `Titan`).
+    pub kind: GoalKind,
+    /// The goalpost's y: where the player has "arrived".
+    pub y: f32,
+    /// Where the thing stands, to tell which one it is.
+    pub at: Vec2,
+    /// Questions the fight takes if every answer is right: 1 for a flask.
+    pub hits: u32,
+    /// Added to the player's level for this one's questions (0 for a flask).
+    pub difficulty_bias: u32,
+}
+
+/// Every flask and monster within `range_px` north of `y`, nearest first.
+/// Pure, from the same placement functions as the world and the goalpost
+/// tracker (invariant 3), so it needs no generated chunks. It includes ones
+/// the player has dealt with; `World::upcoming` filters those. Nothing in the
+/// spawn hub: monsters start at chunk 1, and a flask in chunk 0 is the first.
+pub fn upcoming_in(y: f32, range_px: f32) -> Vec<Upcoming> {
+    let mut out = Vec::new();
+    for k in chunk_of(y).max(0)..=chunk_of(y - range_px) {
+        let encounter = encounter_for_chunk(k);
+        for g in goalposts_in_chunk(k) {
+            if g.y >= y || y - g.y > range_px {
+                continue;
+            }
+            let (hits, difficulty_bias) = match g.kind {
+                GoalKind::Flask => (1, 0),
+                GoalKind::Patch | GoalKind::Blocker | GoalKind::Titan => {
+                    match encounter.filter(|e| e.pos == g.at) {
+                        Some(e) => {
+                            let info = e.kind.info();
+                            (info.hits, info.difficulty_bias)
+                        }
+                        None => continue,
+                    }
+                }
+                GoalKind::Milestone => continue,
+            };
+            out.push(Upcoming {
+                kind: g.kind,
+                y: g.y,
+                at: g.at,
+                hits,
+                difficulty_bias,
+            });
+        }
+    }
+    out.sort_by(|a, b| b.y.total_cmp(&a.y));
+    out
+}
+
 pub struct World {
     /// `chunks[i]` holds the scenery for chunk `FIRST_CHUNK + i`.
     chunks: Vec<Vec<Decoration>>,
@@ -498,6 +553,23 @@ impl World {
             .filter(|g| !self.goal_done(g))
             .collect();
         pick_goalpost(&posts, y)
+    }
+
+    /// What's coming up the road that still needs a question (FR32): flasks
+    /// not yet opened and monsters not yet beaten, within `range_px` north of
+    /// `y`, nearest first.
+    pub fn upcoming(&self, y: f32, range_px: f32) -> Vec<Upcoming> {
+        upcoming_in(y, range_px)
+            .into_iter()
+            .filter(|u| {
+                !self.goal_done(&Goalpost {
+                    kind: u.kind,
+                    y: u.y,
+                    at: u.at,
+                    meters: 0,
+                })
+            })
+            .collect()
     }
 
     /// True once the player has dealt with `g`: opened the flask, or beaten
@@ -1263,6 +1335,80 @@ mod tests {
     use super::*;
 
     const CHUNKS: std::ops::Range<i64> = FIRST_CHUNK..300;
+
+    #[test]
+    fn upcoming_is_the_nearest_first_and_inside_the_range() {
+        for start in [PLAYER_START_Y, -500.0, -4000.0, -25_000.0] {
+            let ups = upcoming_in(start, 900.0);
+            for u in &ups {
+                assert!(u.y < start && start - u.y <= 900.0, "{u:?} from {start}");
+                assert!(u.hits >= 1);
+            }
+            assert!(ups.windows(2).all(|w| w[0].y >= w[1].y), "nearest first");
+        }
+    }
+
+    #[test]
+    fn upcoming_matches_where_the_world_puts_things() {
+        let mut found = (0, 0);
+        for k in 1..200 {
+            let (north, south) = chunk_span(k);
+            let ups = upcoming_in(south, south - north);
+            for u in ups {
+                match u.kind {
+                    GoalKind::Flask => {
+                        found.0 += 1;
+                        assert!(spot_for_chunk(chunk_of(u.at.y)).is_some_and(|p| p == u.at));
+                    }
+                    _ => {
+                        found.1 += 1;
+                        assert!(
+                            encounter_for_chunk(chunk_of(u.at.y)).is_some_and(|e| e.pos == u.at)
+                        );
+                    }
+                }
+            }
+        }
+        assert!(found.0 > 20 && found.1 > 20, "{found:?}");
+    }
+
+    #[test]
+    fn nothing_is_upcoming_in_the_hub_but_the_first_flask() {
+        // From the start of the hub, 900 px reaches chunk 0's flask and chunk
+        // 1's first monster. Nothing is placed in the hub itself.
+        let ups = upcoming_in(PLAYER_START_Y, 900.0);
+        assert!(ups.iter().all(|u| u.y < 0.0), "{ups:?}");
+        assert!(ups.iter().any(|u| u.kind == GoalKind::Flask));
+        assert!(upcoming_in(HUB_SOUTH, 400.0).is_empty());
+    }
+
+    #[test]
+    fn a_monsters_hits_and_bias_come_from_its_info() {
+        let ups = upcoming_in(0.0, 20_000.0);
+        let titan = ups.iter().find(|u| u.kind == GoalKind::Titan).unwrap();
+        let info = MonsterKind::TideTitan.info();
+        assert_eq!(
+            (titan.hits, titan.difficulty_bias),
+            (info.hits, info.difficulty_bias)
+        );
+    }
+
+    #[test]
+    fn dealt_with_things_are_not_upcoming() {
+        let mut w = World::new();
+        w.ensure_generated(-6000.0);
+        let before = w.upcoming(-100.0, 4000.0).len();
+        assert!(before > 2);
+        let i = w.spots.iter().position(|s| s.pos.y < -200.0).unwrap();
+        w.spots[i].state = SpotState::Solved;
+        let z = w
+            .zones
+            .iter()
+            .position(|z| z.pos.y < -200.0 && z.pos.y > -4000.0)
+            .unwrap();
+        w.zones[z].cleared = true;
+        assert_eq!(w.upcoming(-100.0, 4000.0).len(), before - 2);
+    }
 
     #[test]
     fn scenery_never_lands_on_the_road() {

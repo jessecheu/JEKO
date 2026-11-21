@@ -36,7 +36,7 @@ Entries are grouped by area. Numbering is stable; don't renumber when one is rem
 
 ## Numbering
 
-**The next free number is FR33**; bump it when you file one. Numbers are never
+**The next free number is FR34**; bump it when you file one. Numbers are never
 reused or renumbered when an entry is removed. Take the next number, not the first gap.
 
 ---
@@ -51,15 +51,16 @@ in a question battle (FR3, built). Both are done; their open questions are in FR
 # Gameplay — minigames & companions
 
 **Goal:** break up the walk with small optional moments that reward the player
-without changing the game's balance. FR32 is the first: a caged pet cat. It sets
+without changing the game's balance. FR33 is the first: a caged pet cat. It sets
 the pattern (a thing on the road, a quick puzzle in a modal, a cosmetic reward)
 that later minigames can copy.
 
-## FR32. Unlock a pet cat from a cage
+## FR33. Unlock a pet cat from a cage
 
 **Status.** **Not started.** Reworked from a pet lion to a pet cat at the owner's
 request (2026-11-21), and renumbered from FR4, a number the token usage panel
-already had (see Completed); the approach is suggested only.
+already had (see Completed), then from FR32 to FR33 because the prefetch FR
+(*Live content*) held FR32 too; the approach is suggested only.
 
 **Depends on:** [] _(FR2 and FR3 are built, so the cat's "help" at a battle can be
 built in the same pass; it reacts to flasks too)_
@@ -322,8 +323,31 @@ invariant 3 and needs the owner's decision (see FR21's open questions).
 
 ## FR32. No waiting at an encounter: get questions and monsters ready before the player arrives
 
-**Status.** **Not started.** Requested by the owner; the approach is suggested only.
-Milestone A needs no new module and no FR21 work, so start there.
+**Status.** **Milestones A, B and the soft deadline of C built (2026-11-21); the
+shared priority lanes and the monster stock wait on FR21.** Done: `llm/buffer.rs`
+(`QuestionBuffer`, the pure `plan_prefetch`, `WaitStats`), `game/prefetch.rs`
+(`Prefetch`, `demand`, the limits and `JEKO_PREFETCH` / `JEKO_PREFETCH_RPM`),
+`world::upcoming_in` and `World::upcoming`, `Game::request_task` taking from the buffer
+first, the battle's first question asked in `start_battle` and each later one in
+`battle_answer` (the "next" slot, shown when the phase reaches `Question`), the soft
+deadlines (1.5 s battle, 2.5 s flask) that keep the late answer, `RequestKind` tags on
+every call, the token panel's readout, and the `JEKO_DEV=fakemodel:<ms>` hook. Checked
+by screenshot with `fakemodel`: a flask opens `Active` from the buffer on the frame E
+is pressed, the panel shows "ready on arrival 1/1 · longest wait 0.0 s" and the
+per-kind counts, and a 3 s model in a battle trips the deadline (bank question after
+1.5 s, the late answer lands in the buffer).
+
+**Next step:** the lanes. Once FR21's `Studio` exists, move prefetches onto its
+thread and give every call one priority (live question > prefetch > villain > studio).
+The monster stock lands with FR21 milestone C.
+
+Provisional choices for the owner (change freely):
+
+- *Level-ups:* take the exact difficulty, else one below, else ask live.
+- *Across runs:* the buffer survives `reset()`.
+- *Wasted calls:* about 1.5× the calls is accepted; `JEKO_PREFETCH_RPM` (20) bounds it.
+- *Soft deadline:* 1.5 s in a battle and 2.5 s at a flask; a slow model gets a bank question.
+- *Invariant 11:* not added. The doc states the rule in §5; promoting it is the owner's call.
 
 **Depends on:** [] _(the base for FR21's studio and FR22's lesson packs, which feed
 the same buffer; can reuse FR31's `goalposts_in_chunk` scan; warms
@@ -435,21 +459,26 @@ gets there. The waits come from the timing, not from the model being slow.
 
 - [ ] In a battle with an API key, each question after the first is requested when
   the previous answer is submitted, and the first in `start_battle`. With
-  `fakemodel:700` no spinner shows in a battle.
-- [ ] With look-ahead on, a flask or zone the player walks up to normally opens
+  `fakemodel:700` no spinner shows in a battle. *(Built and the first question checked:
+  it arrives ready. The later ones aren't confirmed under `fakemodel`, because scripted
+  runs step game time at 1/60 s per frame while frames run faster than that, so the
+  0.8 s attack covers less than 0.8 s of the stand-in model's wall-clock delay. Check it
+  in a real-time run.)*
+- [x] With look-ahead on, a flask or zone the player walks up to normally opens
   `Active` on the same frame, as measured by the wait readout.
-- [ ] `request_task` is still the only way a question starts, and with no key, no
+- [x] `request_task` is still the only way a question starts, and with no key, no
   network or `JEKO_PREFETCH=off` the game plays exactly as it does today.
-- [ ] `plan_prefetch` and `world::upcoming` are pure and unit-tested, including the
+- [x] `plan_prefetch` and `world::upcoming` are pure and unit-tested, including the
   caps and the hub (nothing is prefetched for chunk `k < 1`).
-- [ ] A live call slower than the soft deadline is replaced by a bank question, and
+- [x] A live call slower than the soft deadline is replaced by a bank question, and
   its late answer is kept for later.
 - [ ] Once FR21 milestone C lands, a zone's species is bound off screen from the
   loaded roster only, and no encounter waits on a generation job.
 - [ ] `docs/ARCHITECTURE.md` is updated: §5 (the buffer before the live call, the
   deadline), §4 (where `update_battle` and the road frame request), §11 (the env
   vars and the `fakemodel` hook), §13 (the one-thread-per-request limit), and
-  §12 if the owner adds an invariant.
+  §12 if the owner adds an invariant. *(Done for A, B and the deadline; the lanes
+  and the monster stock remain.)*
 
 ---
 

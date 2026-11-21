@@ -1,5 +1,6 @@
+use crate::llm::buffer::WaitStats;
 use crate::llm::cerebras_client::CerebrasClient;
-use crate::llm::usage::{RequestUsage, TokenStats, HISTORY_LEN};
+use crate::llm::usage::{RequestKind, RequestUsage, TokenStats, HISTORY_LEN};
 use egui_macroquad::egui;
 
 /// The newest request's bar: deep moss green, about 5:1 against the
@@ -17,7 +18,7 @@ const BAR_RADIUS: u8 = 3;
 /// per recent request, and session token totals. Sits bottom-right, under
 /// the Progress panel. Cerebras' speed is what makes a mid-walk problem
 /// possible, so it's shown directly.
-pub fn draw(ctx: &egui::Context, client: &CerebrasClient) {
+pub fn draw(ctx: &egui::Context, client: &CerebrasClient, waits: &WaitStats) {
     let stats = client.token_stats();
 
     egui::Window::new("Token Usage")
@@ -52,6 +53,10 @@ pub fn draw(ctx: &egui::Context, client: &CerebrasClient) {
             speed_readout(ui, &stats);
             graph(ui, &stats);
             totals(ui, &stats);
+            by_kind(ui, &stats);
+            if let Some(readout) = waits.readout() {
+                ui.label(egui::RichText::new(readout).small().weak());
+            }
         });
 }
 
@@ -196,6 +201,22 @@ fn totals(ui: &mut egui::Ui, stats: &TokenStats) {
             ui.label(requests);
             ui.end_row();
         });
+}
+
+/// Requests per purpose, shown once the game has asked for anything but
+/// questions the player was waiting on (look-ahead, monsters, lessons).
+fn by_kind(ui: &mut egui::Ui, stats: &TokenStats) {
+    let rows: Vec<String> = RequestKind::ALL
+        .into_iter()
+        .filter_map(|kind| {
+            let k = stats.kind(kind);
+            (k.requests + k.failures > 0)
+                .then(|| format!("{} {} ({})", kind.label(), k.requests, fmt_count(k.tokens)))
+        })
+        .collect();
+    if rows.len() > 1 || stats.kind(RequestKind::Question).requests == 0 && !rows.is_empty() {
+        ui.label(egui::RichText::new(rows.join(" · ")).small().weak());
+    }
 }
 
 /// `1,284`, then `12.9K` / `4.2M` once a number gets too wide for the panel.

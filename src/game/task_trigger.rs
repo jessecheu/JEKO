@@ -9,19 +9,34 @@ pub enum TriggerState {
     Resolved { correct: bool, cooldown: f32 },
 }
 
+/// How a `Loading` request ended.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Arrival {
+    /// The model's answer came back.
+    Live,
+    /// The call failed; a question from the local bank stepped in.
+    Fallback,
+}
+
 impl TriggerState {
     /// Checks the in-flight request, if any, and promotes it to `Active`
     /// once the Cerebras call lands — or falls back to the local task bank
     /// immediately on error so a flaky connection never blocks play.
-    pub fn poll(&mut self, fallback: &[MathTask]) {
-        if let TriggerState::Loading(rx) = self {
-            match rx.try_recv() {
-                Ok(Ok(task)) => *self = TriggerState::Active(task),
-                Ok(Err(_)) | Err(TryRecvError::Disconnected) => {
-                    *self = TriggerState::Active(pick_fallback(fallback));
-                }
-                Err(TryRecvError::Empty) => {}
+    /// Says how it ended when it did.
+    pub fn poll(&mut self, fallback: &[MathTask]) -> Option<Arrival> {
+        let TriggerState::Loading(rx) = self else {
+            return None;
+        };
+        match rx.try_recv() {
+            Ok(Ok(task)) => {
+                *self = TriggerState::Active(task);
+                Some(Arrival::Live)
             }
+            Ok(Err(_)) | Err(TryRecvError::Disconnected) => {
+                *self = TriggerState::Active(pick_fallback(fallback));
+                Some(Arrival::Fallback)
+            }
+            Err(TryRecvError::Empty) => None,
         }
     }
 }
