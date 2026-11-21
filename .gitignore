@@ -10,3 +10,8 @@
 # Lesson packs and Pebble's tips the studio writes (FR22): per-machine caches too.
 /content/lessons/
 /content/tips/
+
+# OpenClaw seeds these into an agent's workspace when the workspace is this repo (FR30).
+/IDENTITY.md
+/SOUL.md
+/USER.md

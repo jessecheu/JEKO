@@ -1324,10 +1324,24 @@ without making the game depend on them.
 
 ## FR30. Run JEKO's agent-shaped jobs as OpenClaw agents
 
-**Status.** **Not started.** Requested by the owner; the approach is suggested only.
-Check the OpenClaw details below (endpoints, config keys, skill layout) against
-[docs.openclaw.ai](https://docs.openclaw.ai) before building. They were read on
-2026-11-21 and OpenClaw changes quickly.
+**Status.** **Milestone A built (2026-11-21); B to E not started.** Done: the
+`jeko-dialogue` skill (`openclaw/skills/jeko-dialogue/SKILL.md`) and `openclaw/README.md`
+(setup, the locked-down agent, the weekly cron, safety); `dialogue::check_bank`, which
+`gen_content` now runs before it writes `assets/dialogue.json`; and the offline
+`validate_content` binary with `make validate`, which checks the dialogue bank and loads
+the content dir with the watcher's own scan (the start of milestone B's validator).
+Checked against OpenClaw 2026.10.5, the installed version, in a throwaway state dir
+(`OPENCLAW_STATE_DIR` and `OPENCLAW_CONFIG_PATH` pointed at `/tmp`, so the owner's config was untouched):
+`skills.load.extraDirs` lists the skill as ready, `agents add` and the `agents.entries`
+patch validate, and `cron add` accepts the flags. **Not checked:** an agent run end to end
+(needs a model for OpenClaw and a Cerebras key), and the weekly cron against a running
+Gateway. **Next step:** milestone B, the run log (`content/runs/<date>.jsonl`) and the
+`jeko-monsters` / `jeko-lessons` skills, which only write files into `content/`; the
+validator already loads those files. **Corrections to this entry** from the docs and the
+CLI: agents are `agents.entries.<id>`, not `agents.list[]` (that is a legacy roster); cron
+is `openclaw cron` / `openclaw automations`, stored in the Gateway, not in `openclaw.json`;
+`cron add` can also run a plain shell `--command` with no agent, which would suit a job
+that needs no judgement.
 
 **Depends on:** [] _(milestone A needs nothing; milestone B shares FR21's content dir
 and watcher, and the agents it enables are FR21's monsters, FR22's lessons and FR23's
@@ -1384,7 +1398,7 @@ monsters for tomorrow").
   validator binary (`src/bin/validate_content.rs`, reusing FR21's pure validation)
   lets an agent check its own work before the game sees it.
 - **Agent config, also in the repo.** `openclaw/README.md` describes the OpenClaw
-  config: one agent per job (`agents.list[]`), each limited to its own skill and
+  config: one agent per job (`agents.entries.<id>`), each limited to its own skill and
   given write access only to its part of the content dir; cron entries (nightly
   dialogue refresh, a monster batch before play time); the model provider (Cerebras,
   if OpenClaw can reach it through an OpenAI-compatible endpoint, so prompts and
@@ -1441,13 +1455,16 @@ monsters for tomorrow").
 
 **Acceptance criteria.**
 
-- [ ] With OpenClaw absent, the game builds, runs and plays exactly as before, with
-  and without `CEREBRAS_API_KEY`.
+- [x] With OpenClaw absent, the game builds, runs and plays exactly as before, with
+  and without `CEREBRAS_API_KEY`. *(Nothing in `src/` references OpenClaw; the one
+  game-side change is `dialogue::check_bank`, which only the offline tools call.)*
 - [ ] `openclaw/` holds a skill per agent and a README with the config and setup
   steps, and following it from a clean OpenClaw install gets the dialogue agent
-  working.
+  working. *(The dialogue skill and README exist and each setup step was checked in a
+  throwaway profile; a full agent run is unconfirmed. The other skills wait for B to E.)*
 - [ ] The dialogue agent refreshes `assets/dialogue.json` on request and on a
-  schedule, and its output passes validation.
+  schedule, and its output passes validation. *(The skill and the validation are built;
+  the first real run with a key is still to do.)*
 - [ ] Monster and lesson agents write files the game loads live, through the same
   validation as FR21's specs, and a bad file never crashes the game.
 - [ ] The game writes a run log the agents can read, with only the fields the owner
@@ -1456,7 +1473,9 @@ monsters for tomorrow").
   blocks the frame, and failures are silent apart from a dev-mode toast.
 - [ ] `docs/ARCHITECTURE.md` (*Content, configuration and dev hooks*: the agent dirs,
   run log, env vars, validator; *The question pipeline* if any question path changes)
-  and the README layout are updated.
+  and the README layout are updated. *(Done for milestone A: the binaries table, the
+  dialogue rule, the OpenClaw paragraph and the test row. The run log and the live
+  bridge come with B and D.)*
 
 ---
 

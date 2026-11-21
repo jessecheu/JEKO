@@ -8,7 +8,7 @@ timestamp: 2026-11-21
 
 # JEKO — Architecture
 
-> **Bottom line.** JEKO is one Rust crate: a library plus two binaries. A single
+> **Bottom line.** JEKO is one Rust crate: a library plus three binaries. A single
 > macroquad loop in `src/main.rs` drives one owner of all run state, `game::Game`,
 > which updates and paints the world each frame. egui panels are drawn on top as
 > thin views of that state. Only one thing is slow: asking Cerebras for a math problem.
@@ -84,7 +84,8 @@ One Cargo package, `jeko` (`Cargo.toml`, edition 2021):
 |---|---|---|
 | library `jeko` | `src/lib.rs` | `config`, `content`, `llm`, `game`, `progression`, `ui`. It exists so both binaries share `CerebrasClient`. |
 | binary `jeko` (default-run) | `src/main.rs` | The game: window config, the frame loop, the dev hooks (§11). |
-| binary `gen_content` | `src/bin/gen_content.rs` | Offline tool. Asks the model for NPC lines and writes `assets/dialogue.json`. The game never runs it. |
+| binary `gen_content` | `src/bin/gen_content.rs` | Offline tool. Asks the model for NPC lines and writes `assets/dialogue.json` once `dialogue::check_bank` accepts the whole bank, and designs monsters into the content dir. The game never runs it. |
+| binary `validate_content` | `src/bin/validate_content.rs` | Offline checker, no key and no writes. Runs `dialogue::check_bank` on the dialogue bank and the watcher's own scan on the content dir, prints each rejection and exits non-zero if there is one (`make validate`). It is how a person or an OpenClaw agent tests what it wrote before the game sees it. |
 
 Which module uses which (arrows mean "uses"):
 
@@ -94,7 +95,8 @@ main.rs ──▶ ui ──▶ game ──▶ llm ──▶ config
   │         │        └────▶ content
   │         └──────────────▶ progression, llm   (read-only, for the HUD and token panel)
   └──▶ content   (starts the watcher and the studio)
-gen_content.rs ──▶ llm, config
+gen_content.rs ──▶ llm, config, content, game::dialogue (check_bank)
+validate_content.rs ──▶ content, game::dialogue (check_bank)
 ```
 
 The layering holds today, and new code should keep it:
@@ -812,7 +814,13 @@ rebuild. The exception is the content dir, which is read at runtime and hot-relo
 | File | Loaded by | Used for |
 |---|---|---|
 | `assets/tasks_fallback.json` | `llm::fallback_bank` | Questions when there's no key or a call fails. Must deserialize as `Vec<MathTask>` and be non-empty. |
-| `assets/dialogue.json` | `dialogue::load_bank` | NPC lines. Professor Pebble says the hub tutorial and then rotates through their bank lines. Regenerate it with `make gen-content`. |
+| `assets/dialogue.json` | `dialogue::load_bank` | NPC lines. Professor Pebble says the hub tutorial and then rotates through their bank lines. Regenerate it with `make gen-content`. `dialogue::check_bank` is the rule for it (3 to 12 lines per NPC, at most 140 characters, the studio's word blocklist, unique names, Professor Pebble present): `gen_content` runs it before writing, `make validate` runs it on the file, and a test runs it on the shipped file, because `load_bank` panics at startup on a bad one. |
+
+**OpenClaw (FR30, optional).** `openclaw/` holds skills for the OpenClaw agent gateway, one
+per job. Nothing in `src/` calls OpenClaw and the game doesn't know it exists: an agent
+only runs the repo's own tools (today `make gen-content` then `make validate`, in
+`openclaw/skills/jeko-dialogue/`) and leaves the result in the working tree for review.
+Setup, the agent's tool limits and the safety notes are in `openclaw/README.md`.
 
 **Configuration.** `CEREBRAS_API_KEY` is optional; without it the game runs offline.
 `CEREBRAS_MODEL` defaults to `kimi-k3.1`, a placeholder slug.
@@ -884,7 +892,7 @@ driving the window:
 | `game/curse.rs` (8) | Nothing happens in the hub before the road. It starts the first time the player is past the gate. Standing still fills it, then drains on the interval. Walking north holds it back, even at the far end of the ramp. Old ground gives no relief. The hub lifts it. Stage toasts replay only after it clears. Cleanse and speed clamp. |
 | `game/skills.rs` (5) | Three rolls then a lockout that refills all; a spent charge trickles back; sprinting drains and running dry winds; stamina waits, then recovers, and winded ends at the threshold; a short break doesn't refill. |
 | `game/map.rs` (6) | Discovery starts at the gate and only moves north. The range has a floor and grows with progress. Landmarks never sit in the fog, while flasks further up exist but stay hidden. Milestones every 50 m. The same walk gives the same map. Solved flasks show as solved. |
-| `game/dialogue.rs` (2) | The bank has Professor Pebble; the typewriter reveals, then advances, then closes. |
+| `game/dialogue.rs` (4) | The shipped bank passes `check_bank`; `check_bank` rejects hostile banks (not a list, no Pebble, too few or too many lines, an empty or over-long line, a blocked word, a missing name, a duplicate); the typewriter reveals, then advances, then closes. |
 | `ui/token_panel.rs` (1) | Token counts read `1,284` below 10,000, then `12.9K` / `4.2M`. |
 
 **Build environment.** `flake.nix` provides the dev shell (rustc, cargo, and the
