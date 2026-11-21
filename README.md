@@ -31,7 +31,7 @@ appear fast enough that it doesn't break the player's movement flow.
 src/
   lib.rs                 shared library (so src/main.rs and src/bin/gen_content.rs can both use it)
   main.rs                game entry point / macroquad loop
-  config.rs               reads CEREBRAS_API_KEY / CEREBRAS_MODEL / CEREBRAS_BASE_URL from .env
+  config.rs               reads CEREBRAS_API_KEY / CEREBRAS_MODEL / CEREBRAS_BASE_URL from .env; instance_name() labels the checkout
   llm/
     cerebras_client.rs    OpenAI-compatible chat-completions call to Cerebras, async wrapper
     task_gen.rs           prompt templates + JSON extraction helpers
@@ -124,6 +124,29 @@ hunting required.
 Optional: `direnv allow` (if you use direnv) picks up `.envrc` so the shell
 activates automatically on `cd`, without typing `nix develop` or prefixing
 every command with `make`.
+
+### Running two checkouts side by side
+
+Two clones of this repo (say `~/Development/JEKO` and `~/Development/JEKO2`) can
+be built and run at the same time without touching each other. Each folder has
+its own `target/`, `.env`, `.direnv/` dev shell and git branch, and the game has
+no ports, save files or other shared state (assets are compiled in).
+
+- **Telling them apart.** The window title ends in the instance name, e.g.
+  `JEKO — Math Quest [JEKO2]`, and the game prints `jeko instance JEKO2 (built
+  from …)` to stderr on startup. The name is the folder the binary was built
+  from. Set `JEKO_INSTANCE` (in the environment or that folder's `.env`) to
+  override it.
+- **Checking a folder.** `make info` prints the instance, folder, branch and
+  commit, build dir, and whether `.env` has an API key. A folder with no `.env`
+  quietly runs on the offline fallback bank, so check this when the two behave
+  differently.
+- **Setting up a new folder.** `cp ../JEKO/.env .env` (or `secretspec`, which is
+  per-user and so already shared), `direnv allow`, then `make run`. The first
+  build there is a full one, since `target/` isn't shared. Don't point both at
+  one `CARGO_TARGET_DIR`. They'd overwrite each other's binary.
+- **Running both.** Use `make run` in a terminal per folder. Both use the same
+  API key, so they share its rate limit.
 
 ### openclaw (optional, not part of the game)
 

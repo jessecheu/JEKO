@@ -84,7 +84,7 @@ The layering holds today, and new code should keep it:
 
 | Module | Owns |
 |---|---|
-| `config.rs` | `Config::load()`: reads `CEREBRAS_API_KEY`, `CEREBRAS_MODEL`, `CEREBRAS_BASE_URL` from the environment, after `dotenvy` loads `.env`. An empty key counts as no key. |
+| `config.rs` | `Config::load()`: reads `CEREBRAS_API_KEY`, `CEREBRAS_MODEL`, `CEREBRAS_BASE_URL` from the environment, after `dotenvy` loads `.env`. An empty key counts as no key. `instance_name()`: `JEKO_INSTANCE`, else the folder the binary was built from (`CARGO_MANIFEST_DIR`), shown in the window title. |
 | `llm/mod.rs` | `MathTask { topic, problem, answer: f64, hint, difficulty }`, the one task type every question path produces. |
 | `llm/cerebras_client.rs` | `CerebrasClient`: the async wrapper, the blocking chat-completions call, and the shared token stats. |
 | `llm/task_gen.rs` | The prompt template (`build_prompt(difficulty)`) and lenient JSON extraction (`extract_json_object` / `_array`). |
@@ -514,6 +514,11 @@ rebuild:
 `CEREBRAS_MODEL` defaults to `kimi-k3.1`, a placeholder slug.
 `CEREBRAS_BASE_URL` defaults to `https://api.cerebras.ai/v1`. Values come from the
 environment, a `.env` file, or secretspec (`secretspec.toml`). See the README.
+`JEKO_INSTANCE` names the checkout for the window title (`JEKO — Math Quest [name]`)
+and the startup stderr line. It defaults to the build folder's name, so two clones
+run side by side can be told apart. Nothing else is shared between clones: each has
+its own `target/` and `.env`, and the game opens no ports and writes no files apart
+from a `JEKO_SHOT` screenshot.
 
 **Dev hooks** (`main.rs` plus `Game::dev_event`) let a change be checked without
 driving the window:
@@ -545,7 +550,8 @@ driving the window:
 
 **Build environment.** `flake.nix` provides the dev shell (rustc, cargo, and the
 X11/GL/xkbcommon/ALSA libraries on `LD_LIBRARY_PATH`) and a separate `openclaw`
-shell. `make` targets wrap `nix develop --command`. `egui-macroquad` is pinned to
+shell. `make` targets wrap `nix develop --command`; `make info` prints which checkout,
+branch and `.env` the current folder uses. `egui-macroquad` is pinned to
 0.17 because 0.15 pulls in macroquad 0.3 alongside 0.4 and fails to link (duplicate
 `CONTEXT`). Audio is out of scope, and the ALSA startup panic has a null-device
 workaround. The README has details on both.

@@ -1,4 +1,4 @@
-use jeko::config::Config;
+use jeko::config::{self, Config};
 use jeko::game::Game;
 use jeko::llm::cerebras_client::CerebrasClient;
 use jeko::llm::MathTask;
@@ -7,7 +7,7 @@ use macroquad::prelude::*;
 
 fn window_conf() -> Conf {
     Conf {
-        window_title: "JEKO — Math Quest".to_string(),
+        window_title: format!("JEKO — Math Quest [{}]", config::instance_name()),
         window_width: 960,
         window_height: 600,
         ..Default::default()
@@ -22,6 +22,11 @@ fn load_fallback_tasks() -> Vec<MathTask> {
 #[macroquad::main(window_conf)]
 async fn main() {
     let cfg = Config::load();
+    eprintln!(
+        "jeko instance {} (built from {})",
+        config::instance_name(),
+        env!("CARGO_MANIFEST_DIR")
+    );
     if cfg.api_key.is_none() {
         eprintln!("CEREBRAS_API_KEY not set — running on the local fallback task bank only.");
     }

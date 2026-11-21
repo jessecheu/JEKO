@@ -65,7 +65,7 @@
             LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath runtimeLibs;
 
             shellHook = ''
-              echo "jeko dev shell — $(rustc --version)"
+              echo "jeko dev shell [''${JEKO_INSTANCE:-$(basename "$PWD")}] — $(rustc --version)"
               if command -v secretspec >/dev/null 2>&1 && [ -f secretspec.toml ]; then
                 echo "secrets: 'secretspec check' then 'secretspec run -- cargo run' (see secretspec.toml)"
               fi
