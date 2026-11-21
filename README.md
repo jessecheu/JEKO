@@ -1,0 +1,214 @@
+# JEKO — Math Quest
+
+A 2.5D beach exploration game: you walk up an endless, winding boardwalk,
+and opening a message-in-a-bottle (walk up, press E) asks Cerebras-hosted
+Kimi K3.1 to write a fresh, difficulty-scaled math problem on the spot. Built
+for a hackathon demo of Cerebras' low-latency inference: the problem should
+appear fast enough that it doesn't break the player's movement flow.
+
+## Stack
+
+- **macroquad** — window, input, and world rendering (the beach, its props,
+  and the player are all flat-colored primitives for now; swap in real textures via
+  `load_texture`/`draw_texture_ex` when art exists).
+- **egui** via **egui-macroquad** — HUD overlay (progress bar, streak,
+  upgrades, task panel). Chosen over imgui-rs because `egui-macroquad` is the
+  maintained, first-class UI integration for macroquad; imgui's macroquad
+  bindings are effectively unmaintained.
+- **reqwest (blocking) + a background thread** — macroquad's `next_frame().await`
+  only yields once per frame; it is not a real async executor. Network calls
+  to Cerebras run on a plain `std::thread`, and the game loop polls an
+  `mpsc::Receiver` each frame instead of awaiting the request in-line. See
+  `CerebrasClient::request_task_async` in `src/llm/cerebras_client.rs`.
+- **serde / serde_json** — parsing the model's JSON task payload and the
+  local fallback bank.
+
+## Project layout
+
+```
+src/
+  lib.rs                 shared library (so src/main.rs and src/bin/gen_content.rs can both use it)
+  main.rs                game entry point / macroquad loop
+  config.rs               reads CEREBRAS_API_KEY / CEREBRAS_MODEL / CEREBRAS_BASE_URL from .env
+  llm/
+    cerebras_client.rs    OpenAI-compatible chat-completions call to Cerebras, async wrapper
+    task_gen.rs           prompt templates + JSON extraction helpers
+    usage.rs              per-request token counts + tokens/sec, session totals (feeds the token panel)
+  game/
+    world.rs              endless boardwalk path, camera view, chunked scenery, bottle triggers, ocean/sand/deck drawing
+    decor.rs              beach props (palms, umbrellas, huts, boats...) — per-chunk generation + drawing
+    gfx.rs                shared drawing helpers (ink outline, shadows, ribbons, stars)
+    player.rs             WASD/arrow movement along the path, speed multiplier from upgrades, player sprite, jump/roll
+    flicker.rs            reusable flicker look (spawn ghost, damage blink), honours "reduce flashing"
+    health.rs             player HP in half-hearts (damage/heal/refill, clamped, unit-tested)
+    monster.rs            monster roster (stats, rarity by distance) + per-monster drawing and animations
+    battle.rs             wild-encounter battle: transition, phases, battle-view drawing
+    dialogue.rs           NPC dialogue with typewriter reveal (Professor Pebble in the hub)
+    task_trigger.rs        state machine: Idle -> Loading -> Active -> Resolved
+    mod.rs                 ties player/world/progression/trigger together
+  progression/
+    mod.rs                 XP, levels, streak multiplier, upgrade unlocking
+    upgrades.rs             upgrade definitions (just "Quickstep Boots" for the vertical slice)
+  ui/
+    hud.rs                  progress bar + streak + upgrade list + unlock toast
+    settings_panel.rs        settings modal (O): panel toggles, reduce flashing, controls reference
+    game_over_panel.rs       Game Over screen: run stats, try again
+    dialogue_panel.rs        NPC dialogue box
+    task_panel.rs            problem text, hint, answer input, submit
+    token_panel.rs           model + API address, latest tokens/sec, per-request speed graph, token totals
+  bin/
+    gen_content.rs          offline batch generator for NPC dialogue (not called at runtime)
+assets/
+  tasks_fallback.json      hand-written fallback math tasks (used if no API key, or the live call fails)
+  dialogue.json            NPC flavor lines; Professor Pebble says one after the hub tutorial. Regenerate with gen_content
+```
+
+## Setup
+
+### With Nix (recommended — this is what was actually used to verify the build)
+
+`flake.nix` provides a dev shell with the exact rustc/cargo plus every
+runtime library macroquad needs (X11, GL, libxkbcommon, ALSA) already on
+`LD_LIBRARY_PATH` — no system Rust install or manual `apt`/`nix-env` package
+hunting required.
+
+1. Set `CEREBRAS_API_KEY` one of two ways:
+   - **secretspec** (declarative, no plaintext key in a file you could
+     accidentally commit): the dev shell already has the `secretspec` CLI on
+     `PATH`. Run `secretspec check` once to see what `secretspec.toml`
+     declares, then `secretspec config global init` to pick a backend
+     (`keyring` is the default recommendation; `dotenv` and `env` also work
+     if you just want something simple). `secretspec set CEREBRAS_API_KEY`
+     stores it there.
+   - **`.env`** (quickest): `cp .env.example .env` and fill in
+     `CEREBRAS_API_KEY`. `dotenvy` loads it at startup same as before.
+
+   Either way, confirm the exact model slug for Kimi K3.1 on Cerebras from
+   the hackathon docs and set `CEREBRAS_MODEL` accordingly — `kimi-k3.1` in
+   `.env.example`/`secretspec.toml` is a placeholder, not a verified model ID.
+2. `make run` (or `nix develop`, then `cargo run` inside — or
+   `secretspec run -- cargo run` if you went the secretspec route). See
+   `make help` for every target (`build`, `release`, `check`, `fmt`, `lint`,
+   `test`, `gen-content`, `nix-build`).
+3. Controls: W/Up walks up the boardwalk (the map scrolls with you, forever),
+   A/D or Left/Right steer across it, S/Down backs up. Walk up to a glowing
+   message-in-a-bottle and an **E** key prompt floats over it; press E to
+   open its task (you stay put until it's answered). Press E again to jump
+   into the answer field, type the number, and hit Enter. No mouse needed
+   (clicking the field and Submit still works). **Space** jumps and
+   **Shift** rolls (cosmetic for now). **P** pauses, and **O** opens settings
+   (O or Esc closes them).
+   The run starts in a beach hub (press E by Professor Pebble for a quick
+   tutorial); walk north through the "THE ROAD" arch
+   onto the boardwalk. Patches of sea-grass on the deck hide monsters:
+   step in and answer questions to beat them. Wrong answers cost hearts,
+   and at zero hearts it's Game Over (E/Enter to try again).
+
+   Dev aids: `JEKO_SHOT=out.png:120` saves a screenshot at frame 120 and
+   exits; `JEKO_DEV=jelly@150,wrong@270` fires scripted events (`hurt`,
+   `kill`, `restart`, `jump`, `roll`, `stun`, `cheer`, `pause`, `settings`,
+   battles `pinch`/`jelly`/`puff`/`coco`/`gull`/`wyrm`/`titan`, `right`/
+   `wrong` answers through the real submit path, `e` presses E, and
+   teleports `tobottle`/`tozone`/`topebble`) at those frames, stepping a
+   fixed 1/60 s per frame. At the shot it prints a `STATE ...` line of run
+   state to stderr.
+
+Optional: `direnv allow` (if you use direnv) picks up `.envrc` so the shell
+activates automatically on `cd`, without typing `nix develop` or prefixing
+every command with `make`.
+
+### openclaw (optional, not part of the game)
+
+`nix develop .#openclaw` drops into a separate shell with
+[OpenClaw](https://docs.openclaw.ai) on `PATH`, for anyone who wants a
+personal AI-assistant gateway available alongside this repo. It's kept out of
+the default shell deliberately: nixpkgs marks `openclaw` as an insecure
+package — not for an unpatched CVE, but as a standing classification, because
+it gives an LLM full system access by default and parses untrusted content,
+so it's vulnerable to prompt injection. The `openclaw` devShell scopes
+`permittedInsecurePackages` to just that shell (see `flake.nix`) so running
+the normal game dev shell never pulls it in.
+
+`nix build` also works once `Cargo.lock` exists (it's generated the first
+time you run `cargo build`/`make build`, and is committed to the repo here) —
+it produces `./result/bin/jeko` as a standalone derivation.
+
+### Without Nix
+
+1. Install Rust via [rustup](https://rustup.rs).
+2. On Linux you'll additionally need the X11/GL/ALSA runtime libs on your
+   system (on NixOS use the flake instead; on Debian/Ubuntu something like
+   `libx11-dev libxi-dev libxcursor-dev libxrandr-dev libxinerama-dev
+   libxkbcommon-dev libasound2-dev libgl-dev` covers it).
+3. `cp .env.example .env`, fill in `CEREBRAS_API_KEY`, then `cargo run`.
+
+If you skip the API key entirely, the game still runs fully offline using
+`assets/tasks_fallback.json`.
+
+### A dependency trap already hit and fixed here
+
+`egui-macroquad = "0.15"` pulls in an old `egui-miniquad` that transitively
+depends on **macroquad 0.3**, while this project depends on **macroquad
+0.4** directly — linking both into one binary fails with `multiple
+definition of 'CONTEXT'` (macroquad keeps a global context as a plain
+static). `egui-macroquad = "0.17"` (pinned in `Cargo.toml`) depends on
+macroquad `^0.4.14` directly and has no such conflict — don't downgrade it
+without re-checking this.
+
+## The incentive loop (why a student keeps playing)
+
+- **Progress bar** — always-visible XP bar toward the next level
+  (`ui/hud.rs`), so "how close am I" is never a question.
+- **Streak multiplier** — consecutive correct answers raise XP gain up to
+  +100% (`Progression::streak_multiplier`). Getting one wrong resets it to
+  zero — this is what makes stopping mid-streak feel costly, which is the
+  actual hook that keeps someone going "just one more."
+- **Upgrade unlocked by XP, not by a shop** — "Quickstep Boots" (+25% move
+  speed) unlocks automatically at a lifetime-XP threshold, with a toast
+  announcing it. It's tied to total effort, not a single success, so it
+  can't be gamed by one easy problem.
+- **Live, varied problems** — because each task is freshly generated
+  (subject to difficulty scaling off player level), the content doesn't
+  visibly repeat the way a static problem bank would.
+
+## Stretch goals (not in the vertical slice)
+
+- More upgrades: a dash, double-jump, or cosmetic skin — `progression/upgrades.rs`
+  is the only file that needs a new entry; the unlock logic is generic.
+- Escalating difficulty with distance walked — bottles currently scale only
+  with player level.
+- A second task type (geometry, fractions) via a second prompt template in
+  `llm/task_gen.rs`.
+- Putting the other NPCs from `assets/dialogue.json` (Wanderer Finch, Old
+  Lantern) on the road for flavor text between tasks. Only Professor Pebble,
+  in the hub, uses the bank so far.
+- A save file (serde to a local JSON) so progress persists across runs.
+- Swapping the flat-color primitives in `game/decor.rs`, `game/world.rs`,
+  and `game/player.rs` for real sprite textures — the lift-and-shadow and
+  y-sorted drawing already in place will read as much more convincingly
+  "2.5D" once there's actual art sitting on top of it.
+
+## Known environment quirk
+
+In an audio-less sandbox (e.g. WSL without a configured audio device, or a
+bare container), macroquad's audio backend panics during startup
+(`Can't open PCM device` from `quad-snd`'s ALSA init) and takes the whole
+process down with it — this is not a background-thread warning you can
+ignore, the window never opens. Workaround for local dev: point ALSA at a
+null device before running, e.g.
+
+```
+printf 'pcm.!default { type null }\nctl.!default { type null }\n' > /tmp/asound.conf
+ALSA_CONFIG_PATH=/tmp/asound.conf cargo run
+```
+
+If you're demoing from inside a container, confirm `/dev/snd` (or
+Pulse/Pipewire) is actually reachable beforehand so it isn't a surprise on
+stage.
+
+**Audio is explicitly out of scope right now** — there's no sound design,
+no SFX/music assets, and no abstraction over `quad-snd` in this codebase.
+Don't spend time hardening or routing around the ALSA panic as a feature;
+the null-device workaround above is only for getting the window open in a
+silent dev environment. Revisit audio only if it's reintroduced as an
+explicit goal for the vertical slice.

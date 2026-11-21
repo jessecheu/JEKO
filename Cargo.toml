@@ -1,0 +1,16 @@
+[package]
+name = "jeko"
+version = "0.1.0"
+edition = "2021"
+default-run = "jeko"
+description = "2.5D educational exploration game — math tasks generated live via Cerebras-hosted Kimi K3.1"
+
+[dependencies]
+macroquad = "0.4"
+egui-macroquad = "0.17"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
+anyhow = "1"
+dotenvy = "0.15"
+rand = "0.8"

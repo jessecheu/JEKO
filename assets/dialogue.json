@@ -1,0 +1,32 @@
+[
+  {
+    "npc": "Professor Pebble",
+    "lines": [
+      "Every problem you solve makes the next one a little easier — keep going!",
+      "I've seen a lot of students pass through here. You're doing great.",
+      "Mistakes are just the first draft of getting it right.",
+      "That streak of yours is looking good — don't stop now!",
+      "Numbers are just puzzles waiting for a curious mind like yours."
+    ]
+  },
+  {
+    "npc": "Wanderer Finch",
+    "lines": [
+      "There's a shortcut past the orange tile — if you can earn it.",
+      "I once got stuck on a problem like that for a whole afternoon. You'll get it faster than I did.",
+      "The boots up ahead belong to whoever keeps their streak alive.",
+      "Math is just another kind of map-reading, if you think about it.",
+      "Onward! There's always another puzzle past the next hill."
+    ]
+  },
+  {
+    "npc": "Old Lantern",
+    "lines": [
+      "I light the way, but you do the thinking — that's the deal.",
+      "Slow and correct beats fast and wrong, every time.",
+      "You've leveled up more than you realize.",
+      "A good hint is worth more than a given answer. Use them wisely.",
+      "Rest if you need to. The path will still be here."
+    ]
+  }
+]
