@@ -121,7 +121,7 @@ The layering holds today, and new code should keep it:
 | `game/battle.rs` | `Battle` and its `Phase`s, the iris transition, and the battle-view drawing. |
 | `game/dialogue.rs` | `Dialogue` (typewriter reveal), the `PEBBLE_TUTORIAL` lines, and `load_bank()` for `assets/dialogue.json`. |
 | `progression/` | `Progression` (XP, level curve, streak multiplier, upgrade unlocks) and `upgrades.rs` (upgrade definitions). |
-| `ui/` | One egui function per panel (`hud`, `task_panel`, `token_panel`, `settings_panel`, `map_panel`, `dialogue_panel`, `game_over_panel`), plus `style::apply`. |
+| `ui/` | One egui function per panel (`hud`, `task_panel`, `token_panel`, `settings_panel`, `map_panel`, `minimap`, `dialogue_panel`, `game_over_panel`), plus `style::apply`. |
 
 ---
 
@@ -142,7 +142,7 @@ which is why network work goes to a thread (§4). Each iteration does this, in o
 6. `game.draw_pause_overlay()`: the pause dim, or the dim behind Game Over.
 7. **egui pass** (`egui_macroquad::ui`): `ui::style::apply`, then set
    `game.typing = ctx.wants_keyboard_input()`, then draw the panels. The HUD and token
-   panel are hidden during a battle, a dialogue or while the map is open. The map panel (`map_panel::draw`) draws from `game.map_view()`. The task panel returns
+   panel are hidden during a battle, a dialogue or while the map is open. The map panel (`map_panel::draw`) draws from `game.map_view()`. The minimap (`minimap::draw`, top right, `settings.show_minimap`) draws the same `MapView` as a small window around the player, hidden in the same cases as the HUD, and returns its bottom edge so the HUD sits beneath it. The task panel returns
    `TaskPanelEvent::Submit`, which calls `game.submit_answer()`. The Game Over panel
    returns `true`, which calls `game.reset()`.
 8. `egui_macroquad::draw()`, then the `JEKO_SHOT` screenshot check, then `next_frame().await`.

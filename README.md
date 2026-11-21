@@ -64,6 +64,7 @@ src/
   ui/
     hud.rs                  progress bar + streak + upgrade list + unlock toast
     map_panel.rs            the map (M): discovered road, landmarks, fog
+    minimap.rs              the always-on minimap, top right
     settings_panel.rs        settings modal (O): panel toggles, reduce flashing, controls reference
     game_over_panel.rs       Game Over screen: run stats, try again
     dialogue_panel.rs        NPC dialogue box

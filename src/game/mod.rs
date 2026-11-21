@@ -58,6 +58,8 @@ pub const SETTINGS_KEY: KeyCode = KeyCode::O;
 pub struct Settings {
     pub show_token_panel: bool,
     pub show_hud: bool,
+    /// The small map in the top right corner (FR27).
+    pub show_minimap: bool,
     /// Swaps flicker effects (spawn, damage) for a steady tint.
     pub reduce_flashing: bool,
 }
@@ -67,6 +69,7 @@ impl Default for Settings {
         Self {
             show_token_panel: true,
             show_hud: true,
+            show_minimap: true,
             reduce_flashing: false,
         }
     }
@@ -808,9 +811,10 @@ impl Game {
             // The curse (FR1) at the fever stage, and at full.
             "curse" => self.curse.force(0.75),
             "cursefull" => self.curse.force(1.0),
-            // Hides both side panels, so a screenshot shows the whole world.
+            // Hides the side panels, so a screenshot shows the whole world.
             "nohud" => {
                 self.settings.show_hud = false;
+                self.settings.show_minimap = false;
                 self.settings.show_token_panel = false;
             }
             _ => eprintln!("JEKO_DEV: unknown event {name}"),

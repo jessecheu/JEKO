@@ -825,8 +825,7 @@ extend, not a hand-drawn picture.
   hinted too?
 - **Persistence.** Should discovery carry over between runs (a map that stays
   filled in), which needs the persistence that doesn't exist yet (*Known limits*)?
-- **A minimap.** Is a small always-on minimap in a corner wanted too, or only the
-  full map on M?
+- ~~**A minimap.**~~ Answered: yes, top right (built, `ui/minimap.rs`, toggle in settings).
 
 **Acceptance criteria.**
 

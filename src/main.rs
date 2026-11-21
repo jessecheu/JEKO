@@ -80,8 +80,12 @@ async fn main() {
             // A battle is its own full-screen view; the side panels would
             // cover the monster.
             let in_battle = game.battle.is_some() || game.dialogue.is_some() || game.map_open;
+            let mut right_top = 0.0;
+            if game.settings.show_minimap && !in_battle {
+                right_top = ui::minimap::draw(ctx, &game.map_view()) + 8.0;
+            }
             if game.settings.show_hud && !in_battle {
-                ui::hud::draw(ctx, &game.progression, game.distance_m());
+                ui::hud::draw(ctx, &game.progression, game.distance_m(), right_top);
             }
             ui::hud::draw_toast(ctx, &game.toast);
             if game.settings.show_token_panel && !in_battle {

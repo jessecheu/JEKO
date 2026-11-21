@@ -25,6 +25,7 @@ pub fn draw(ctx: &egui::Context, settings: &mut Settings, open: &mut bool) {
         .show(ctx, |ui| {
             ui.heading("Display");
             ui.checkbox(&mut settings.show_hud, "Show progress panel");
+            ui.checkbox(&mut settings.show_minimap, "Show minimap");
             ui.checkbox(&mut settings.show_token_panel, "Show token usage panel");
             ui.checkbox(
                 &mut settings.reduce_flashing,
