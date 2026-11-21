@@ -58,6 +58,9 @@ pub struct Battle {
     pub phase: Phase,
     /// Whether this attack's blow has been applied yet.
     pub hit_landed: bool,
+    /// The first time the player meets this studio-made species (FR21): the
+    /// nameplate carries a "new species!" tag until the first answer.
+    pub new_species: bool,
     canvas: MonsterCanvas,
 }
 
@@ -72,6 +75,7 @@ impl Battle {
             misses: 0,
             phase: Phase::Enter(0.0),
             hit_landed: false,
+            new_species: false,
             canvas: MonsterCanvas::default(),
         }
     }
@@ -218,6 +222,17 @@ impl Battle {
             Color::new(1.0, 0.97, 0.87, 0.95),
         );
         draw_rectangle_lines(plate.x, plate.y, 180.0, 44.0, 2.5, gfx::INK);
+        if self.new_species && self.hits_left == info.hits && self.misses == 0 {
+            // A little lantern-yellow tag riding the plate's top edge.
+            let tag = "NEW SPECIES!";
+            let dims = measure_text(tag, None, 16, 1.0);
+            let (tw, th) = (dims.width + 14.0, 20.0);
+            let tx = plate.x + 180.0 - tw - 6.0;
+            let ty = plate.y - th * 0.55;
+            draw_rectangle(tx, ty, tw, th, gfx::LANTERN);
+            draw_rectangle_lines(tx, ty, tw, th, 2.0, gfx::INK);
+            draw_text(tag, tx + 7.0, ty + 15.0, 16.0, gfx::INK);
+        }
         draw_text(
             self.species.name(),
             plate.x + 10.0,

@@ -108,7 +108,7 @@ hunting required.
 2. `make run` (or `nix develop`, then `cargo run` inside — or
    `secretspec run -- cargo run` if you went the secretspec route). See
    `make help` for every target (`build`, `release`, `check`, `fmt`, `lint`,
-   `test`, `gen-content`, `nix-build`).
+   `test`, `gen-content`, `gen-monsters`, `nix-build`).
 3. Controls: W/Up walks up the road (the map scrolls with you, forever),
    A/D or Left/Right steer across it, S/Down backs up; hold **Shift** to
    sprint, which drains the stamina meter on the skill bar at the bottom of the

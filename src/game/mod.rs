@@ -182,6 +182,9 @@ pub struct Game {
     /// would order a second one.
     studio_made_seen: u32,
     studio_settle: f32,
+    /// The roster has been frozen into the world's pool for this run: spec
+    /// monsters can stand in zones, and new files join only on the next run.
+    roster_frozen: bool,
 }
 
 /// How many unseen generated monsters of the tier coming up the studio keeps
@@ -242,6 +245,7 @@ impl Game {
             seen_generated: Default::default(),
             studio_made_seen: 0,
             studio_settle: 0.0,
+            roster_frozen: false,
         }
     }
 
@@ -284,6 +288,7 @@ impl Game {
                 }
             }
         }
+        let any = !events.is_empty();
         for event in events {
             self.roster.apply(&event);
             match &event {
@@ -291,6 +296,7 @@ impl Game {
                     if let Some(b) = &mut self.battle {
                         b.respec(spec);
                     }
+                    self.world.respec(spec);
                     if *reloaded {
                         self.toast = Some((format!("Reloaded {}", spec.name), 1.5));
                     }
@@ -302,6 +308,18 @@ impl Game {
                 ContentEvent::Removed { .. } => {}
             }
         }
+        // The first scan reports every file already there. Once it has landed,
+        // freeze the roster into the world: the run's zones may hold those
+        // monsters. Files that appear later (the studio's) wait for the next run.
+        if any && !self.roster_frozen {
+            self.world.set_pool(self.roster_pool());
+            self.roster_frozen = true;
+        }
+    }
+
+    /// The roster as a pool for the world, sorted by id.
+    fn roster_pool(&self) -> Vec<std::sync::Arc<crate::content::MonsterSpec>> {
+        self.roster.iter().cloned().collect()
     }
 
     /// True while the world is frozen: paused with P or the settings
@@ -413,7 +431,7 @@ impl Game {
         // Stepping into a monster's patch of ferns starts a battle.
         if !busy {
             if let Some(z) = self.world.encounter_at(self.player.pos) {
-                self.start_battle(Species::Builtin(self.world.zones[z].kind), Some(z));
+                self.start_battle(self.world.zones[z].species(), Some(z));
                 return;
             }
         }
@@ -526,7 +544,7 @@ impl Game {
     /// the road.
     fn challenge_blocker(&mut self) {
         if let Some(z) = self.blocker_target.take() {
-            self.start_battle(Species::Builtin(self.world.zones[z].kind), Some(z));
+            self.start_battle(self.world.zones[z].species(), Some(z));
         }
     }
 
@@ -534,6 +552,9 @@ impl Game {
     /// clear on victory (`None` for a scripted dev battle).
     fn start_battle(&mut self, species: Species, zone: Option<usize>) {
         self.stash_questions();
+        // The first time a studio-made species is met gets a banner.
+        let new_species = matches!(&species, Species::Spec(s)
+            if studio::is_generated(&s.id) && !self.seen_generated.contains(&s.id));
         if let Species::Spec(spec) = &species {
             self.seen_generated.insert(spec.id.clone());
         }
@@ -547,7 +568,9 @@ impl Game {
         // Ask for the first question now: the entry transition and the intro
         // (1.8 s) cover the round trip. It's shown when the intro ends.
         let bias = species.info().difficulty_bias;
-        self.battle = Some(Battle::new(species, zone.unwrap_or(usize::MAX)));
+        let mut battle = Battle::new(species, zone.unwrap_or(usize::MAX));
+        battle.new_species = new_species;
+        self.battle = Some(battle);
         self.next_question = Some(self.request_task(bias, prefetch::SOFT_DEADLINE_BATTLE_S));
     }
 
@@ -753,7 +776,9 @@ impl Game {
         );
         self.stash_questions();
         self.player = Player::new(start);
-        self.world = World::new();
+        // A new run takes a new snapshot of the roster, so monsters the studio
+        // wrote during the last one can now appear.
+        self.world = World::with_pool(self.roster_pool());
         self.progression = Progression::new();
         self.trigger_state = TriggerState::Idle;
         self.input_buffer.clear();
@@ -789,7 +814,7 @@ impl Game {
         format!(
             "STATE hp={}/{} level={} xp={} streak={} dist={}m flasks={} beaten={} \
              zones_cleared={} battle={:?} trigger={} dialogue={} game_over={} hat_stolen={} \
-             arrows={} roster={} curse={:.2} blocker_in_reach={} blockers_left={} goalpost={} \
+             arrows={} roster={} spec_zones={} curse={:.2} blocker_in_reach={} blockers_left={} goalpost={} \
              questions=[{}] buffered={:?} flying={} studio={}",
             self.health.current,
             self.health.max,
@@ -809,6 +834,7 @@ impl Game {
             self.player.hat_stolen,
             self.player.arrows.len(),
             self.roster.len(),
+            self.world.zones.iter().filter(|z| z.spec.is_some()).count(),
             self.curse.level,
             self.blocker_target.is_some(),
             self.world
@@ -898,6 +924,27 @@ impl Game {
                 self.world.ensure_generated(-20_000.0);
                 if let Some(z) = self.world.zones.iter().find(|z| !z.cleared && z.blocks) {
                     self.player.pos = z.pos + vec2(0.0, world::BLOCK_GAP + 4.0);
+                    self.cam_y = camera_target(self.player.pos.y);
+                }
+            }
+            // To the first undefeated zone that holds a spec monster (FR21):
+            // into its ferns, or to the line in front of it if it blocks.
+            // `tospecblock` only counts road blockers.
+            "tospec" | "tospecblock" => {
+                self.world.ensure_generated(-20_000.0);
+                let only_blockers = name == "tospecblock";
+                if let Some(z) = self
+                    .world
+                    .zones
+                    .iter()
+                    .find(|z| !z.cleared && z.spec.is_some() && (z.blocks || !only_blockers))
+                {
+                    let dy = if z.blocks {
+                        world::BLOCK_GAP + 4.0
+                    } else {
+                        10.0
+                    };
+                    self.player.pos = z.pos + vec2(0.0, dy);
                     self.cam_y = camera_target(self.player.pos.y);
                 }
             }

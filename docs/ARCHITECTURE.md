@@ -400,6 +400,20 @@ gets:
 Because flasks take even chunks and monsters take odd ones, they never crowd each
 other.
 
+**Spec monsters in zones** (FR21). `encounter_for_chunk` still decides *where* a zone is, whether it blocks
+and which built-in (`kind`) it would hold, and none of that depends on the content dir. On top of
+it, each `EncounterZone` may hold a spec monster (`spec`), chosen by the pure
+`pick_spec(k, encounter, pool)`: never for a boss; otherwise `SPEC_SHARE` (40%) of zones
+qualify, and one is picked by hashing the chunk over the pool's specs whose tier table
+`min_m` the zone's distance has reached. With an empty pool, or none eligible, the built-in
+stays, exactly as before FR21. `EncounterZone::species()` is who stands there. The **pool is the
+roster frozen for the run** (the owner's decision, FR21): `World` holds it, `Game` hands it over
+once the watcher's first scan has landed (`World::set_pool` rebinds the zones already
+generated) and again at every `reset()` (`World::with_pool`). Specs that appear later, like the
+studio's, join on the next run, so a run is a pure function of the chunk index and the content
+dir as it was at the start. A reloaded spec still shows at once (`World::respec` swaps it into
+the pool and the zones that hold it).
+
 **Goalposts** (FR31). `goalposts_in_chunk(k)` lists what the tracker can point at in chunk `k`,
 from the same pure functions that place the things: a milestone stone every
 `GOAL_MILESTONE_EVERY_M` (100 m; the road has a stone every 50 m, too often for a goal), the
@@ -600,9 +614,10 @@ file's `id` must match its file name. `Game::poll_content` applies the events to
   the new look at once, but `Battle.info` stays, so a tier or special change applies
   from that monster's next battle.
 
-Encounter zones still pick from the built-in roster only. Spec monsters are fought
-through the `battle:<id>` dev event until FR21's later milestones put them on the
-road.
+Spec monsters stand in zones too (§6, *Spec monsters in zones*): `challenge_blocker` and
+stepping into ferns start the battle with `zone.species()`. The first time the player meets a
+studio-made species (`gen-…`), the nameplate carries a "NEW SPECIES!" tag until the first answer
+(`Battle.new_species`, from `Game.seen_generated`). `battle:<id>` still fights any spec directly.
 
 **The studio** (FR21, `content/studio.rs`). With a key (or `JEKO_DEV=fakemodel`) and
 unless `JEKO_STUDIO=off`, `main` starts one long-lived thread that designs monsters.
@@ -627,6 +642,9 @@ unless `JEKO_STUDIO=off`, `main` starts one long-lived thread that designs monst
   blocklist (other people's characters, and anything not for a children's game). The
   prompt asks for an original, kind creature. The file is written beside its final name
   and renamed, so the watcher never sees half a spec.
+- **When they reach the road.** Not until the next run: the world's pool is the roster
+  frozen at the start of the run (§6), so what the studio writes now is what the *next*
+  run's zones can hold. The stock rule counts unseen monsters, so it keeps a few ready for that.
 - **Persistence.** Generated specs are plain files in `content/monsters/`, so they
   survive between runs and are loaded at startup like any other; the checkout's
   `.gitignore` leaves `gen-*.json` out. Renaming one (dropping the prefix, fixing its
@@ -781,7 +799,8 @@ driving the window:
   call from the fallback bank after 700 ms, with made-up token counts, so the buffer, the
   soft deadline and the token panel's wait readout can be tried with no key. The studio
   uses it too: it writes made-up creatures, so the whole path from job to a fightable
-  monster runs offline. `genmonster@N` queues one tier 2 job.
+  monster runs offline. `genmonster@N` queues one tier 2 job. `tospec` and `tospecblock` teleport to the first
+  zone (or road blocker) that holds a spec monster.
 - With either variable set, the loop steps a fixed 1/60 s, so a run is repeatable
   frame by frame. Without an API key, questions come straight from the fallback
   bank, so `right`/`wrong` work on the next frame.
@@ -797,7 +816,7 @@ driving the window:
 | `content/prompts.rs` (4) | The shipped example is valid, every value the prompt lists is accepted by the parser, the prompt carries the tier, topic and names to avoid. |
 | `content/mod.rs` (1) | A rejected file keeps the last good version in the roster; a delete removes it. |
 | `game/monster_rig.rs` (2) | The palette check's `INK_RGB` matches `gfx::INK`; parts spread evenly. |
-| `game/world.rs` (24) | Scenery never lands on the road. Every flask is reachable and on the road. Generation is deterministic. Interact reaches only nearby fresh flasks. The clamp keeps the player on the road. Encounters are on the road and deterministic. A Titan guards every 500 m, blocking the road. Monsters block the road regularly (no gap over 100 m, the first under 70 m) and deterministically. A blocker shuts the road, can be challenged but doesn't ambush, and opens once beaten. Tougher monsters appear further up. The hub is wide, dry and bounded. The walkable width is continuous through the gate. Goalposts are deterministic and stand in their chunk, nothing hostile is one in the hub, the pick is always north of the player, nearest first and the bigger event first within 25 m, a solved flask or beaten monster is never offered again, and a blocker counts down to its line. `upcoming_in` is nearest first and in range, matches where the world places things, shows no monster in the hub, takes a monster's hits and bias from its stats, and `World::upcoming` leaves out what's been dealt with. |
+| `game/world.rs` (30) | Scenery never lands on the road. Every flask is reachable and on the road. Generation is deterministic. Interact reaches only nearby fresh flasks. The clamp keeps the player on the road. Encounters are on the road and deterministic. A Titan guards every 500 m, blocking the road. Monsters block the road regularly (no gap over 100 m, the first under 70 m) and deterministically. A blocker shuts the road, can be challenged but doesn't ambush, and opens once beaten. Tougher monsters appear further up. The hub is wide, dry and bounded. The walkable width is continuous through the gate. Goalposts are deterministic and stand in their chunk, nothing hostile is one in the hub, the pick is always north of the player, nearest first and the bigger event first within 25 m, a solved flask or beaten monster is never offered again, and a blocker counts down to its line. `upcoming_in` is nearest first and in range, matches where the world places things, shows no monster in the hub, takes a monster's hits and bias from its stats, and `World::upcoming` leaves out what's been dealt with. About 40% of zones get a spec monster and never a boss, one far enough up the road; an empty pool changes nothing; the same pool gives the same zones and the layout never depends on it; rebinding a built world matches building it with the pool; an edited spec shows in its zones; `upcoming` uses a held spec's tier. |
 | `game/goalpost.rs` (7) | A new goalpost pops in as a circle and then unrolls. The metres go down as the player walks, rounded up, and the ring fills. It pulses under 10 m and says "Now!" on arrival. It closes before the next one appears, hides while a battle or problem is open and comes back, and shows nothing with nothing ahead. Labels. |
 | `game/manor.rs` (1) | Lightning strikes now and then (under 12% of frames), stays in 0..1, and is the same every run. |
 | `llm/usage.rs` (6) | Provider-timed vs round-trip speed, zero time ignored, no usage block, the capped history, totals split by kind. |
@@ -832,9 +851,11 @@ the owner, and update this section if it goes ahead.
 2. **Every question path works offline.** No key, a timeout, an HTTP error and a bad
    payload all fall back to `assets/tasks_fallback.json`. A new question source needs
    the same fallback.
-3. **The world is a pure function of `y` and the chunk index.** Generation uses only
+3. **The world is a pure function of `y` and the chunk index** (and, for which spec monster
+   stands in a zone, of the run's frozen roster: the owner's decision for FR21, so a
+   run is reproducible given the content dir). Generation uses only
    seeded `StdRng` or `gfx::hash01`, never `thread_rng`, so it's the same every run and
-   the placement tests stay meaningful. New placed things (like the road blockers,
+   the placement tests stay meaningful. Where things are never depends on the content dir. New placed things (like the road blockers,
    and the planned cages and shells) should follow `spot_for_chunk` / `encounter_for_chunk` and get a
    determinism test.
 4. **The hub is a safe zone.** Nothing hostile spawns south of `ROAD_SOUTH_END`
@@ -879,10 +900,13 @@ still to make:
   but not the characters: the hero wears a straw sun hat and swim shorts, and the
   roster is crabs, jellyfish, pufferfish, coconuts, gulls, a sand worm and a Tide
   Titan. Restyling them is FR25.
-- **Spec monsters don't appear on the road yet.** Encounter zones still choose a
-  `MonsterKind`, so a spec is only reachable through `battle:<id>`. Putting them in
-  zones (and generating them with the model) is the rest of FR21, and needs the
-  owner's call on invariant 3.
+- **The studio's monsters wait for the next run.** The zone pool is the roster frozen at
+  the start of a run, so a monster written mid-run first appears on the road after a
+  restart (§6). On a fresh checkout the first run has only the hand-written specs.
+- **The studio's prompt hasn't been checked against the real model.** It runs end to end
+  with the stand-in model and is covered by tests, but the sandbox it was built in had no
+  network, so a real reply's quality (and how often `finish_monster` turns one down) is
+  unmeasured. `make gen-monsters N=8` is the way to look.
 - **The settled-for-now defaults** from FR1–FR3, FR5–FR15, FR20, FR24, FR26 and FR31 are listed for the owner in FR16.
 
 See [FeatureRequestToDo.md](../FeatureRequestToDo.md) for the backlog.

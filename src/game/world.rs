@@ -17,8 +17,10 @@
 use super::decor::{self, Decoration};
 use super::gfx::{self, INK, LAB_GREEN, LANTERN, MOON, SHADOW};
 use super::manor;
-use super::monster::{self, MonsterCanvas, MonsterKind, Pose};
+use super::monster::{self, MonsterCanvas, MonsterKind, Pose, Species};
+use crate::content::MonsterSpec;
 use macroquad::prelude::*;
+use std::sync::Arc;
 
 /// Logical width of the world strip. The view centers this horizontally;
 /// a wider window just sees more lake on the left and woods on the right.
@@ -262,12 +264,57 @@ impl Tall<'_> {
 /// instead: the player can't get past it, and challenges it with E.
 pub struct EncounterZone {
     pub pos: Vec2,
+    /// The built-in monster `encounter_for_chunk` placed here. It's who
+    /// stands here unless `spec` says otherwise.
     pub kind: MonsterKind,
+    /// A spec monster standing here instead (FR21), chosen by `pick_spec`
+    /// from the world's pool. Never a boss.
+    pub spec: Option<Arc<MonsterSpec>>,
     /// Stands on the road and blocks it (FR2), rather than lurking.
     pub blocks: bool,
     pub cleared: bool,
     /// Off-screen canvas for drawing a blocker on the road.
     canvas: MonsterCanvas,
+}
+
+impl EncounterZone {
+    /// Who's here: the spec monster if there is one, else the built-in.
+    pub fn species(&self) -> Species {
+        match &self.spec {
+            Some(s) => Species::Spec(s.clone()),
+            None => Species::Builtin(self.kind),
+        }
+    }
+}
+
+/// The share of zones that get a spec monster instead of a built-in, when the
+/// pool has one that's far enough up the road. Bosses never do.
+pub const SPEC_SHARE: f32 = 0.4;
+
+/// Which spec monster, if any, stands in the zone `encounter_for_chunk(k)`
+/// placed. Pure in the chunk and the pool (invariant 3): the same chunk and
+/// the same pool always give the same answer. `pool` is sorted by id.
+///
+/// A boss is never replaced. Otherwise about `SPEC_SHARE` of zones qualify,
+/// and one is picked by hashing the chunk over the specs whose `min_m` the
+/// zone's distance has reached. An empty pool, or nothing eligible yet, means
+/// the built-in stays, exactly as before FR21.
+pub fn pick_spec(k: i64, e: &Encounter, pool: &[Arc<MonsterSpec>]) -> Option<Arc<MonsterSpec>> {
+    if pool.is_empty() || e.kind.info().boss {
+        return None;
+    }
+    let h = |n: u64| gfx::hash01((k as u64).wrapping_mul(23).wrapping_add(n) ^ 0x5BEC);
+    if h(1) >= SPEC_SHARE {
+        return None;
+    }
+    let meters = ((ROAD_START_Y - e.pos.y) / PX_PER_METER).max(0.0) as u32;
+    let eligible: Vec<&Arc<MonsterSpec>> =
+        pool.iter().filter(|s| s.info().min_m <= meters).collect();
+    if eligible.is_empty() {
+        return None;
+    }
+    let i = ((h(2) * eligible.len() as f32) as usize).min(eligible.len() - 1);
+    Some(eligible[i].clone())
 }
 
 /// What `encounter_for_chunk` places: where, which monster, and whether
@@ -493,6 +540,10 @@ pub fn upcoming_in(y: f32, range_px: f32) -> Vec<Upcoming> {
 }
 
 pub struct World {
+    /// The spec monsters zones may hold, sorted by id: the roster as it was
+    /// when this run started (FR21). Frozen for the run, so a run is a pure
+    /// function of the chunk index and this pool.
+    pool: Vec<Arc<MonsterSpec>>,
     /// `chunks[i]` holds the scenery for chunk `FIRST_CHUNK + i`.
     chunks: Vec<Vec<Decoration>>,
     pub spots: Vec<Spot>,
@@ -507,7 +558,14 @@ impl Default for World {
 
 impl World {
     pub fn new() -> Self {
+        Self::with_pool(Vec::new())
+    }
+
+    /// A fresh world whose zones may hold the spec monsters in `pool` (sorted
+    /// by id).
+    pub fn with_pool(pool: Vec<Arc<MonsterSpec>>) -> Self {
         let mut world = Self {
+            pool,
             chunks: Vec::new(),
             spots: Vec::new(),
             zones: Vec::new(),
@@ -535,10 +593,43 @@ impl World {
                 self.zones.push(EncounterZone {
                     pos: e.pos,
                     kind: e.kind,
+                    spec: pick_spec(k, &e, &self.pool),
                     blocks: e.blocks,
                     cleared: false,
                     canvas: MonsterCanvas::default(),
                 });
+            }
+        }
+    }
+
+    /// Sets the pool and rebinds every zone from it. For the moment the
+    /// run's roster is known (the watcher's first scan lands a frame or two
+    /// after the world is built), before the player has been anywhere near a
+    /// monster. After that the pool is frozen until the next run.
+    pub fn set_pool(&mut self, pool: Vec<Arc<MonsterSpec>>) {
+        self.pool = pool;
+        for z in &mut self.zones {
+            let k = chunk_of(z.pos.y);
+            let e = Encounter {
+                pos: z.pos,
+                kind: z.kind,
+                blocks: z.blocks,
+            };
+            z.spec = pick_spec(k, &e, &self.pool);
+        }
+    }
+
+    /// Swaps in a newer version of a spec (an edit to its file) wherever the
+    /// world holds it, so a reload shows on the road. The pool's membership
+    /// doesn't change.
+    pub fn respec(&mut self, spec: &Arc<MonsterSpec>) {
+        let same = |s: &Arc<MonsterSpec>| s.id == spec.id;
+        for s in self.pool.iter_mut().filter(|s| same(s)) {
+            *s = spec.clone();
+        }
+        for z in &mut self.zones {
+            if z.spec.as_ref().is_some_and(same) {
+                z.spec = Some(spec.clone());
             }
         }
     }
@@ -561,6 +652,15 @@ impl World {
     pub fn upcoming(&self, y: f32, range_px: f32) -> Vec<Upcoming> {
         upcoming_in(y, range_px)
             .into_iter()
+            .map(|mut u| {
+                // A zone that holds a spec monster plays by the spec's tier.
+                let held = self.zones.iter().find(|z| z.pos == u.at);
+                if let Some(spec) = held.and_then(|z| z.spec.as_ref()) {
+                    let info = spec.info();
+                    (u.hits, u.difficulty_bias) = (info.hits, info.difficulty_bias);
+                }
+                u
+            })
             .filter(|u| {
                 !self.goal_done(&Goalpost {
                     kind: u.kind,
@@ -1047,7 +1147,7 @@ fn draw_blocker(view: &View, zone: &EncounterZone, t: f32) {
     gfx::ellipse(ground + vec2(4.0, 2.0), 30.0 * scale, 8.0 * scale, SHADOW);
     monster::draw(
         &zone.canvas,
-        &monster::Species::Builtin(zone.kind),
+        &zone.species(),
         ground,
         scale,
         Pose::Idle,
@@ -1335,6 +1435,141 @@ mod tests {
     use super::*;
 
     const CHUNKS: std::ops::Range<i64> = FIRST_CHUNK..300;
+
+    fn spec(id: &str, tier: u32) -> Arc<MonsterSpec> {
+        Arc::new(
+            crate::content::monster_spec::parse(&format!(
+                r##"{{"id":"{id}","name":"{id}","body":{{"shape":"blob","w":40,"h":30}},
+                "palette":{{"main":"#88cc66","accent":"#ffcc44","belly":"#ddeebb"}},
+                "eyes":{{"count":2,"size":4}},"tier":{tier}}}"##
+            ))
+            .unwrap(),
+        )
+    }
+
+    fn pool() -> Vec<Arc<MonsterSpec>> {
+        vec![
+            spec("a-one", 1),
+            spec("b-two", 2),
+            spec("c-three", 3),
+            spec("d-four", 4),
+        ]
+    }
+
+    #[test]
+    fn spec_monsters_take_their_share_of_zones_and_never_a_boss() {
+        let pool = pool();
+        let (mut zones, mut specs) = (0, 0);
+        for k in 1..400 {
+            let Some(e) = encounter_for_chunk(k) else {
+                continue;
+            };
+            zones += 1;
+            match pick_spec(k, &e, &pool) {
+                Some(s) => {
+                    specs += 1;
+                    assert!(!e.kind.info().boss, "chunk {k}: a boss was replaced");
+                    let meters = ((ROAD_START_Y - e.pos.y) / PX_PER_METER) as u32;
+                    assert!(s.info().min_m <= meters, "{} too early at {meters} m", s.id);
+                }
+                None => {}
+            }
+        }
+        let share = specs as f32 / zones as f32;
+        assert!((0.25..0.5).contains(&share), "{specs} of {zones} zones");
+    }
+
+    #[test]
+    fn an_empty_pool_changes_nothing() {
+        for k in 1..100 {
+            if let Some(e) = encounter_for_chunk(k) {
+                assert!(pick_spec(k, &e, &[]).is_none());
+            }
+        }
+        let mut w = World::with_pool(Vec::new());
+        w.ensure_generated(-8000.0);
+        assert!(w.zones.iter().all(|z| z.spec.is_none()));
+        assert!(w
+            .zones
+            .iter()
+            .all(|z| matches!(z.species(), Species::Builtin(k) if k == z.kind)));
+    }
+
+    #[test]
+    fn the_same_pool_gives_the_same_zones_every_time_and_placement_is_untouched() {
+        let build = |pool: Vec<Arc<MonsterSpec>>| {
+            let mut w = World::with_pool(pool);
+            w.ensure_generated(-12_000.0);
+            w
+        };
+        let (a, b, plain) = (build(pool()), build(pool()), build(Vec::new()));
+        let held = |w: &World| -> Vec<Option<String>> {
+            w.zones
+                .iter()
+                .map(|z| z.spec.as_ref().map(|s| s.id.clone()))
+                .collect()
+        };
+        assert_eq!(held(&a), held(&b));
+        assert!(held(&a).iter().any(Option::is_some));
+        // Where zones are, which built-in they'd hold and whether they block
+        // never depend on the pool (invariant 3).
+        let layout = |w: &World| -> Vec<(Vec2, MonsterKind, bool)> {
+            w.zones.iter().map(|z| (z.pos, z.kind, z.blocks)).collect()
+        };
+        assert_eq!(layout(&a), layout(&plain));
+    }
+
+    #[test]
+    fn rebinding_a_built_world_matches_building_it_with_the_pool() {
+        let mut late = World::new();
+        late.ensure_generated(-9000.0);
+        late.set_pool(pool());
+        let mut fresh = World::with_pool(pool());
+        fresh.ensure_generated(-9000.0);
+        let held = |w: &World| -> Vec<Option<String>> {
+            w.zones
+                .iter()
+                .map(|z| z.spec.as_ref().map(|s| s.id.clone()))
+                .collect()
+        };
+        assert_eq!(held(&late), held(&fresh));
+    }
+
+    #[test]
+    fn an_edited_spec_shows_in_the_zones_that_hold_it() {
+        let mut w = World::with_pool(pool());
+        w.ensure_generated(-12_000.0);
+        let z = w.zones.iter().position(|z| z.spec.is_some()).unwrap();
+        let id = w.zones[z].spec.as_ref().unwrap().id.clone();
+        let edited = spec(&id, 4);
+        w.respec(&edited);
+        assert!(Arc::ptr_eq(w.zones[z].spec.as_ref().unwrap(), &edited));
+        // A spec that was never in the pool doesn't join it.
+        let before = w.pool.len();
+        w.respec(&spec("newcomer", 1));
+        assert_eq!(w.pool.len(), before);
+    }
+
+    #[test]
+    fn upcoming_uses_a_held_specs_tier() {
+        let mut w = World::with_pool(vec![spec("tough", 3)]);
+        w.ensure_generated(-40_000.0);
+        let z = w
+            .zones
+            .iter()
+            .find(|z| z.spec.is_some() && !z.cleared)
+            .unwrap();
+        let u = w
+            .upcoming(z.pos.y + 200.0, 600.0)
+            .into_iter()
+            .find(|u| u.at == z.pos)
+            .unwrap();
+        let info = z.spec.as_ref().unwrap().info();
+        assert_eq!(
+            (u.hits, u.difficulty_bias),
+            (info.hits, info.difficulty_bias)
+        );
+    }
 
     #[test]
     fn upcoming_is_the_nearest_first_and_inside_the_range() {

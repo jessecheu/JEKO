@@ -146,7 +146,7 @@ its "help" is animation. It never changes XP, speed, answers or battle outcomes.
 (see [Completed](#completed)), each on a provisional answer so the work could
 land; this entry keeps the questions so they are answered, not settled silently.
 
-## FR16. Confirm the provisional answers from FR1–FR3, FR5–FR15, FR20, FR24, FR26 and FR31
+## FR16. Confirm the provisional answers from FR1–FR3, FR5–FR15, FR20, FR21, FR24, FR26, FR31 and FR32
 
 **Status.** **Waiting on the owner.** Every default below is live in the code.
 Tick an item once the owner confirms it, or replace it with the owner's answer
@@ -241,6 +241,27 @@ recorded here.
   a dialogue and while a flask's problem is open.* Keep the distance line in the
   Progress panel? *Yes.* The toast? *Steps down below the badge while it's up.*
 
+- [ ] **FR21** Generated monsters on the road. Invariant 3: *the owner chose to
+  freeze the roster at the start of a run, so zone placement never depends on the
+  content dir and a studio monster joins on the next run.* Provisional: where does
+  generated content live? *The content dir, a per-machine cache that persists between
+  runs; `gen-*.json` is gitignored, and renaming one keeps it for committing.* Which
+  specials may generated monsters use? *`none` and `grows` only.* Moderation? *A
+  kid-safe, original-creature prompt, a whole-word blocklist and the schema; no human
+  approval step.* Which model? *`CEREBRAS_MODEL`, no `JEKO_STUDIO_MODEL`.* How many
+  zones get a spec monster? *40% (`SPEC_SHARE`), from every spec in the pool,
+  hand-written ones too, never a boss.* Limits? *6 requests a minute, 60,000 tokens a
+  session, one job at a time, three unseen monsters kept in stock for the tier ahead.*
+  Do the seven built-ins move into specs? *No, they stay hand-coded.*
+
+- [ ] **FR32** Asking ahead. Level-ups? *Take the exact difficulty, else one below, else
+  ask live.* Does the buffer survive a new run? *Yes.* Wasted calls? *About 1.5× the
+  calls is accepted; 20 look-ahead requests a minute at most.* The soft deadline?
+  *1.5 s in a battle and 2.5 s at a flask; a slow model gets a bank question, and the
+  late answer is kept.* An invariant ("the player never waits on the network when a
+  buffered or fallback question could be shown")? *Not added; §5 of the architecture
+  doc states the rule.*
+
 **Acceptance criteria.**
 
 - [ ] The owner has confirmed or replaced every decision above, and any change
@@ -319,27 +340,35 @@ the lowest lane). Everything falls back
 to the built-in roster and `assets/tasks_fallback.json` (invariant 2). The model never
 sets a gameplay number directly (invariant 6). `content` stays plain Rust with no
 macroquad or egui, and only `game` draws a spec (invariant 10). One part relaxes
-invariant 3 and needs the owner's decision (see FR21's open questions).
+invariant 3, which the owner settled by freezing the roster at the start of each run
+(FR21, built).
 
 ## FR32. No waiting at an encounter: get questions and monsters ready before the player arrives
 
-**Status.** **Milestones A, B and the soft deadline of C built (2026-11-21); the
-shared priority lanes and the monster stock wait on FR21.** Done: `llm/buffer.rs`
+**Status.** **Built (2026-11-21), apart from one check and one optional refactor.**
+Done: `llm/buffer.rs`
 (`QuestionBuffer`, the pure `plan_prefetch`, `WaitStats`), `game/prefetch.rs`
 (`Prefetch`, `demand`, the limits and `JEKO_PREFETCH` / `JEKO_PREFETCH_RPM`),
 `world::upcoming_in` and `World::upcoming`, `Game::request_task` taking from the buffer
 first, the battle's first question asked in `start_battle` and each later one in
 `battle_answer` (the "next" slot, shown when the phase reaches `Question`), the soft
 deadlines (1.5 s battle, 2.5 s flask) that keep the late answer, `RequestKind` tags on
-every call, the token panel's readout, and the `JEKO_DEV=fakemodel:<ms>` hook. Checked
-by screenshot with `fakemodel`: a flask opens `Active` from the buffer on the frame E
-is pressed, the panel shows "ready on arrival 1/1 · longest wait 0.0 s" and the
-per-kind counts, and a 3 s model in a battle trips the deadline (bank question after
-1.5 s, the late answer lands in the buffer).
+every call, the token panel's readout, and the `JEKO_DEV=fakemodel:<ms>` hook. The
+priority order is live question > look-ahead > studio: look-ahead starts nothing while a
+live question loads, and the studio (FR21, built) holds its job while either is in
+flight (`live_busy`). A zone's species is bound from the run's frozen roster
+(`World::pool`), so no encounter waits on a generation job. Checked by screenshot with
+`fakemodel`: a flask opens `Active` from the buffer on the frame E is pressed, the panel
+shows "ready on arrival 1/1 · longest wait 0.0 s" and the per-kind counts, and a 3 s
+model in a battle trips the deadline (bank question after 1.5 s, the late answer lands
+in the buffer).
 
-**Next step:** the lanes. Once FR21's `Studio` exists, move prefetches onto its
-thread and give every call one priority (live question > prefetch > villain > studio).
-The monster stock lands with FR21 milestone C.
+**Left:** (1) check that a battle's later questions arrive ready in a real-time run
+with `fakemodel:700`: scripted runs step game time at 1/60 s per frame while frames run
+faster, so the 0.8 s attack covers less than 0.8 s of wall-clock and the stand-in model
+looks slow. (2) Optional: live and look-ahead questions still spawn a thread each; one
+shared worker with a priority queue would replace the `live_busy` flag. Nothing needs it
+yet, and villain lines (FR23) would be its first user.
 
 Provisional choices for the owner (change freely):
 
@@ -472,202 +501,14 @@ gets there. The waits come from the timing, not from the model being slow.
   caps and the hub (nothing is prefetched for chunk `k < 1`).
 - [x] A live call slower than the soft deadline is replaced by a bank question, and
   its late answer is kept for later.
-- [ ] Once FR21 milestone C lands, a zone's species is bound off screen from the
-  loaded roster only, and no encounter waits on a generation job.
+- [x] Once FR21 milestone C lands, a zone's species is bound off screen from the
+  loaded roster only, and no encounter waits on a generation job. *(Bound from the
+  frozen pool; no job is ever waited on.)*
 - [ ] `docs/ARCHITECTURE.md` is updated: §5 (the buffer before the live call, the
   deadline), §4 (where `update_battle` and the road frame request), §11 (the env
   vars and the `fakemodel` hook), §13 (the one-thread-per-request limit), and
   §12 if the owner adds an invariant. *(Done for A, B and the deadline; the lanes
   and the monster stock remain.)*
-
----
-
-## FR21. Generated monsters, hot-reloaded into the running game
-
-**Status.** **Milestones A and B built (2026-11-21); C not started.** A: the
-`content` module (`MonsterSpec`, `parse`/validation, the tier table, `Roster`,
-`ContentEvent`), the polling watcher, `game/monster_rig.rs`, `Species` on `Battle`, the
-live-swap rule, the `battle:<id>` dev event, four hand-written specs. B: the `Studio`
-(`content/studio.rs`: one thread, a job queue, the `live_busy` gate that keeps it behind
-live questions and look-ahead, `JEKO_STUDIO_RPM` and `JEKO_STUDIO_TOKENS`),
-`content/prompts.rs` (the kid-safe, original-creature prompt with a shipped spec as the
-shape), `finish_monster` (forces the tier, limits the special, vets the text, runs
-`parse`, writes atomically as `monsters/gen-<name>.json`), `Game::tick_studio` (keeps 3
-unseen generated monsters ready for the tier ahead), `RequestKind::Monster` tags, the
-token panel's studio line and per-kind split, the `genmonster` dev event, and the
-stand-in model writing made-up creatures under `JEKO_DEV=fakemodel`. Checked end to end
-offline: the studio wrote three `gen-*` files, the watcher loaded them, and a generated
-creature fought in a battle with the right nameplate and blurb.
-
-Built differently from the sketch: the variant is `Species::Spec` (it covers
-hand-written and generated specs alike), not `Generated`. `EncounterZone` still holds a
-`MonsterKind`, because putting specs in zones is Milestone C and waits on the invariant 3
-question. `MonsterInfo` lives in `content::monster_spec` so that `content` stays free of
-`game`. Generated ids are `gen-<name>`, which is how the game and `.gitignore` tell them
-from hand-written ones.
-
-Provisional choices for the owner (change freely):
-
-- *Content dir:* `JEKO_CONTENT_DIR`, else `./content`, else the build checkout's
-  `content/`. Hand-written specs are committed. **Generated ones are a per-machine
-  cache:** they persist in the dir between runs and `gen-*.json` is gitignored; rename one
-  to keep it for committing.
-- *Specials:* hand-written specs may use all four. **Generated ones may use `none` and
-  `grows` only**; the studio turns anything else into `none`.
-- *Moderation:* the kid-safe, original-creature prompt, a whole-word blocklist (other
-  people's characters and anything not for children) on name, blurb, fact and topic, and
-  the schema. No human approval step (`approved` flag) yet.
-- *Studio model:* it uses `CEREBRAS_MODEL` like everything else; no `JEKO_STUDIO_MODEL`.
-- *Limits:* 6 requests a minute, 60,000 tokens a session, one in flight, one job queued
-  at a time.
-- *Invalid-file toast:* shown always. *Tier table:* tier 1 = 1 hit/1 dmg/0 m/bias 0/15 XP,
-  tier 2 = 2/1/50 m/0/20, tier 3 = 3/2/140 m/1/25, tier 4 = 3/2/400 m/2/30; stun is 2.0 s.
-  Never a boss. *Fit:* a file's `id` must match its file name, or it's rejected.
-
-**Next step:** Milestone C. It puts species in zones, which relaxes invariant 3, so ask
-the owner first (see the open questions). Not built: the `reload` dev event, and
-`gen_content --monsters`. FR32's lanes can now move look-ahead onto one shared queue.
-
-**Depends on:** [] _(FR22 builds on its `Studio` and watcher; generated monsters fill FR10's encounter zones and, later, FR2's road blockers; FR32 sets the studio's priority lane and the rule that zones bind only ready species)_
-
-**Motivation.** Seven hand-drawn monsters get repetitive a few hundred metres up the
-road. Cerebras is fast enough to design a new creature in the background while the
-player is still walking towards its zone. Hot reload is also a tool in its own right:
-a person can edit a monster's JSON while a battle is open and watch it change, with
-no rebuild. Today the assets are `include_str!`'d, so any change means a recompile.
-
-**Proposed approach.** *(suggested, not decided)*
-
-- **A declarative monster: `MonsterSpec`.** The model can't and mustn't write Rust,
-  so a monster becomes data: a rig of parts drawn with the `gfx` vocabulary. New
-  module `src/content/monster_spec.rs` (serde, no macroquad), roughly:
-  - `id`, `name` (≤ 16 chars), `blurb` (one line for the intro), `fact` (a true
-    real-world fact for FR22's field guide), `theme` (`{subject, topic}`, e.g.
-    `{"math", "fractions"}`, which steers its questions in FR22).
-  - `body`: `{shape: blob|shell|dome|segmented|wave|spiky_ball, w, h}`.
-    `palette`: `{main, accent, belly}` as hex colours.
-  - `eyes`: `{count: 1..=3, size, stalks: bool, look: cute|grumpy|sleepy}`.
-  - `parts`: up to 6 of `{kind: claw|tentacle|spike|fin|wing|horn|leg|tail, count, size, side}`.
-  - `accessory`: `none|crown|mask|helmet|bow_tie|leaf`.
-  - `idle`: `bob|scuttle|float|sway|pulse`. `attack`: `lunge|zap|spin|slam|spit`.
-  - `tier: 1..=4` and `special: none|stun|grows|steals_hat`. These are the existing
-    mechanics only (FR10/FR12). The model can't make up a new one.
-- **Stats come from the game, not the model.** `MonsterSpec::info()` maps
-  `(tier, special)` to a `MonsterInfo` through a fixed table that matches the shipped
-  roster's bands: tier 1 plays like a Pinchling, tier 4 like a Dune Wyrm. Bosses stay
-  hand-made (Tide Titan). `min_m` comes from the tier as well. Out-of-range values are
-  clamped, unknown enum strings are rejected, and the palette is lightened or
-  darkened until it reads against `INK`. Validation is a pure function, unit-tested
-  with hostile inputs.
-- **One renderer for every spec.** Add `src/game/monster_rig.rs`: `draw_spec(o, spec, t,
-  atk, hurt, grown)` is called from inside `monster::draw`, so the spec gets the
-  existing `MonsterCanvas`, `Pose`, hurt flash, faint fade and reduce-flashing
-  handling for free. Turn the monster identity into
-  `enum Species { Builtin(MonsterKind), Generated(Arc<MonsterSpec>) }` and carry it
-  on `Battle` and `EncounterZone` instead of `MonsterKind`.
-- **The content dir and hot reload.** `JEKO_CONTENT_DIR`, defaulting to
-  `content/` next to the binary. Gitignored or committed, per the open question.
-  It holds `monsters/<id>.json`. `content::Watcher` runs on its own thread, polls the
-  directory's mtimes about once a second (no new dependency; the `notify` crate would
-  be the upgrade), parses and validates each changed file, and sends `ContentEvent`s
-  over `mpsc`. `Game::update` drains them with `try_recv` into a `Roster`
-  (`HashMap<id, Arc<MonsterSpec>>`), in the same place it polls `trigger_state`.
-  A file that fails validation keeps the last good version and raises a toast in dev
-  mode. **Live-swap rule:** art fields apply at once, even mid-battle, which is safe
-  because art is cosmetic (invariant 7). `tier` and `special` apply from the
-  monster's next battle, so a fight in progress never changes rules partway.
-- **The `Studio` worker** (`src/content/studio.rs`). One long-lived thread holds a
-  `CerebrasClient` clone and a job queue. That also covers the known limit "one thread
-  and one HTTP client per request". A `GenMonster { tier, theme, avoid_names }` job
-  sends a JSON-only prompt (new `content::prompts`, same style as
-  `task_gen::build_prompt`). The prompt asks for an original forest creature for kids,
-  in our art vocabulary, and explicitly not a character from any existing game or
-  show. The worker parses the reply with `extract_json_object`, validates it, and
-  writes `monsters/<id>.json` atomically. The watcher then loads it like any other
-  file, so a generated monster and a hand-written one take the same path into the game.
-  - **Live questions always win.** The studio runs in the lowest of FR32's lanes
-    (live question > question prefetch > villain > studio), so it sleeps while a
-    live question is `Loading` or a prefetch is due. It keeps at most one request in flight, under a per-minute cap
-    (`JEKO_STUDIO_RPM`, default 6) and a session token budget.
-  - **Look-ahead.** Each frame, `Game` checks how many unused generated species are
-    eligible for the next few encounter zones, using FR32's `world::upcoming`. Below
-    a small target (e.g. 3), it enqueues a `GenMonster` for the tier those zones need.
-    The stock has to be built well before a zone, because a zone never waits for one.
-  - `JEKO_STUDIO=off` disables it. No API key means it never starts.
-- **How generated monsters reach the road** (keeps invariant 3 as far as possible).
-  `encounter_for_chunk` stays pure, so where zones are and their `roll` don't change.
-  When a zone's chunk is generated (one chunk above the top of the screen, so off
-  screen), `Game` decides its species once, from specs already in the roster
-  (FR32: an encounter never waits on a generation job):
-  `MonsterKind::pick` as today, or, with a share set by `GENERATED_SHARE` (e.g. 40%),
-  a generated species of the right tier chosen by hashing the zone's roll over
-  the roster sorted by id. The choice is stored on the zone, and chunks are never
-  dropped, so walking back shows the same monster. With an empty roster, the game
-  behaves exactly as it does today.
-- **Visibility.** Tag each `RequestUsage` with a kind (`question | monster | lesson`).
-  The token panel then splits throughput by kind and shows the studio's queue depth.
-  The battle intro shows a small "new species!" banner the first time a generated
-  monster is met.
-- **Tooling.** `gen_content --monsters N` batch-generates through the same studio
-  code path, offline, so a curated set can be reviewed and committed. New dev
-  events: `genmonster` (enqueue a job), `battle:<id>` (fight a generated species),
-  `reload` (force a rescan).
-
-**Milestones** (each one lands on its own):
-
-1. **A: data-driven monsters, no LLM.** `MonsterSpec`, validation, `monster_rig`,
-   `Species`, watcher and roster. Ship two or three hand-written specs in
-   `content/monsters/`. Editing one while the game runs changes it on screen.
-2. **B: the studio.** A background `GenMonster` job with the prompt, rate limit,
-   look-ahead and token tagging.
-3. **C: on the road.** Lazy species binding for zones, `GENERATED_SHARE`, the
-   "new species!" banner, and the `gen_content --monsters` batch mode.
-
-**Open questions.**
-
-- **Invariant 3 (owner's call):** the binding above makes *which* monster stands in
-  a zone depend on what's in the content dir, not only on the chunk index. Is that
-  acceptable? Alternative: freeze the roster at `reset()`, so new species join only
-  on the next run and a run stays reproducible given the content dir.
-- Where does the content dir live, and is generated content committed (curated, like
-  `assets/dialogue.json`) or per-machine cache only? Does it persist between runs?
-  Today nothing persists (FR14/FR16).
-- Can generated monsters use `stun` and `steals_hat`, or start with `none|grows` only?
-- How much moderation is needed beyond a schema, a name blocklist and a kid-safe
-  prompt? Should a person approve generated monsters before they appear (a
-  `"approved": false` flag that `gen_content` flips)?
-- Should the seven built-ins eventually move into specs too, or stay hand-coded as
-  the "classic" set? They're more detailed than a parts rig can draw.
-- Confirm the real Cerebras model slug: `config.rs` defaults to `kimi-k3.1`, which the
-  architecture doc calls a placeholder. Should the studio use its own
-  `JEKO_STUDIO_MODEL`, so a slower, higher-quality model can design creatures while
-  the fast one keeps answering questions?
-
-**Acceptance criteria.**
-
-- [x] A monster defined only by a JSON spec in the content dir can be fought, with
-  idle, intro, attack, hurt and faint poses, and honours reduce flashing.
-  *(Milestone A; fought via `battle:<id>` until C puts specs on the road.)*
-- [x] Editing that JSON while the game runs updates the monster within about 2 s,
-  with no restart. An invalid edit keeps the last good version and doesn't crash.
-- [x] Spec validation is a pure, unit-tested function: hostile input (huge sizes,
-  unknown enums, invisible colours, long names) is clamped or rejected, and stats
-  always come from the tier table.
-- [x] With an API key, the studio generates new monsters in the background while
-  the player walks. The frame never blocks (invariant 1), and a live question is
-  never delayed by a studio request. *(Checked offline with the stand-in model: it
-  holds its job while a question is loading, a test covers that. Not yet watched with the
-  real model during play.)*
-- [ ] Generated monsters appear in encounter zones. Revisiting a zone shows the same
-  monster, and zone placement is still covered by the existing determinism tests.
-  A zone's species is bound off screen from the loaded roster, so no battle waits on
-  a `GenMonster` job (FR32).
-- [x] With no key, no network or an empty content dir, the game plays exactly as it
-  does today. *(No key: no studio starts. An empty dir: the roster is empty and zones are unchanged.)*
-- [x] The token panel splits usage by request kind.
-- [ ] `docs/ARCHITECTURE.md` (new `content` module, the watcher in the frame,
-  `Species`, env vars and dev events, invariant 3 as decided) and the README layout
-  are updated. *(Done for Milestone A; the studio, zones and invariant 3 remain.)*
 
 ---
 
@@ -1586,6 +1427,24 @@ monsters for tomorrow").
 
 When an entry is fully built, delete it above and add one line here, newest
 first: `FR<n> — title — date — why it closed (commit)`. Its number stays retired.
+
+- FR21 — Generated monsters, hot-reloaded into the running game — 2026-11-21 — built in
+  three steps. A: monsters as data (`MonsterSpec`, `parse` and its hostile-input tests,
+  the tier table, `monster_rig`, `Species`, the polling watcher, the live-swap rule,
+  four hand-written specs in `content/monsters/`). B: the studio (`content/studio.rs`,
+  `content/prompts.rs`): one thread, lowest lane behind live questions and look-ahead,
+  6 requests a minute and 60,000 tokens a session, `finish_monster` forcing the tier,
+  limiting the special, vetting the text and parsing before an atomic write of
+  `monsters/gen-<name>.json`, three unseen monsters kept in stock for the tier ahead,
+  `RequestKind` tags and the token panel's studio line, and a stand-in model so it all
+  runs with no key. C: spec monsters in zones (`pick_spec`, `SPEC_SHARE` 40%, never a
+  boss, from the roster frozen at the start of the run: the owner's answer to the
+  invariant 3 question), a "NEW SPECIES!" tag on a studio monster's first battle, and
+  `gen_content --monsters N` / `make gen-monsters`. Tests for the studio, the prompt,
+  the binding and its determinism; checked by screenshot (a spec monster blocking the
+  road, a generated creature in a battle). **Not done, and not checked:** the studio's
+  prompt against the real model (the sandbox had no network), and the `reload` dev
+  event (not needed: the watcher polls). Its provisional answers are in FR16.
 
 - FR31 — A goalpost tracker at the top centre — 2026-11-21 — built in one pass:
   `World::next_goalpost` (with the pure `goalposts_in_chunk` and `pick_goalpost`, 7

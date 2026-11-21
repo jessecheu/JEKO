@@ -279,6 +279,20 @@ enum Failure {
     Call(String),
 }
 
+/// Designs one monster right now and writes it to `dir/monsters/`, on the
+/// caller's thread: the same code path as the studio's worker, for the
+/// offline batch tool (`gen_content --monsters`). Returns the new id.
+pub fn generate_blocking(
+    client: &CerebrasClient,
+    dir: &Path,
+    job: &MonsterJob,
+) -> Result<String, String> {
+    run(&Job::Monster(job.clone()), client, dir, seed(0)).map_err(|f| match f {
+        Failure::Rejected(e) => format!("turned down: {e}"),
+        Failure::Call(e) => format!("the call failed: {e}"),
+    })
+}
+
 fn run(job: &Job, client: &CerebrasClient, dir: &Path, seq: u64) -> Result<String, Failure> {
     let Job::Monster(m) = job;
     let raw = match client.fake_delay() {
@@ -483,7 +497,7 @@ pub fn fake_monster_json(seed: u64, tier: u32, topic: &str) -> String {
         "theme": {"subject": "math", "topic": topic},
         "body": {"shape": r.pick(prompts::SHAPES), "w": 30 + r.next() % 30, "h": 26 + r.next() % 24},
         "palette": {"main": c1, "accent": c2, "belly": c3},
-        "eyes": {"count": 1 + r.next() % 3, "size": 3 + r.next() % 4, "stalks": r.next() % 2 == 0, "look": r.pick(prompts::LOOKS)},
+        "eyes": {"count": 1 + r.next() % 3, "size": 3 + r.next() % 4, "stalks": r.next().is_multiple_of(2), "look": r.pick(prompts::LOOKS)},
         "parts": [
             {"kind": r.pick(prompts::PARTS), "count": 1 + r.next() % 3, "size": 1.0, "side": r.pick(prompts::SIDES)},
             {"kind": r.pick(prompts::PARTS), "count": 1 + r.next() % 3, "size": 0.8, "side": "both"},
