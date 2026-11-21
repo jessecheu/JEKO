@@ -3,30 +3,34 @@
 //! no key, and never writes anything.
 //!
 //! ```text
-//! validate_content                      dialogue bank and content dir
+//! validate_content                      dialogue bank, villain bank and content dir
 //! validate_content --dialogue [PATH]    only the dialogue bank (default assets/dialogue.json)
+//! validate_content --villain [PATH]     only the mad scientist's lines (default assets/villain_lines.json)
 //! validate_content --content [DIR]      only the content dir (default: the game's content dir)
 //! ```
 //!
 //! Exits 0 when everything passes, 1 when anything is rejected, 2 on bad usage.
 
 use jeko::content::{self, vet::vet_text, watcher::Scanner, ContentEvent};
-use jeko::game::dialogue;
+use jeko::game::{dialogue, villain};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 const DEFAULT_DIALOGUE: &str = "assets/dialogue.json";
+const DEFAULT_VILLAIN: &str = "assets/villain_lines.json";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let mut dialogue_path: Option<PathBuf> = None;
+    let mut villain_path: Option<PathBuf> = None;
     let mut content_path: Option<PathBuf> = None;
-    let (mut only_dialogue, mut only_content) = (false, false);
+    let (mut only_dialogue, mut only_villain, mut only_content) = (false, false, false);
 
     let mut i = 0;
     while i < args.len() {
         let target = match args[i].as_str() {
             "--dialogue" => (&mut only_dialogue, &mut dialogue_path),
+            "--villain" => (&mut only_villain, &mut villain_path),
             "--content" => (&mut only_content, &mut content_path),
             other => {
                 eprintln!("unknown argument {other}\n{USAGE}");
@@ -42,11 +46,15 @@ fn main() -> ExitCode {
         i += 1;
     }
 
-    let both = !only_dialogue && !only_content;
+    let both = !only_dialogue && !only_villain && !only_content;
     let mut failures = 0;
     if both || only_dialogue {
         let path = dialogue_path.unwrap_or_else(|| PathBuf::from(DEFAULT_DIALOGUE));
         failures += check_dialogue(&path);
+    }
+    if both || only_villain {
+        let path = villain_path.unwrap_or_else(|| PathBuf::from(DEFAULT_VILLAIN));
+        failures += check_villain(&path);
     }
     if both || only_content {
         let dir = content_path.unwrap_or_else(content::content_dir);
@@ -61,7 +69,8 @@ fn main() -> ExitCode {
     }
 }
 
-const USAGE: &str = "usage: validate_content [--dialogue [PATH]] [--content [DIR]]";
+const USAGE: &str =
+    "usage: validate_content [--dialogue [PATH]] [--villain [PATH]] [--content [DIR]]";
 
 /// Returns the number of problems (0 or 1).
 fn check_dialogue(path: &Path) -> usize {
@@ -80,6 +89,28 @@ fn check_dialogue(path: &Path) -> usize {
                 path.display(),
                 bank.len()
             );
+            0
+        }
+        Err(e) => {
+            eprintln!("FAIL {}: {e}", path.display());
+            1
+        }
+    }
+}
+
+/// The mad scientist's lines (FR23), by `villain::check_bank`. Returns the number
+/// of problems (0 or 1).
+fn check_villain(path: &Path) -> usize {
+    let json = match std::fs::read_to_string(path) {
+        Ok(json) => json,
+        Err(e) => {
+            eprintln!("FAIL {}: {e}", path.display());
+            return 1;
+        }
+    };
+    match villain::check_bank(&json) {
+        Ok(bank) => {
+            println!("ok   {}: {} lines", path.display(), bank.len());
             0
         }
         Err(e) => {

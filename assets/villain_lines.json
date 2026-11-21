@@ -1,0 +1,58 @@
+{
+  "first_sighting": [
+    { "line": "Ah! A visitor! I am Dr. Nullwell, and soon every number will be ZERO!", "mood": "gleeful", "action": "cackle" },
+    { "line": "Nobody told me the gate was open! Quick, look busy! Hmm-hmm-hmm!", "mood": "flustered", "action": "scribble" },
+    { "line": "Welcome to my woods! Mind the bubbling. And the sparking. And me!", "mood": "smug", "action": "gloat" }
+  ],
+  "milestone": [
+    { "line": "{m} metres already? My cart can barely keep up!", "mood": "flustered", "action": "scurry" },
+    { "line": "{m} metres! Time for a snack and a very important experiment.", "mood": "smug", "action": "brew" },
+    { "line": "You've gone {m} metres. I measured it with my own two goggles!", "mood": "gleeful", "action": "spy" }
+  ],
+  "flask_right": [
+    { "line": "Impossible! That was my FINEST fraction! Back to the lab!", "mood": "flustered", "action": "fluster" },
+    { "line": "Hmm, interesting... I may have carried the one wrong. Again.", "mood": "flustered", "action": "scribble" },
+    { "line": "My chalkboard says otherwise! ...Oh. The chalkboard is wrong.", "mood": "flustered", "action": "fluster" }
+  ],
+  "flask_wrong": [
+    { "line": "Hee hee! My plan is working! Probably! I think!", "mood": "gleeful", "action": "gloat" },
+    { "line": "Zero, zero, zero! Wait, that one wasn't mine. Hmm-hmm.", "mood": "smug", "action": "cackle" },
+    { "line": "Ooh, a tricky one! Even I needed three tries at that, and a nap.", "mood": "smug", "action": "scribble" }
+  ],
+  "battle_start": [
+    { "line": "Go, my creation! Do your very best! ...Please don't sneeze on me!", "mood": "scheming", "action": "cackle" },
+    { "line": "Behold my latest invention! I only built the front half so far!", "mood": "smug", "action": "gloat" },
+    { "line": "Fight, fight! I'll cheer from here. Safely. Far away.", "mood": "scheming", "action": "spy" }
+  ],
+  "battle_won": [
+    { "line": "Not my best creation! I ran out of glue. And ideas.", "mood": "flustered", "action": "fluster" },
+    { "line": "Back to the drawing board! I keep drawing it upside down.", "mood": "flustered", "action": "scribble" },
+    { "line": "Splendid! I mean, curses! I mean... splendid curses!", "mood": "furious_but_funny", "action": "fluster" }
+  ],
+  "player_hurt": [
+    { "line": "Oops! That wasn't in the plan! Is everyone all right?", "mood": "flustered", "action": "fluster" },
+    { "line": "Careful! My inventions are a little... enthusiastic.", "mood": "smug", "action": "gloat" },
+    { "line": "Ooh, a bump! Bandages are in my other coat. Or this one.", "mood": "flustered", "action": "tinker" }
+  ],
+  "streak": [
+    { "line": "{n} in a row?! My calculations did not allow for this!", "mood": "furious_but_funny", "action": "fluster" },
+    { "line": "{n} right answers! I'm adding a bigger frizz to my chart!", "mood": "flustered", "action": "scribble" },
+    { "line": "That's {n} in a row! Who gave you my answer book?!", "mood": "furious_but_funny", "action": "fluster" }
+  ],
+  "level_up": [
+    { "line": "Level {level}?! Hmm-hmm... that is a very big number. I dislike it.", "mood": "furious_but_funny", "action": "fluster" },
+    { "line": "Level {level}! My zero machine just made a sad noise.", "mood": "flustered", "action": "tinker" },
+    { "line": "Level {level}! Fine! Fine! I'll build a bigger machine!", "mood": "scheming", "action": "brew" }
+  ],
+  "low_health": [
+    { "line": "Hearts running low! Perhaps a nice potion? Not mine, mine's for floors.", "mood": "flustered", "action": "brew" },
+    { "line": "Easy now! Even my cart takes a rest when it squeaks.", "mood": "smug", "action": "tinker" },
+    { "line": "Gosh, only a few hearts left! Look for a flask, quick!", "mood": "flustered", "action": "spy" }
+  ],
+  "idle": [
+    { "line": "La la la, nothing suspicious here. Just me and my wrench.", "mood": "smug", "action": "tinker" },
+    { "line": "Two plus two is five. I'm almost sure. Hmm-hmm-hmm.", "mood": "scheming", "action": "scribble" },
+    { "line": "Is it quiet, or am I just too excited to hear? Hee hee!", "mood": "gleeful", "action": "cackle" },
+    { "line": "Bubble, bubble, fizz! That's the whole recipe. I think.", "mood": "smug", "action": "brew" }
+  ]
+}

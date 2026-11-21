@@ -53,7 +53,8 @@ src/
     decor.rs              forest props (pines, gravestones, pumpkins, cottages, lampposts...) and the hub camp — per-chunk generation + drawing
     map.rs                the discovery map: furthest point reached and the landmarks behind it (FR27)
     manor.rs              the gothic manor backdrop across the lake (and on the battle horizon), its lightning, bats
-    gfx.rs                shared drawing helpers (night palette, ink outline, shadows, ribbons, stars, glows, vignette, potion flask)
+    villain.rs            the mad scientist at the top of the road: movement, animation, cues and a speech bubble, with lines from assets/villain_lines.json (FR23)
+    gfx.rs                shared drawing helpers (night palette, ink outline, shadows, ribbons, stars, glows, vignette, potion flask, speech bubble)
     player.rs             WASD/arrow movement along the path, speed multiplier from upgrades and Shift sprint, player sprite, jump/roll/shoot
     skills.rs             roll charges and sprint stamina, and the skill bar at the bottom centre
     goalpost.rs           the goalpost tracker's state: the next thing up the road, metres left, its pop/unroll/"Now!" animation
@@ -98,6 +99,7 @@ content/
 assets/
   tasks_fallback.json      hand-written fallback math tasks (used if no API key, or the live call fails)
   dialogue.json            NPC flavor lines; Professor Pebble says one after the hub tutorial. Regenerate with gen_content
+  villain_lines.json       what the mad scientist says for each cue (level-up, streak, flask right or wrong, ...), with a mood and an action
 ```
 
 ## Setup
@@ -242,6 +244,11 @@ without re-checking this.
 - **Goalpost tracker** — a badge at the top centre names the next thing up the
   road (a flask, ferns, a monster, a milestone, the Tide Titan) and counts down
   the metres to it (`ui/goalpost_panel.rs`, `game/goalpost.rs`).
+- **The mad scientist** — past the gate, Dr. Nullwell potters around at the top
+  of the road, always just out of reach, and reacts to what you do with a speech
+  bubble: a right answer flusters them, a level-up or a streak makes their frizz
+  stand on end (`game/villain.rs`). They only talk; nothing they do changes the
+  game.
 - **Creation bar** — circles at the top centre show the model writing a question
   as it happens: a ring turns while it writes, closes when it lands, and shows how
   long it took (`ui/creation_bar.rs`, `llm/activity.rs`). Settings can hide it.

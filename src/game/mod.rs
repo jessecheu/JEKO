@@ -16,6 +16,7 @@ pub mod player;
 pub mod prefetch;
 pub mod skills;
 pub mod task_trigger;
+pub mod villain;
 pub mod world;
 
 use crate::content::studio::{self, MonsterJob, Studio, StudioStatus, TipsJob};
@@ -37,6 +38,7 @@ use player::Player;
 use prefetch::{Ask, Prefetch, PrefetchConfig};
 use std::sync::mpsc::{Receiver, TryRecvError};
 use task_trigger::{Arrival, TriggerState};
+use villain::{Villain, VillainCue};
 use world::{SpotState, View, World};
 
 /// The darkness vignette around the player (FR24): clear within the first
@@ -199,6 +201,9 @@ pub struct Game {
     /// What the model is being asked to make now, for the creation bar
     /// (FR33). A read-only mirror: nothing reads it to decide anything.
     pub activity: GenActivity,
+    /// The mad scientist at the top of the road (FR23). Cosmetic: nothing a
+    /// rule reads depends on them.
+    pub villain: Villain,
     /// The question in `trigger_state` while it's still loading, for the wait
     /// measurement and the soft deadline.
     asking: Option<Ask>,
@@ -305,6 +310,7 @@ impl Game {
             prefetch: Prefetch::new(PrefetchConfig::from_env()),
             waits: WaitStats::default(),
             activity: GenActivity::new(),
+            villain: Villain::new(),
             asking: None,
             next_question: None,
             studio: None,
@@ -519,6 +525,7 @@ impl Game {
             }
         }
         self.tick_goalpost(dt);
+        self.watch_villain();
         // The studio works in battles and dialogues too, behind the questions.
         self.tick_studio(dt);
         if self.battle.is_some() {
@@ -563,6 +570,8 @@ impl Game {
         let target = camera_target(self.player.pos.y);
         self.cam_y += (target - self.cam_y) * (1.0 - (-dt * CAMERA_FOLLOW).exp());
         self.world.ensure_generated(self.cam_y - world::CHUNK_H);
+        self.villain
+            .update(dt, self.cam_y, screen_height(), self.player.pos);
 
         self.poll_questions(dt);
         self.tick_prefetch();
@@ -629,6 +638,18 @@ impl Game {
             None
         };
         self.goalpost.update(dt, y, target, visible);
+    }
+
+    /// Tells the doctor how the run is going, so they can remark on a level, a
+    /// streak, a milestone or low hearts (FR23). The one-off events (an answer, a
+    /// hit, a battle) cue them where they happen.
+    fn watch_villain(&mut self) {
+        self.villain.observe(villain::Snapshot {
+            level: self.progression.level,
+            streak: self.progression.streak,
+            meters: self.distance_m(),
+            health: self.health.current,
+        });
     }
 
     /// Advances the curse (FR1) and acts on what it reports: a toast as it
@@ -701,6 +722,7 @@ impl Game {
         if let Species::Spec(spec) = &species {
             self.seen_generated.insert(spec.id.clone());
         }
+        self.villain.cue(VillainCue::BattleStart);
         self.trigger_state = TriggerState::Idle;
         self.interact_target = None;
         self.blocker_target = None;
@@ -816,6 +838,7 @@ impl Game {
                 opened = z.blocks;
             }
             self.run.monsters_beaten += 1;
+            self.villain.cue(VillainCue::BattleWon);
             self.stash_questions();
             self.trigger_state = TriggerState::Idle;
             // Beating a monster unlocks its field guide card (FR22).
@@ -899,6 +922,7 @@ impl Game {
             self.die();
             return true;
         }
+        self.villain.cue(VillainCue::PlayerHurt);
         self.player
             .start_flicker(FlickerKind::Damage, HURT_INVULN_S);
         if let Some(src) = from {
@@ -964,6 +988,7 @@ impl Game {
         self.npc_in_reach = false;
         self.goalpost = Tracker::new();
         self.explain = None;
+        self.villain.reset();
     }
 
     /// One line of run state, printed by the `JEKO_SHOT` hook so scripted
@@ -979,7 +1004,7 @@ impl Game {
             "STATE hp={}/{} level={} xp={} streak={} dist={}m flasks={} beaten={} \
              zones_cleared={} battle={:?} trigger={} dialogue={} game_over={} hat_stolen={} \
              arrows={} roster={} spec_zones={} curse={:.2} blocker_in_reach={} blockers_left={} goalpost={} \
-             questions=[{}] buffered={:?} flying={} packs_loaded={} pebble_tips={} weakest={} explain={} studio={}",
+             questions=[{}] buffered={:?} flying={} packs_loaded={} pebble_tips={} weakest={} explain={} studio={} villain={}",
             self.health.current,
             self.health.max,
             self.progression.level,
@@ -1028,6 +1053,15 @@ impl Game {
                     s.made, s.queued, s.working, s.rejected, s.failed
                 ),
             ),
+            if self.villain.is_here() {
+                format!(
+                    "{:?} saying={:?}",
+                    self.villain.action(),
+                    self.villain.saying().unwrap_or_default()
+                )
+            } else {
+                "away".to_string()
+            },
         )
     }
 
@@ -1216,6 +1250,24 @@ impl Game {
                 self.discovery.note(y);
             }
             "calm" => self.settings.reduce_flashing = true,
+            // 40 m up the road with the camera snapped, so the doctor (FR23) is
+            // on screen; they greet the player and then go about their business.
+            "tovillain" => {
+                let y = world::ROAD_START_Y - 40.0 * world::PX_PER_METER;
+                self.world.ensure_generated(y - world::CHUNK_H);
+                self.player.pos = vec2(world::path_center(y), y);
+                self.discovery.note(y);
+                self.cam_y = camera_target(y);
+                self.villain
+                    .update(0.0, self.cam_y, screen_height(), self.player.pos);
+            }
+            // The doctor reacts to a cue at once: `villain:right`, `:wrong`,
+            // `:hurt`, `:streak`, `:levelup`, `:battle_won`, `:idle`, and so on
+            // (`VillainCue::from_dev`). Needs them out on the road first.
+            n if n.starts_with("villain:") => match VillainCue::from_dev(&n["villain:".len()..]) {
+                Some(cue) => self.villain.cue_now(cue),
+                None => eprintln!("JEKO_DEV: no villain cue {n:?}"),
+            },
             // A fake job on the creation bar (FR33): `gen:question`,
             // `gen:monster`, `gen:lesson`, `gen:fallback`, `gen:slow` (writes
             // for ten seconds). Writes for 2.5 s, then is ready.
@@ -1563,6 +1615,11 @@ impl Game {
             return;
         }
 
+        self.villain.cue(if correct {
+            VillainCue::FlaskRight
+        } else {
+            VillainCue::FlaskWrong
+        });
         if correct {
             self.run.flasks_solved += 1;
             let level = self.progression.level;
@@ -1636,6 +1693,7 @@ impl Game {
             World(world::Tall<'a>),
             Player,
             Arrow(&'a bow::Arrow),
+            Villain,
         }
         let mut items: Vec<(f32, Layer<'_>)> = self
             .world
@@ -1644,6 +1702,13 @@ impl Game {
             .map(|item| (item.sort_y(), Layer::World(item)))
             .collect();
         items.push((self.player.pos.y, Layer::Player));
+        // The doctor (FR23) stands at the top of the road, so they're always
+        // north of the player. They stay out of dialogues (a battle never
+        // reaches this view) and are only there past the gate.
+        let doctor = self.villain.visible() && self.dialogue.is_none();
+        if doctor {
+            items.push((self.villain.ground_y(), Layer::Villain));
+        }
         items.extend(
             self.player
                 .arrows
@@ -1661,6 +1726,10 @@ impl Game {
                     self.settings.reduce_flashing,
                 ),
                 Layer::Arrow(a) => a.draw(&view),
+                Layer::Villain => {
+                    self.villain
+                        .draw(&view, world::ground_lift(self.villain.ground_y()), t, rf)
+                }
             }
         }
 
@@ -1696,6 +1765,12 @@ impl Game {
         if self.npc_in_reach && self.dialogue.is_none() {
             let base = view.to_screen(world::pebble_pos());
             gfx::key_prompt(base - vec2(0.0, 58.0), "E", t);
+        }
+
+        // The doctor's speech bubble, above the night so it's always readable.
+        if doctor {
+            self.villain
+                .draw_bubble(&view, world::ground_lift(self.villain.ground_y()));
         }
 
         if let Some((it, text)) = &self.item_get {

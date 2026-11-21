@@ -3,8 +3,9 @@
 
 use serde::Deserialize;
 
-/// Characters revealed per second.
-const TYPE_RATE: f32 = 45.0;
+/// Characters revealed per second. The villain's speech bubble (FR23) types at
+/// the same pace.
+pub const TYPE_RATE: f32 = 45.0;
 
 /// One NPC's lines as stored in `assets/dialogue.json`.
 #[derive(Debug, Clone, Deserialize)]

@@ -448,3 +448,110 @@ pub fn item_get(at: Vec2, t: f32, banner: &str, reduce_flashing: bool) {
         Color::new(0.78, 0.40, 0.10, fade),
     );
 }
+
+/// Splits `text` into lines of at most `max_chars` characters, breaking at
+/// spaces. A word longer than a line gets a line to itself, so nothing is cut.
+pub fn wrap_text(text: &str, max_chars: usize) -> Vec<String> {
+    let mut lines: Vec<String> = Vec::new();
+    for word in text.split_whitespace() {
+        match lines.last_mut() {
+            Some(last) if last.chars().count() + 1 + word.chars().count() <= max_chars => {
+                last.push(' ');
+                last.push_str(word);
+            }
+            _ => lines.push(word.to_string()),
+        }
+    }
+    lines
+}
+
+/// A speech bubble (FR23) with its tail pointing down at `tail`, in screen
+/// space: parchment and dark wood like `key_prompt`, so the in-world speech and
+/// the HUD read as one UI. `lines` are already wrapped. Only the first `shown`
+/// characters are drawn (the typewriter reveal), but the box is sized for all of
+/// them, so it doesn't grow while it types. `alpha` fades the whole bubble.
+pub fn speech_bubble(tail: Vec2, lines: &[String], shown: usize, alpha: f32) {
+    const FONT: u16 = 20;
+    const PAD: f32 = 9.0;
+    const LINE_H: f32 = 22.0;
+    let a = |c: Color| with_alpha(c, c.a * alpha);
+    let face = Color::new(1.0, 0.97, 0.87, 1.0);
+    let side = Color::new(0.84, 0.63, 0.35, 1.0);
+    let text = Color::new(0.29, 0.19, 0.09, 1.0);
+
+    let widest = lines
+        .iter()
+        .map(|l| measure_text(l, None, FONT, 1.0).width)
+        .fold(0.0_f32, f32::max);
+    let (w, h) = (
+        widest + PAD * 2.0,
+        lines.len() as f32 * LINE_H + PAD * 2.0 - 4.0,
+    );
+    // Above the tail, kept on screen.
+    let x = (tail.x - w * 0.5).clamp(8.0, (screen_width() - w - 8.0).max(8.0));
+    let y = (tail.y - 12.0 - h).max(8.0);
+
+    rounded_rect(x - 2.0, y - 2.0, w + 4.0, h + 4.0, 9.0, a(INK));
+    rounded_rect(x, y, w, h, 7.0, a(side));
+    rounded_rect(x + 1.5, y + 1.5, w - 3.0, h - 4.0, 6.0, a(face));
+    // The tail: a small ink triangle with a parchment one on top.
+    let tx = tail.x.clamp(x + 14.0, x + w - 14.0);
+    let base = y + h - 1.0;
+    draw_triangle(
+        vec2(tx - 9.0, base - 2.0),
+        vec2(tx + 9.0, base - 2.0),
+        vec2(tail.x.clamp(x - 6.0, x + w + 6.0), tail.y),
+        a(INK),
+    );
+    draw_triangle(
+        vec2(tx - 6.0, base - 3.0),
+        vec2(tx + 6.0, base - 3.0),
+        vec2(tail.x.clamp(x - 4.0, x + w + 4.0), tail.y - 3.0),
+        a(face),
+    );
+
+    let mut left = shown;
+    for (i, line) in lines.iter().enumerate() {
+        let n = line.chars().count().min(left);
+        left -= n;
+        let part: String = line.chars().take(n).collect();
+        draw_text(
+            &part,
+            (x + PAD).round(),
+            (y + PAD + 14.0 + i as f32 * LINE_H).round(),
+            FONT as f32,
+            a(text),
+        );
+        if left == 0 {
+            break;
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn wrap_text_breaks_at_spaces_and_loses_nothing() {
+        let text = "Impossible! That was my FINEST fraction! Back to the lab!";
+        for max in [10, 16, 24, 80] {
+            let lines = wrap_text(text, max);
+            assert_eq!(lines.join(" "), text, "max {max}");
+            for l in &lines {
+                // A single long word may overrun; none here is over 12.
+                assert!(l.chars().count() <= max.max(12), "{l:?} at {max}");
+            }
+        }
+        assert_eq!(wrap_text("short", 24), vec!["short"]);
+    }
+
+    #[test]
+    fn wrap_text_gives_a_long_word_its_own_line() {
+        assert_eq!(
+            wrap_text("a supercalifragilistic b", 8),
+            vec!["a", "supercalifragilistic", "b"]
+        );
+        assert!(wrap_text("   ", 10).is_empty());
+    }
+}

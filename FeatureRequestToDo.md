@@ -954,8 +954,27 @@ in the moment.
 
 ## FR23. The ultimate villain: a mad scientist who's always up the road, live-scripted by Cerebras
 
-**Status.** **Not started.** Designed only. Milestone A needs no API key, so start
-there.
+**Status.** **Milestone A built (2026-11-21); B and C not started.** Done: `game/villain.rs`
+(the doctor and their cart, drawn through a 2× canvas; all the behaviours; the pure `target_pos` that keeps them in a
+band near the top of the screen and at least 150 px north of the player; `Scurry`; the soot
+`Appear` / `Vanish`; the cue queue with priorities, an 8 s gap, stale-cue lapse and an idle mutter;
+`observe`, which turns level, streak, distance and hearts into cues), `gfx::speech_bubble` and
+`gfx::wrap_text`, `assets/villain_lines.json` (34 lines, every cue) with `villain::check_bank`,
+which `make validate` runs, the hooks in `Game` (`watch_villain`, the road-frame `villain.update`,
+cues from `submit_answer`, `start_battle`, a battle won and `damage_player`), and the `tovillain` and
+`villain:<cue>` dev events. 182 library tests pass and `make validate` is ok. **Checked by screenshot**
+(`JEKO_SHOT`, 960×600): the doctor on the road with the cart and a bubble, the poses for a gloat, a
+cackle, a spy and a scribble, the first sighting, and the hub with no doctor. **Not checked:** a long
+play-through at other window sizes (the band is 30% of the window height, clamped to 160–240 px, and
+the scurry threshold assumes a window of about 600 px or taller); the reduce-flashing look beyond one
+shot; a dialogue open with the doctor on screen (hidden by code, not by screenshot). **Deviations from
+the plan below:** the doctor is a `Layer::Villain` in `Game::draw`'s sort, beside the player and the
+arrows, not a `Tall::Villain` in `world.rs` (a `Tall` borrows from the world, and the doctor isn't
+world-owned); the band is taller than the plan's 60–110 px because their head and a bubble have to fit
+above them; the `JEKO_VILLAIN` and `JEKO_VILLAIN_RPM` variables belong to B and don't exist yet. **Defaults chosen,
+the owner's to confirm:** the name and look as proposed; a wrong answer gets a gloat about the doctor's
+own plan, never a jab at the player; the bubble shows whatever the HUD setting; no cameo in battles.
+**Next step:** milestone B, starting with `llm/villain_gen.rs`'s prompt and the pure beat validation.
 
 **Depends on:** [] _(stands alone; Milestone C pairs with FR21/FR22, where the
 villain becomes the in-world face of the content `Studio`, and a final showdown
@@ -1157,13 +1176,13 @@ decided.
 
 ### Acceptance criteria
 
-- [ ] Past the gate, a mad scientist with frizzy hair, goggles, a lab coat and a
+- [x] Past the gate, a mad scientist with frizzy hair, goggles, a lab coat and a
   bubbling flask is visible near the top of the road and keeps moving around
   (pacing, tinkering, brewing, cackling) as the player walks.
-- [ ] They stay ahead as the player progresses, sprinting included, and are never
+- [x] They stay ahead as the player progresses, sprinting included, and are never
   reached. They draw in the right depth order with scenery, freeze with pause and
   are hidden in the hub, battles and dialogue.
-- [ ] They react to game events (flask right or wrong, battle won, streak, level-up,
+- [x] They react to game events (flask right or wrong, battle won, streak, level-up,
   milestones) with a speech bubble and a matching animation.
 - [ ] With an API key, the lines are generated live by Cerebras from the run's
   context. The frame never blocks (invariant 1), and no villain request delays or
@@ -1173,15 +1192,18 @@ decided.
 - [ ] Beat validation is a pure, unit-tested function. Hostile input (unknown enums,
   over-long lines, blocklisted words, missing fields) is clamped, defaulted or
   replaced.
-- [ ] The villain changes no XP, speed, answer, HP or battle outcome (invariant 7),
+- [x] The villain changes no XP, speed, answer, HP or battle outcome (invariant 7),
   and every glow, spark and puff honours reduce flashing (invariant 9).
 - [ ] The token panel shows villain calls separately from question calls.
 - [ ] New dev events let it be checked without the window: e.g. `villain:<cue>`
   (fire a cue), `tovillain` (snap the camera so the doctor is on screen), plus the
-  `JEKO_VILLAIN` / `JEKO_VILLAIN_RPM` env vars.
+  `JEKO_VILLAIN` / `JEKO_VILLAIN_RPM` env vars. *(`villain:<cue>` and `tovillain` are
+  built; the env vars come with B.)*
 - [ ] `docs/ARCHITECTURE.md` (new `game/villain.rs` and `llm/villain_gen.rs`, the
-  villain poll in the frame, `Tall::Villain` in the draw order, the new asset, env
-  vars, dev events and tests) and the README layout are updated.
+  villain poll in the frame, `Layer::Villain` in the draw order, the new asset, env
+  vars, dev events and tests) and the README layout are updated. *(Done for A: the
+  module, the frame hooks, the draw order, the asset, the dev events, the tests, the
+  invariant and the known limit; `villain_gen.rs` and the env vars come with B.)*
 
 ---
 
