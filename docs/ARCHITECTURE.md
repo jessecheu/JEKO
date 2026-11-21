@@ -85,7 +85,7 @@ One Cargo package, `jeko` (`Cargo.toml`, edition 2021):
 | library `jeko` | `src/lib.rs` | `config`, `content`, `llm`, `game`, `progression`, `ui`. It exists so both binaries share `CerebrasClient`. |
 | binary `jeko` (default-run) | `src/main.rs` | The game: window config, the frame loop, the dev hooks (§11). |
 | binary `gen_content` | `src/bin/gen_content.rs` | Offline tool. Asks the model for NPC lines and writes `assets/dialogue.json` once `dialogue::check_bank` accepts the whole bank, and designs monsters into the content dir. The game never runs it. |
-| binary `validate_content` | `src/bin/validate_content.rs` | Offline checker, no key and no writes. Runs `dialogue::check_bank` on the dialogue bank and the watcher's own scan on the content dir, prints each rejection and exits non-zero if there is one (`make validate`). It is how a person or an OpenClaw agent tests what it wrote before the game sees it. |
+| binary `validate_content` | `src/bin/validate_content.rs` | Offline checker, no key and no writes. Runs `dialogue::check_bank` on the dialogue bank, the watcher's own scan (monsters, lesson packs, tips) on the content dir, and `content::vet` on each loaded monster's text; prints each rejection and exits non-zero if there is one (`make validate`). It is how a person or an OpenClaw agent tests what it wrote before the game sees it. |
 
 Which module uses which (arrows mean "uses"):
 
@@ -114,8 +114,9 @@ The layering holds today, and new code should keep it:
 | `config.rs` | `Config::load()`: reads `CEREBRAS_API_KEY`, `CEREBRAS_MODEL`, `CEREBRAS_BASE_URL` from the environment, after `dotenvy` loads `.env`. An empty key counts as no key. `instance_name()`: `JEKO_INSTANCE`, else the folder the binary was built from (`CARGO_MANIFEST_DIR`), shown in the window title. |
 | `content/mod.rs` | `ContentEvent` (a spec, lesson pack or tips file loaded or reloaded, a monster removed, a file rejected), `Roster` (the loaded specs by id, sorted), and `content_dir()`. |
 | `content/monster_spec.rs` | `MonsterSpec`, a monster as data, and `parse`, the only way in: JSON in, a clamped and validated spec out. `MonsterInfo`, the gameplay numbers every monster has, and the tier table (`MonsterSpec::info`). |
-| `content/studio.rs` | `Studio`, the background designer and writer: one thread, a job queue (`Job::Monster`, `Job::Lessons`, `Job::Tips`), the gate that keeps it behind live questions (`set_live_busy`), the per-minute cap and token budget (`StudioConfig`), and `StudioStatus`. `finish_monster` turns a model reply into a spec file (the only writer of generated specs), `vet_text` is the word blocklist, and `fake_monster_json` is the stand-in model's creature. |
+| `content/studio.rs` | `Studio`, the background designer and writer: one thread, a job queue (`Job::Monster`, `Job::Lessons`, `Job::Tips`), the gate that keeps it behind live questions (`set_live_busy`), the per-minute cap and token budget (`StudioConfig`), and `StudioStatus`. `finish_monster` turns a model reply into a spec file (the only writer of generated specs), `vet_text` (re-exported from `content::vet`) vets what it writes, and `fake_monster_json` is the stand-in model's creature. |
 | `content/prompts.rs` | `monster_prompt`: what the studio asks the model for (a kid-safe, original creature in the spec's own vocabulary, with a shipped spec as the shape to follow), the lists of allowed values, and the maths topics. |
+| `content/vet.rs` | `vet_text`, the whole-word blocklist (other people's characters, anything not for a children's game). Used by `dialogue::check_bank`, `validate_content` and the studio, lesson and tips loaders; a monster spec's own loader doesn't apply it. |
 | `content/lessons.rs` | Lesson packs (FR22): `parse_pack` (verifies every problem when a file loads), `finish_pack` (a model reply to a verified pack file, never overwriting), and the stand-in model's pack. |
 | `content/tips.rs` | Professor Pebble's tips (FR22): the prompt, `parse` and `finish`. |
 | `content/watcher.rs` | `Scanner` (one rescan of `monsters/`, `lessons/` and `tips/`, by modification time and length) and `spawn`, the thread that runs it every `POLL` (0.5 s). |
@@ -145,7 +146,7 @@ The layering holds today, and new code should keep it:
 | `game/monster.rs` | `Species` (a built-in `MonsterKind` or a `MonsterSpec`), the `MonsterKind` roster and its stats, distance-weighted `pick`, the shared canvas and poses, and per-monster drawing and animation. |
 | `game/monster_rig.rs` | `draw_spec`: draws any `MonsterSpec` from its body shape, parts, eyes, accessory, idle and attack. |
 | `game/battle.rs` | `Battle` and its `Phase`s, the iris transition, and the battle-view drawing. |
-| `game/dialogue.rs` | `Dialogue` (typewriter reveal), the `PEBBLE_TUTORIAL` lines, and `load_bank()` for `assets/dialogue.json`. |
+| `game/dialogue.rs` | `Dialogue` (typewriter reveal), the `PEBBLE_TUTORIAL` lines, and `load_bank()` for `assets/dialogue.json`, and `check_bank`, the rule for that file. |
 | `progression/` | `Progression` (XP, level curve, streak multiplier, upgrade unlocks, and FR22's per-topic accuracy and the problems missed) and `upgrades.rs` (upgrade definitions). |
 | `ui/` | One egui function per panel (`hud`, `goalpost_panel`, `creation_bar`, `task_panel`, `token_panel`, `settings_panel`, `field_guide_panel`, `map_panel`, `minimap`, `dialogue_panel`, `game_over_panel`), plus `style::apply`. |
 
@@ -829,13 +830,10 @@ rebuild. The exception is the content dir, which is read at runtime and hot-relo
 | File | Loaded by | Used for |
 |---|---|---|
 | `assets/tasks_fallback.json` | `llm::fallback_bank` | Questions when there's no key or a call fails. Must deserialize as `Vec<MathTask>` and be non-empty. |
-| `assets/dialogue.json` | `dialogue::load_bank` | NPC lines. Professor Pebble says the hub tutorial and then rotates through their bank lines. Regenerate it with `make gen-content`. `dialogue::check_bank` is the rule for it (3 to 12 lines per NPC, at most 140 characters, the studio's word blocklist, unique names, Professor Pebble present): `gen_content` runs it before writing, `make validate` runs it on the file, and a test runs it on the shipped file, because `load_bank` panics at startup on a bad one. |
+| `assets/dialogue.json` | `dialogue::load_bank` | NPC lines. Professor Pebble says the hub tutorial and then rotates through their bank lines. Regenerate it with `make gen-content`. `dialogue::check_bank` is the rule for it (3 to 12 lines per NPC, at most 140 characters, the word blocklist, unique names, Professor Pebble present): `gen_content` runs it before writing, `make validate` runs it on the file, and a test runs it on the shipped file, because `load_bank` panics at startup on a bad one. |
 
-**OpenClaw (FR30, optional).** `openclaw/` holds skills for the OpenClaw agent gateway, one
-per job. Nothing in `src/` calls OpenClaw and the game doesn't know it exists: an agent
-only runs the repo's own tools (today `make gen-content` then `make validate`, in
-`openclaw/skills/jeko-dialogue/`) and leaves the result in the working tree for review.
-Setup, the agent's tool limits and the safety notes are in `openclaw/README.md`.
+**OpenClaw (FR30, optional).** `openclaw/` holds skills for the OpenClaw agent gateway, one per job: `jeko-dialogue` (runs `make gen-content` then `make validate`), `jeko-monsters` (writes `content/monsters/<id>.json`, atomically, and runs `make validate`) and `jeko-playtest` (runs `JEKO_SHOT` / `JEKO_DEV` scenarios and reads the screenshots). Nothing in `src/` calls OpenClaw and the game doesn't know it exists: agents only use the repo's own tools and the content dir's file contract, and leave the result in the working tree for review. Setup, the agents' tool limits and the safety notes are in `openclaw/README.md`.
+
 
 **Configuration.** `CEREBRAS_API_KEY` is optional; without it the game runs offline.
 `CEREBRAS_MODEL` defaults to `kimi-k3.1`, a placeholder slug.
@@ -909,6 +907,7 @@ driving the window:
 | `game/skills.rs` (5) | Three rolls then a lockout that refills all; a spent charge trickles back; sprinting drains and running dry winds; stamina waits, then recovers, and winded ends at the threshold; a short break doesn't refill. |
 | `game/map.rs` (6) | Discovery starts at the gate and only moves north. The range has a floor and grows with progress. Landmarks never sit in the fog, while flasks further up exist but stay hidden. Milestones every 50 m. The same walk gives the same map. Solved flasks show as solved. |
 | `game/dialogue.rs` (4) | The shipped bank passes `check_bank`; `check_bank` rejects hostile banks (not a list, no Pebble, too few or too many lines, an empty or over-long line, a blocked word, a missing name, a duplicate); the typewriter reveals, then advances, then closes. |
+| `content/vet.rs` (1) | The blocklist matches whole words only (`Shellfish` and `Bloodroot` pass, `Mario` doesn't). |
 | `ui/token_panel.rs` (1) | Token counts read `1,284` below 10,000, then `12.9K` / `4.2M`. |
 
 **Build environment.** `flake.nix` provides the dev shell (rustc, cargo, and the
@@ -948,7 +947,7 @@ the owner, and update this section if it goes ahead.
 6. **One door per rule.** HP changes go through `damage_player`, `Health::heal` and
    `Health::refill`. Questions start through `request_task`. Answers are judged in
    `submit_answer`.
-7. **Cosmetic means cosmetic.** `Action`s, the bow's arrows, the planned pet cat (FR33)
+7. **Cosmetic means cosmetic.** `Action`s, the bow's arrows, the planned pet cat (FR34)
    and visual effects never change XP, speed, answers or battle results.
 8. **Animation runs on the game clock.** Use `Game.time` or per-object timers advanced
    by `dt`, so pausing freezes everything.

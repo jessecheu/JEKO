@@ -40,6 +40,7 @@ src/
     lessons.rs            lesson packs: practice problems whose answers are verified before they load
     tips.rs               Professor Pebble's tips on topics the player keeps missing
     prompts.rs            what the studio asks the model for
+    vet.rs                the word blocklist for NPC lines and generated text
   llm/
     activity.rs           what the model is writing now (jobs for the creation bar; a read-only mirror)
     buffer.rs             ready-question buffer, the pure look-ahead planner, and the wait readout
@@ -88,6 +89,8 @@ src/
     validate_content.rs     offline checker: loads the dialogue bank and the content dir the way the game does (`make validate`)
 openclaw/                  optional OpenClaw agent skills (FR30); the game never needs them, see openclaw/README.md
   skills/jeko-dialogue/    refreshes assets/dialogue.json: runs `make gen-content`, validates, leaves the diff
+  skills/jeko-monsters/    designs monster specs into content/monsters/ and validates them
+  skills/jeko-playtest/    runs the JEKO_DEV / JEKO_SHOT scenarios, looks at the screenshots, reports
 content/
   monsters/*.json          monsters defined as data, loaded at runtime and hot-reloaded while the game runs
   lessons/*.json           lesson packs the studio writes (a per-machine cache; created on first use)

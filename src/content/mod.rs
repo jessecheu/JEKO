@@ -8,6 +8,7 @@ pub mod monster_spec;
 pub mod prompts;
 pub mod studio;
 pub mod tips;
+pub mod vet;
 pub mod watcher;
 
 pub use monster_spec::{MonsterInfo, MonsterSpec};

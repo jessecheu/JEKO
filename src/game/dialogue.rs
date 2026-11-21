@@ -30,9 +30,9 @@ pub const REQUIRED_NPC: &str = "Professor Pebble";
 /// Parses and checks a dialogue bank before it's written to, or accepted as,
 /// `assets/dialogue.json`: an array of `{npc, lines}` where every NPC has a
 /// name, 3 to 12 non-empty lines of at most 140 characters, no line passes the
-/// studio's word blocklist, names are unique, and Professor Pebble is there.
-/// The first problem found is the error. The game compiles this file in and
-/// panics on a bad one, so a check that fails here saves a broken build.
+/// word blocklist (`content::vet`), names are unique, and Professor Pebble is
+/// there. The first problem found is the error. The game compiles this file in
+/// and panics on a bad one, so a check that fails here saves a broken build.
 pub fn check_bank(json: &str) -> Result<Vec<NpcLines>, String> {
     let bank: Vec<NpcLines> =
         serde_json::from_str(json).map_err(|e| format!("not a list of {{npc, lines}}: {e}"))?;
@@ -62,7 +62,7 @@ pub fn check_bank(json: &str) -> Result<Vec<NpcLines>, String> {
                     "{name}: a line is {n} characters, the limit is {MAX_LINE_CHARS}: \"{line}\""
                 ));
             }
-            if let Err(word) = crate::content::studio::vet_text(line) {
+            if let Err(word) = crate::content::vet::vet_text(line) {
                 return Err(format!(
                     "{name}: \"{line}\" uses the blocked word \"{word}\""
                 ));

@@ -3,14 +3,15 @@
 [OpenClaw](https://docs.openclaw.ai) is a self-hosted agent gateway. This folder holds
 JEKO's skills for it, one per job. **The game never needs OpenClaw.** It builds, runs
 and plays the same with no OpenClaw installed, and nothing in `src/` calls it. An agent
-only runs the repo's own tools (`make gen-content`, `make validate`) and leaves the
+only runs the repo's own tools (`make gen-content`, `make validate`, the game's dev hooks) and leaves the
 result in the working tree for you to review.
 
 | Skill | What the agent does | Status |
 |---|---|---|
 | [`jeko-dialogue`](skills/jeko-dialogue/SKILL.md) | Regenerates `assets/dialogue.json`, validates it, shows the diff | Built (milestone A) |
-| `jeko-monsters`, `jeko-lessons` | Write files into the content dir | Not built (milestone B) |
-| `jeko-playtest` | Runs `JEKO_DEV` / `JEKO_SHOT` scenarios | Not built (milestone C) |
+| [`jeko-monsters`](skills/jeko-monsters/SKILL.md) | Designs monster specs into `content/monsters/`, checks them with `make validate` | Built (milestone B, monsters only) |
+| [`jeko-playtest`](skills/jeko-playtest/SKILL.md) | Runs `JEKO_DEV` / `JEKO_SHOT` scenarios, looks at the screenshots, reports | Built (milestone C) |
+| `jeko-lessons` | Writes lesson packs into the content dir | Not built (milestone B, lessons) |
 | `jeko-villain`, `jeko-tutor` | Need FR23 and a decision on child data | Not built (D, E) |
 
 Checked against OpenClaw 2026.10.5 and its docs (2026-11-21). OpenClaw changes quickly, so
@@ -72,6 +73,49 @@ checkout's `.env` or secretspec (see the README). Then:
    workspace points at, and refuses if the file already has uncommitted changes. Point
    the agent at a separate clone (`git worktree add ../JEKO-agent`) so a Monday run never
    lands in the middle of your own work.
+
+## The other agents
+
+Same pattern as the dialogue agent: add the skill's folder (already covered by the
+`extraDirs` entry above), add an agent, limit its tools.
+
+```bash
+openclaw agents add jeko-monsters --non-interactive --workspace /path/to/JEKO-agent
+openclaw agents add jeko-playtest --non-interactive --workspace /path/to/JEKO-agent
+openclaw config patch --stdin <<'JSON5'
+{
+  agents: { entries: {
+    // Writes spec files, so it needs `write`. It may write anywhere in its workspace,
+    // so give it a separate worktree (git worktree add ../JEKO-agent) and review the
+    // result with `git status`, then copy what you like back.
+    "jeko-monsters": {
+      skills: ["jeko-monsters"],
+      tools: { allow: ["read", "write", "exec"], deny: ["edit", "apply_patch"] },
+    },
+    // Reads screenshots, so it needs the image tool. It writes nothing but
+    // screenshots, and the skill points those at a scratch folder.
+    "jeko-playtest": {
+      skills: ["jeko-playtest"],
+      tools: { allow: ["read", "exec", "image"], deny: ["write", "edit", "apply_patch"] },
+    },
+  } },
+}
+JSON5
+```
+
+Check the tool names with `openclaw agents --help` and the docs: they change.
+
+```bash
+openclaw agent --agent jeko-monsters --message "Design three new monsters, one each for tiers 1, 2 and 4."
+openclaw agent --agent jeko-playtest --message "Playtest the game and report."
+```
+
+The monsters agent writes into a **worktree**, not the checkout you're playing in: the
+game loads whatever is in its own `content/monsters/`. To see them, copy the files you
+like into your checkout (the running game picks them up within half a second) or run the
+game from the worktree. To run the playtest after your own changes, point its workspace
+at the checkout you changed, since it needs your code, and it writes only to a scratch
+folder.
 
 ## Model
 

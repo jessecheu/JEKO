@@ -505,75 +505,9 @@ fn unique_id(monsters: &Path, name: &str) -> String {
     id
 }
 
-/// Words a monster's text may not use: other people's characters, because the
-/// prompt asks for original creatures, and anything that isn't for a children's
-/// game. Matched on whole words, ignoring case. A blocklist is a floor, not a
-/// guarantee: the kid-safe prompt does the main work, and the owner's call on
-/// whether a person reviews generated monsters is still open (FR21).
-const BLOCKED: &[&str] = &[
-    // Characters and brands.
-    "pokemon",
-    "pikachu",
-    "digimon",
-    "mario",
-    "luigi",
-    "bowser",
-    "goomba",
-    "sonic",
-    "zelda",
-    "kirby",
-    "mickey",
-    "disney",
-    "pixar",
-    "shrek",
-    "minecraft",
-    "creeper",
-    "nintendo",
-    "marvel",
-    "pacman",
-    "yoshi",
-    "totoro",
-    "godzilla",
-    // Not for a children's game.
-    "kill",
-    "kills",
-    "killed",
-    "murder",
-    "blood",
-    "bloody",
-    "gore",
-    "corpse",
-    "dead",
-    "death",
-    "suicide",
-    "gun",
-    "guns",
-    "rifle",
-    "bomb",
-    "knife",
-    "sword",
-    "weapon",
-    "drug",
-    "drugs",
-    "beer",
-    "wine",
-    "alcohol",
-    "sex",
-    "sexy",
-    "naked",
-    "damn",
-    "hell",
-    "stupid",
-    "idiot",
-];
-
-/// `Err(word)` if `text` uses a blocked word.
-pub fn vet_text(text: &str) -> Result<(), String> {
-    text.split(|c: char| !c.is_alphanumeric())
-        .map(str::to_lowercase)
-        .find(|w| BLOCKED.contains(&w.as_str()))
-        .map_or(Ok(()), Err)
-}
+// The word blocklist lives in `content::vet`, shared with the dialogue checks; a
+// monster's text goes through the same one.
+pub use super::vet::vet_text;
 
 /// A made-up creature for the stand-in model, so the studio can be run end to
 /// end with no key. Varied by `seed`, and always a spec that passes

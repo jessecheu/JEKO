@@ -36,7 +36,7 @@ Entries are grouped by area. Numbering is stable; don't renumber when one is rem
 
 ## Numbering
 
-**The next free number is FR34**; bump it when you file one. Numbers are never
+**The next free number is FR35**; bump it when you file one. Numbers are never
 reused or renumbered when an entry is removed. Take the next number, not the first gap.
 
 ---
@@ -51,16 +51,16 @@ in a question battle (FR3, built). Both are done; their open questions are in FR
 # Gameplay — minigames & companions
 
 **Goal:** break up the walk with small optional moments that reward the player
-without changing the game's balance. FR33 is the first: a caged pet cat. It sets
+without changing the game's balance. FR34 is the first: a caged pet cat. It sets
 the pattern (a thing on the road, a quick puzzle in a modal, a cosmetic reward)
 that later minigames can copy.
 
-## FR33. Unlock a pet cat from a cage
+## FR34. Unlock a pet cat from a cage
 
 **Status.** **Not started.** Reworked from a pet lion to a pet cat at the owner's
 request (2026-11-21), and renumbered from FR4, a number the token usage panel
-already had (see Completed), then from FR32 to FR33 because the prefetch FR
-(*Live content*) held FR32 too; the approach is suggested only.
+already had (see Completed), then from FR32 to FR33, then to FR34 because the
+prefetch FR (*Live content*) held FR32 and the creation bar took FR33; the approach is suggested only.
 
 **Depends on:** [] _(FR2 and FR3 are built, so the cat's "help" at a battle can be
 built in the same pass; it reacts to flasks too)_
@@ -1331,24 +1331,33 @@ without making the game depend on them.
 
 ## FR30. Run JEKO's agent-shaped jobs as OpenClaw agents
 
-**Status.** **Milestone A built (2026-11-21); B to E not started.** Done: the
-`jeko-dialogue` skill (`openclaw/skills/jeko-dialogue/SKILL.md`) and `openclaw/README.md`
-(setup, the locked-down agent, the weekly cron, safety); `dialogue::check_bank`, which
-`gen_content` now runs before it writes `assets/dialogue.json`; and the offline
-`validate_content` binary with `make validate`, which checks the dialogue bank and loads
-the content dir with the watcher's own scan (the start of milestone B's validator).
-Checked against OpenClaw 2026.10.5, the installed version, in a throwaway state dir
-(`OPENCLAW_STATE_DIR` and `OPENCLAW_CONFIG_PATH` pointed at `/tmp`, so the owner's config was untouched):
-`skills.load.extraDirs` lists the skill as ready, `agents add` and the `agents.entries`
-patch validate, and `cron add` accepts the flags. **Not checked:** an agent run end to end
-(needs a model for OpenClaw and a Cerebras key), and the weekly cron against a running
-Gateway. **Next step:** milestone B, the run log (`content/runs/<date>.jsonl`) and the
-`jeko-monsters` / `jeko-lessons` skills, which only write files into `content/`; the
-validator already loads those files. **Corrections to this entry** from the docs and the
-CLI: agents are `agents.entries.<id>`, not `agents.list[]` (that is a legacy roster); cron
-is `openclaw cron` / `openclaw automations`, stored in the Gateway, not in `openclaw.json`;
+**Status.** **In progress: milestones A and C built, B built for monsters only
+(2026-11-21).** Done: `openclaw/` with three skills (`jeko-dialogue`, `jeko-monsters`,
+`jeko-playtest`) and a README with the agent config; `dialogue::check_bank`, which
+`gen_content` runs before it writes `assets/dialogue.json`; `content::vet` (the one word
+blocklist; `studio::vet_text` re-exports it); and the offline `validate_content` binary
+with `make validate`, which checks the dialogue bank, loads the content dir (monsters,
+lesson packs, tips) with the watcher's own scan, and holds each monster's text to the
+blocklist. `make validate` is ok and the 165 library tests pass. **Checked against
+OpenClaw 2026.10.5** in a throwaway state dir (`OPENCLAW_STATE_DIR` and
+`OPENCLAW_CONFIG_PATH` pointed at `/tmp`, so the owner's config was untouched) for the
+dialogue skill only: `skills.load.extraDirs` lists it as ready, `agents add` and the
+`agents.entries` patch validate, and `cron add` accepts the flags. **Not checked:** an
+agent run end to end (needs a model for OpenClaw and a Cerebras key), the weekly cron
+against a running Gateway, and the `jeko-monsters` and `jeko-playtest` setup steps
+against a real install. The `JEKO_DEV` scenarios in `jeko-playtest` were spot-checked
+(one was run); the rest are untested. **Left:** (1) run each skill once through a real
+Gateway and fix what's wrong; (2) the run log (`content/runs/<date>.jsonl`) and the
+owner's call on its fields; (3) `jeko-lessons`, now that FR22 is in this checkout (the
+validator already loads lesson packs and tips); (4) the live bridge and `jeko-villain`
+(milestone D, needs FR23); (5) `jeko-tutor` (E, needs the child-data decision). **Next
+step:** step (1). **Corrections to this entry** from the docs and the CLI: agents are
+`agents.entries.<id>`, not `agents.list[]` (that is a legacy roster); cron is
+`openclaw cron` / `openclaw automations`, stored in the Gateway, not in `openclaw.json`;
 `cron add` can also run a plain shell `--command` with no agent, which would suit a job
-that needs no judgement.
+that needs no judgement. Check the OpenClaw details below (endpoints, config keys, skill
+layout) against [docs.openclaw.ai](https://docs.openclaw.ai) before relying on them;
+they were read on 2026-11-21 and OpenClaw changes quickly.
 
 **Depends on:** [] _(milestone A needs nothing; milestone B shares FR21's content dir
 and watcher, and the agents it enables are FR21's monsters, FR22's lessons and FR23's
@@ -1467,8 +1476,9 @@ monsters for tomorrow").
   game-side change is `dialogue::check_bank`, which only the offline tools call.)*
 - [ ] `openclaw/` holds a skill per agent and a README with the config and setup
   steps, and following it from a clean OpenClaw install gets the dialogue agent
-  working. *(The dialogue skill and README exist and each setup step was checked in a
-  throwaway profile; a full agent run is unconfirmed. The other skills wait for B to E.)*
+  working. *(Skills for dialogue, monsters and playtest and the README are written and
+  the dialogue setup steps were checked in a throwaway profile; a full agent run is
+  unconfirmed. Lessons, villain and tutor are not built.)*
 - [ ] The dialogue agent refreshes `assets/dialogue.json` on request and on a
   schedule, and its output passes validation. *(The skill and the validation are built;
   the first real run with a key is still to do.)*
@@ -1480,9 +1490,9 @@ monsters for tomorrow").
   blocks the frame, and failures are silent apart from a dev-mode toast.
 - [ ] `docs/ARCHITECTURE.md` (*Content, configuration and dev hooks*: the agent dirs,
   run log, env vars, validator; *The question pipeline* if any question path changes)
-  and the README layout are updated. *(Done for milestone A: the binaries table, the
-  dialogue rule, the OpenClaw paragraph and the test row. The run log and the live
-  bridge come with B and D.)*
+  and the README layout are updated. *(Done so far: the binaries table, the blocklist
+  module, the dialogue rule, the OpenClaw paragraph and the test row. The run log, env
+  vars and live bridge come with B and D.)*
 
 ---
 

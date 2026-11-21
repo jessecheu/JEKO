@@ -10,7 +10,7 @@
 //!
 //! Exits 0 when everything passes, 1 when anything is rejected, 2 on bad usage.
 
-use jeko::content::{self, watcher::Scanner, ContentEvent};
+use jeko::content::{self, vet::vet_text, watcher::Scanner, ContentEvent};
 use jeko::game::dialogue;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -90,7 +90,9 @@ fn check_dialogue(path: &Path) -> usize {
 }
 
 /// Loads every monster spec, lesson pack and tips file under `dir` with the
-/// game's own loaders (the watcher's first scan) and reports each rejection.
+/// game's own loaders (the watcher's first scan), then holds each loaded monster's
+/// text to the word blocklist, which the monster loader doesn't apply. Reports each
+/// rejection.
 /// Returns the number of rejected files.
 fn check_content(dir: &Path) -> usize {
     if !dir.is_dir() {
@@ -100,7 +102,24 @@ fn check_content(dir: &Path) -> usize {
     let (mut monsters, mut packs, mut tips, mut bad) = (0, 0, 0, 0);
     for event in Scanner::new(dir).scan() {
         match event {
-            ContentEvent::Monster { .. } => monsters += 1,
+            ContentEvent::Monster { spec, .. } => {
+                monsters += 1;
+                let texts = [
+                    ("name", &spec.name),
+                    ("blurb", &spec.blurb),
+                    ("fact", &spec.fact),
+                    ("theme topic", &spec.theme.topic),
+                ];
+                for (field, text) in texts {
+                    if let Err(word) = vet_text(text) {
+                        eprintln!(
+                            "FAIL {}.json: {field} uses the blocked word \"{word}\"",
+                            spec.id
+                        );
+                        bad += 1;
+                    }
+                }
+            }
             ContentEvent::Lessons { .. } => packs += 1,
             ContentEvent::Tips(_) => tips += 1,
             ContentEvent::Invalid { file, error } => {
