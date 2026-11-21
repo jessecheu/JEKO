@@ -1,8 +1,8 @@
-//! The studio (FR21): one long-lived background thread that designs new
-//! monsters with the model while the player walks, and writes each one into
-//! the content dir as a JSON spec. The watcher then loads it like any other
-//! file, so a generated monster and a hand-written one take the same path
-//! into the game.
+//! The studio (FR21, FR22): one long-lived background thread that designs new
+//! monsters, writes lesson packs and Professor Pebble's tips with the model
+//! while the player walks, and writes each one into the content dir as a JSON
+//! file. The watcher then loads it like any other file, so generated content
+//! and hand-written content take the same path into the game.
 //!
 //! The studio is the lowest priority for the model (FR32): it keeps at most
 //! one request in flight, never starts one while the game says a question is
@@ -17,9 +17,9 @@
 //! hands the result to `monster_spec::parse` before a byte is written.
 
 use super::monster_spec::{self, ID_MAX};
-use super::prompts;
+use super::{lessons, prompts, tips};
 use crate::llm::cerebras_client::CerebrasClient;
-use crate::llm::task_gen::extract_json_object;
+use crate::llm::task_gen::{self, extract_json_object};
 use crate::llm::usage::RequestKind;
 use serde_json::{json, Value};
 use std::collections::VecDeque;
@@ -89,15 +89,37 @@ pub struct MonsterJob {
     pub avoid: Vec<String>,
 }
 
+/// Write a pack of practice problems (FR22).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LessonJob {
+    pub topic: String,
+    /// 1..=5.
+    pub level: u32,
+    /// How many problems to ask for.
+    pub n: usize,
+    /// A problem the player just missed: the pack should be similar practice.
+    pub like: Option<String>,
+}
+
+/// Write Professor Pebble's tips on a topic the player keeps missing (FR22).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TipsJob {
+    pub npc: String,
+    pub topic: String,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Job {
     Monster(MonsterJob),
+    Lessons(LessonJob),
+    Tips(TipsJob),
 }
 
 impl Job {
     fn kind(&self) -> RequestKind {
         match self {
             Job::Monster(_) => RequestKind::Monster,
+            Job::Lessons(_) | Job::Tips(_) => RequestKind::Lesson,
         }
     }
 }
@@ -109,8 +131,12 @@ pub struct StudioStatus {
     pub queued: usize,
     /// A job is being worked on (waiting for its turn, or in flight).
     pub working: bool,
-    /// Monsters written to the content dir.
+    /// Files written to the content dir (monsters, packs and tips).
     pub made: u32,
+    /// Of `made`, the lesson packs.
+    pub packs: u32,
+    /// Of `made`, the tips files.
+    pub tips: u32,
     /// Replies the vetting turned down (bad JSON, off-limits words, invalid spec).
     pub rejected: u32,
     /// Calls that failed outright.
@@ -259,7 +285,14 @@ fn work(shared: &Shared, client: &CerebrasClient, dir: &Path, cfg: StudioConfig)
         let mut st = lock(&shared.status);
         st.working = false;
         match result {
-            Ok(_) => st.made += 1,
+            Ok(made) => {
+                st.made += 1;
+                match made {
+                    Made::Monster(_) => {}
+                    Made::Pack { .. } => st.packs += 1,
+                    Made::Tips => st.tips += 1,
+                }
+            }
             Err(Failure::Rejected(e)) => {
                 st.rejected += 1;
                 st.last_error = Some(e);
@@ -279,6 +312,19 @@ enum Failure {
     Call(String),
 }
 
+/// What a finished job produced.
+enum Made {
+    /// A monster, by id.
+    Monster(String),
+    /// A lesson pack: problems kept, and problems turned down.
+    #[allow(dead_code)]
+    Pack {
+        kept: usize,
+        dropped: usize,
+    },
+    Tips,
+}
+
 /// Designs one monster right now and writes it to `dir/monsters/`, on the
 /// caller's thread: the same code path as the studio's worker, for the
 /// offline batch tool (`gen_content --monsters`). Returns the new id.
@@ -287,29 +333,90 @@ pub fn generate_blocking(
     dir: &Path,
     job: &MonsterJob,
 ) -> Result<String, String> {
-    run(&Job::Monster(job.clone()), client, dir, seed(0)).map_err(|f| match f {
-        Failure::Rejected(e) => format!("turned down: {e}"),
-        Failure::Call(e) => format!("the call failed: {e}"),
-    })
+    match run(&Job::Monster(job.clone()), client, dir, seed(0)) {
+        Ok(Made::Monster(id)) => Ok(id),
+        Ok(_) => Err("unexpected result".into()),
+        Err(Failure::Rejected(e)) => Err(format!("turned down: {e}")),
+        Err(Failure::Call(e)) => Err(format!("the call failed: {e}")),
+    }
 }
 
-fn run(job: &Job, client: &CerebrasClient, dir: &Path, seq: u64) -> Result<String, Failure> {
-    let Job::Monster(m) = job;
-    let raw = match client.fake_delay() {
-        // The stand-in model (`JEKO_DEV=fakemodel`): a made-up creature after a pause.
+/// Asks for (or, with the stand-in model, makes up) the reply to a job.
+fn ask(
+    job: &Job,
+    client: &CerebrasClient,
+    prompt: impl FnOnce() -> (String, String),
+    tokens: (u64, u64),
+    fake: impl FnOnce() -> String,
+) -> Result<String, Failure> {
+    match client.fake_delay() {
+        // The stand-in model (`JEKO_DEV=fakemodel`): made-up content after a pause.
         Some(delay) => {
             std::thread::sleep(delay);
-            client.record_fake(job.kind(), 700, 300, delay);
-            fake_monster_json(seed(seq), m.tier, &m.topic)
+            client.record_fake(job.kind(), tokens.0, tokens.1, delay);
+            Ok(fake())
         }
         None => {
-            let (system, user) = prompts::monster_prompt(m.tier, &m.topic, &m.avoid);
+            let (system, user) = prompt();
             client
                 .request_tagged_blocking(job.kind(), &system, &user)
-                .map_err(|e| Failure::Call(e.to_string()))?
+                .map_err(|e| Failure::Call(e.to_string()))
         }
-    };
-    finish_monster(&raw, dir, m.tier, &m.topic).map_err(Failure::Rejected)
+    }
+}
+
+fn run(job: &Job, client: &CerebrasClient, dir: &Path, seq: u64) -> Result<Made, Failure> {
+    match job {
+        Job::Monster(m) => {
+            let raw = ask(
+                job,
+                client,
+                || prompts::monster_prompt(m.tier, &m.topic, &m.avoid),
+                (700, 300),
+                || fake_monster_json(seed(seq), m.tier, &m.topic),
+            )?;
+            finish_monster(&raw, dir, m.tier, &m.topic)
+                .map(Made::Monster)
+                .map_err(Failure::Rejected)
+        }
+        Job::Lessons(l) => {
+            let raw = ask(
+                job,
+                client,
+                || task_gen::build_pack_prompt(&l.topic, l.level, l.n, l.like.as_deref()),
+                (300, 900),
+                || lessons::fake_pack_json(l.n),
+            )?;
+            lessons::finish_pack(&raw, dir, &l.topic, l.level, l.n)
+                .map(|(_, pack)| Made::Pack {
+                    kept: pack.tasks.len(),
+                    dropped: pack.dropped,
+                })
+                .map_err(Failure::Rejected)
+        }
+        Job::Tips(t) => {
+            let raw = ask(
+                job,
+                client,
+                || tips::tips_prompt(&t.topic),
+                (150, 120),
+                || fake_tips_json(&t.topic),
+            )?;
+            tips::finish(&raw, dir, &t.npc, &t.topic)
+                .map(|_| Made::Tips)
+                .map_err(Failure::Rejected)
+        }
+    }
+}
+
+/// Made-up tips for the stand-in model.
+fn fake_tips_json(topic: &str) -> String {
+    json!([
+        format!("Take {topic} one small step at a time."),
+        "Say the problem out loud, then try it with something you can count.",
+        "Check your answer by working it backwards."
+    ])
+    .to_string()
 }
 
 fn seed(seq: u64) -> u64 {

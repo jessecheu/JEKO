@@ -4,55 +4,103 @@
     "problem": "You have 4 apples and pick up 3 more. How many apples do you have?",
     "answer": 7,
     "hint": "Count both groups together.",
-    "difficulty": 1
+    "difficulty": 1,
+    "expression": "4 + 3",
+    "explanation": [
+      "Put the two groups together: 4 + 3.",
+      "4 + 3 = 7.",
+      "So you have 7 apples."
+    ]
   },
   {
     "topic": "subtraction",
     "problem": "There are 9 birds on a fence. 4 fly away. How many are left?",
     "answer": 5,
     "hint": "Start at 9 and count backward 4.",
-    "difficulty": 1
+    "difficulty": 1,
+    "expression": "9 - 4",
+    "explanation": [
+      "Start with the 9 birds.",
+      "4 fly away, so take 4 off: 9 - 4.",
+      "9 - 4 = 5 birds are left."
+    ]
   },
   {
     "topic": "addition",
     "problem": "A basket has 12 oranges and another has 15. How many oranges in total?",
     "answer": 27,
     "hint": "Add the tens together, then the ones.",
-    "difficulty": 2
+    "difficulty": 2,
+    "expression": "12 + 15",
+    "explanation": [
+      "Add the tens: 10 + 10 = 20.",
+      "Add the ones: 2 + 5 = 7.",
+      "20 + 7 = 27 oranges."
+    ]
   },
   {
     "topic": "multiplication",
     "problem": "There are 6 boxes with 4 toys in each. How many toys in total?",
     "answer": 24,
     "hint": "Multiplication is repeated addition — add 4 six times.",
-    "difficulty": 2
+    "difficulty": 2,
+    "expression": "6 * 4",
+    "explanation": [
+      "6 boxes with 4 toys each is 6 groups of 4.",
+      "Add 4 six times, or work out 6 x 4.",
+      "6 x 4 = 24 toys."
+    ]
   },
   {
     "topic": "subtraction",
     "problem": "A farmer had 50 eggs and sold 18. How many eggs are left?",
     "answer": 32,
     "hint": "Subtract the tens first, then adjust for the ones.",
-    "difficulty": 3
+    "difficulty": 3,
+    "expression": "50 - 18",
+    "explanation": [
+      "Take away the tens first: 50 - 10 = 40.",
+      "Now take away the 8 ones: 40 - 8 = 32.",
+      "32 eggs are left."
+    ]
   },
   {
     "topic": "division",
     "problem": "28 candies are shared equally among 7 friends. How many candies does each friend get?",
     "answer": 4,
     "hint": "Think about what number times 7 gives 28.",
-    "difficulty": 3
+    "difficulty": 3,
+    "expression": "28 / 7",
+    "explanation": [
+      "Sharing equally means dividing: 28 / 7.",
+      "Which number times 7 makes 28? 4 x 7 = 28.",
+      "Each friend gets 4 candies."
+    ]
   },
   {
     "topic": "multi-step",
     "problem": "You buy 3 notebooks at 5 coins each and 1 pen for 2 coins. How many coins did you spend?",
     "answer": 17,
     "hint": "Find the cost of the notebooks first, then add the pen.",
-    "difficulty": 4
+    "difficulty": 4,
+    "expression": "3 * 5 + 2",
+    "explanation": [
+      "The notebooks cost 3 x 5 = 15 coins.",
+      "Add the pen: 15 + 2 = 17.",
+      "You spent 17 coins."
+    ]
   },
   {
     "topic": "multi-step",
     "problem": "A garden has 8 rows of 6 flowers. 10 flowers wilt. How many healthy flowers remain?",
     "answer": 38,
     "hint": "Multiply rows by flowers per row first, then subtract.",
-    "difficulty": 5
+    "difficulty": 5,
+    "expression": "8 * 6 - 10",
+    "explanation": [
+      "Count all the flowers: 8 rows of 6 is 8 x 6 = 48.",
+      "10 wilt, so take 10 away: 48 - 10.",
+      "38 healthy flowers remain."
+    ]
   }
 ]

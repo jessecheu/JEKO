@@ -146,7 +146,7 @@ its "help" is animation. It never changes XP, speed, answers or battle outcomes.
 (see [Completed](#completed)), each on a provisional answer so the work could
 land; this entry keeps the questions so they are answered, not settled silently.
 
-## FR16. Confirm the provisional answers from FR1–FR3, FR5–FR15, FR20, FR21, FR24, FR26, FR31 and FR32
+## FR16. Confirm the provisional answers from FR1–FR3, FR5–FR15, FR20–FR22, FR24, FR26, FR31 and FR32
 
 **Status.** **Waiting on the owner.** Every default below is live in the code.
 Tick an item once the owner confirms it, or replace it with the owner's answer
@@ -254,6 +254,20 @@ recorded here.
   session, one job at a time, three unseen monsters kept in stock for the tier ahead.*
   Do the seven built-ins move into specs? *No, they stay hand-coded.*
 
+- [ ] **FR22** Education content. Math only, or other subjects? *Math only, numeric
+  answers (a new answer type would be needed otherwise; FR3's open question).* Show the
+  explanation on every wrong answer, or only after two misses? *On every wrong answer, when
+  the question has steps (the offline bank's do).* Are generated field-guide facts shown as
+  generated? *Spec monsters' facts are shown as their file says (hand-written ones are
+  reviewed by whoever commits them; a studio monster's fact is vetted by the blocklist
+  only); the seven built-ins' are hand-written.* Does per-topic accuracy persist between
+  runs? *No: it lives in memory for the run. The field guide lasts for the session and isn't
+  saved either. Persisting learner data is the owner's privacy decision, with FR14.* Other
+  provisional numbers: a topic is weak below 75% after at least 2 tries; a pack is 8
+  problems (4 for similar practice) and is asked for when fewer than 3 questions are ready
+  at the player's level; the last 4 misses are kept; lesson jobs and tips share the studio's
+  6 requests a minute and 60,000 tokens.
+
 - [ ] **FR32** Asking ahead. Level-ups? *Take the exact difficulty, else one below, else
   ask live.* Does the buffer survive a new run? *Yes.* Wasted calls? *About 1.5× the
   calls is accepted; 20 look-ahead requests a minute at most.* The soft deadline?
@@ -306,42 +320,14 @@ HUD. Give them a use (e.g. a shop in the FR15 hub, or extra hearts).
 **Goal:** use Cerebras' fast inference (Kimi K3.1, `CEREBRAS_MODEL`) for more than
 one question at a time. While the player walks, a background worker writes **new
 monsters** and **education content** ahead of need, and the running game picks them
-up through **hot reload**. Today the model is used once per flask or battle turn,
-in the foreground: the player stands still while it answers (`Game::update`'s busy
-check). Every monster is Rust code (`MonsterKind`, `draw_pinchling` … in
-`src/game/monster.rs`). FR21 makes monsters data that can be generated and reloaded.
-FR22 uses the same worker to generate lessons ahead of time, so questions are ready
-when needed and teach more than a bare number. FR32 comes first and needs neither: it
-requests questions before the player reaches a flask or monster and overlaps them with
-the battle's own animations. It also sets one priority order for every model call, so
-the studio's background work never delays a question.
-
-**Design in one picture** *(suggested, not decided)*:
-
-```
-                       ┌──────────── content::Studio (one long-lived thread) ───────────┐
- Game::update ──jobs──▶│ queue: GenMonster{tier,theme} · GenLessons{topic,level,n} · … │
-  (look-ahead:         │ runs only when no live question is Loading (live always wins)   │
-   zones/levels the    │ CerebrasClient::request_raw_blocking ─▶ parse ─▶ validate/clamp │
-   player will reach)  └───────────────────────────────┬───────────────────────────────┘
-                                                       │ atomic write (tmp + rename)
-                                                       ▼
-                            content dir: monsters/<id>.json · lessons/<topic>-<lvl>.json
-                                                       │ ◀── also hand-edited by a person
-                                    content::Watcher (polls mtimes ~1 s, own thread)
-                                                       │ mpsc: ContentEvent::{Upserted, Removed, Invalid}
-                                                       ▼
- Game::update drains with try_recv ─▶ Roster (Arc<MonsterSpec>) · LessonPool ─▶ encounters, battles, flasks
-```
-
-Rules this design keeps: the frame never waits (invariant 1), and the player
-doesn't either (FR32: everything is ready before the encounter, and the studio takes
-the lowest lane). Everything falls back
-to the built-in roster and `assets/tasks_fallback.json` (invariant 2). The model never
-sets a gameplay number directly (invariant 6). `content` stays plain Rust with no
-macroquad or egui, and only `game` draws a spec (invariant 10). One part relaxes
-invariant 3, which the owner settled by freezing the roster at the start of each run
-(FR21, built).
+up through **hot reload**. FR21 (monsters as data, the studio, spec monsters on the road)
+and FR22 (checked lesson packs, explanations, themed battles, adaptive practice, the
+field guide, Pebble's tips) are built, and are in *Completed* below; the design as built is in
+[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) (§5 and §8). What's left here is FR32's
+last check and one optional refactor. The model's replies have never been seen against
+the real model in the sandbox these were built in (no network), so the first thing to do with
+a key is `make gen-monsters N=4`, play a few flasks and look at what the studio wrote in
+`content/lessons/` and `content/monsters/`.
 
 ## FR32. No waiting at an encounter: get questions and monsters ready before the player arrives
 
@@ -511,79 +497,6 @@ gets there. The waits come from the timing, not from the model being slow.
   and the monster stock remain.)*
 
 ---
-
-## FR22. Background-generated education content (lesson packs, explanations, field guide)
-
-**Status.** **Not started.** Designed only.
-
-**Depends on:** [FR21, FR32] _(reuses FR21's `Studio`, content dir and watcher, and
-fills FR32's `QuestionBuffer` instead of keeping a pool of its own; the themed questions need FR21's `MonsterSpec.theme`; touches FR3's open question on non-math subjects)_
-
-**Motivation.** Each question today is a single live call, made while the player
-stands still and waits. All it teaches is a hint and right or wrong. Fast inference
-lets the game generate **ahead of time** and **in bulk**. The flask can then open
-instantly, a wrong answer can come with a worked explanation, and what the player
-gets wrong can steer what gets generated next.
-
-**Proposed approach.** *(suggested, not decided)*
-
-- **Lesson packs, prefetched.** A `GenLessons { topic, level, n }` job asks for a
-  batch (e.g. 8) of problems for one topic and difficulty. The studio writes them to
-  `lessons/<topic>-<level>.json`, and the watcher loads them into FR32's
-  `QuestionBuffer`, keyed by topic as well as difficulty. `Game::request_task` (still
-  the only door, invariant 6) already takes from that buffer first, then asks live,
-  then uses the fallback bank (FR32). Packs add bulk, verified answers, explanations
-  and topics. FR32's look-ahead already makes the single-question version instant, so
-  the studio refills a pack when FR32's planner reports a topic running low.
-- **Answers are checked before a child sees them.** Each generated problem also
-  carries an `expression` (e.g. `"(12 + 8) / 4"`). A tiny pure evaluator in
-  `content` (numbers, `+ − × ÷`, parentheses) computes it, and the problem is dropped
-  if it doesn't equal `answer`. A wrong answer key is the worst failure an
-  education game can have. Unit-test the evaluator.
-- **Explanations.** Add `explanation: Vec<String>` (2–4 short steps) to `MathTask`
-  (`#[serde(default)]`, so the fallback bank and live prompt keep working). On a wrong
-  answer, `task_panel` shows the steps before the cooldown ends. In a battle, they
-  show during `MonsterAttack`.
-- **Themed battles.** A generated monster's `theme` (FR21) goes into the question
-  prompt. A fraction-loving jellyfish asks about fractions, and a tide monster asks
-  about tide times, still with numeric answers.
-- **Adaptive practice.** `Progression` records accuracy per `topic` as plain counters,
-  with no rendering. The studio's look-ahead tilts lesson jobs towards the player's
-  weakest topics. A missed problem comes back later as a *similar* one: a
-  `GenLessons` job with `like: <problem>`.
-- **The field guide.** Beating a monster unlocks its card: name, blurb and `fact`.
-  The prompt asks for well-known, conservative facts about the real animal or
-  phenomenon it's based on, such as real hermit crabs trading shells. A new
-  `ui/field_guide_panel.rs` (a view, invariant 5) is opened from settings or a key.
-- **Pebble's tips.** A `GenDialogue { npc, context }` job (the runtime version of
-  `gen_content`) writes tips for Professor Pebble about topics the player missed this
-  run, hot-reloaded into the dialogue bank.
-
-**Open questions.**
-
-- Math only, or other subjects (science facts in the field guide, reading, geography)?
-  Anything that isn't a number needs a new answer type such as multiple choice
-  (FR3's open question and *Known limits* in the architecture doc).
-- Show the explanation on every wrong answer, or only after two misses on the same topic?
-- Are field-guide facts shown as generated, or only after a person reviews them
-  (committed via `gen_content`)?
-- Does per-topic accuracy persist between runs? It's the first piece of learner data
-  the game would keep, which needs a privacy decision as well as a code one.
-
-**Acceptance criteria.**
-
-- [ ] With an API key, most flasks open from a prefetched pack in FR32's buffer, with
-  no visible wait. FR32's single prefetches, the live call and the fallback bank still
-  cover an empty pack or no key.
-- [ ] Every generated problem's `answer` is verified by evaluating its `expression`,
-  and failures are dropped (unit-tested).
-- [ ] A wrong answer shows a short worked explanation, and the fallback bank still
-  loads without that field.
-- [ ] A generated monster's battle asks questions on its theme.
-- [ ] Per-topic accuracy steers which lessons the studio generates next.
-- [ ] Beating a monster adds its card to a field-guide panel.
-- [ ] `docs/ARCHITECTURE.md` §5 (the pool before the live call, explanations,
-  verification), §10 (the new panel) and §11 (the content dir) are updated.
 
 ---
 
@@ -1427,6 +1340,32 @@ monsters for tomorrow").
 
 When an entry is fully built, delete it above and add one line here, newest
 first: `FR<n> — title — date — why it closed (commit)`. Its number stays retired.
+
+- FR22 — Background-generated education content (lesson packs, explanations, field guide) —
+  2026-11-21 — built in one pass on FR21's studio and FR32's buffer. **Checked answers:**
+  `llm/expr.rs` (a small pure evaluator, 5 tests with hostile input) and `verify`: a
+  generated problem is dropped unless its `answer` equals its `expression`, for lesson
+  packs, look-ahead questions and live ones, and the compiled-in bank was given expressions
+  and explanations and is tested the same way. **Packs:** `Job::Lessons` writes
+  `lessons/<topic>-<level>.json` (verified problems only, never overwriting); the watcher
+  loads them into the question buffer (`push_unique`), where `request_task` takes them;
+  `plan_lesson` asks when the level's buffer runs thin. **Explanations:** `MathTask`
+  gained `explanation` and `expression` (both defaulted), and a wrong answer shows a worked
+  card beside the next question. **Themed battles:** a spec monster's `theme.topic` goes into
+  the question (strict in the buffer, in the live prompt and for the bank). **Adaptive
+  practice:** `Progression` counts accuracy per topic and remembers the last four misses;
+  the studio aims packs at the weakest topic and writes similar practice for a missed
+  problem. **Field guide:** `game/field_guide.rs`, `ui/field_guide_panel.rs` (G or settings),
+  a card per built-in (hand-written blurb and true fact) and per spec, unlocked by a win.
+  **Pebble's tips:** `Job::Tips` writes `tips/<topic>.json` for a topic that stays weak, and
+  Pebble says them in the hub. Tests for each piece; checked by screenshot (the explanation
+  card, the field guide) and offline end to end with the stand-in model (wrong answers in a
+  themed battle produced similar-practice packs, a tips file, and Pebble's queued tips).
+  **Not checked:** any of the new prompts against the real model (the sandbox had no
+  network), or a flask opening from a real pack without a wait. The live prompt now asks for an
+  `expression`, and a reply without a checkable one falls back to the bank, so a model that
+  ignores the instruction would turn every question into a bank question. Provisional
+  answers to its open questions are in FR16.
 
 - FR21 — Generated monsters, hot-reloaded into the running game — 2026-11-21 — built in
   three steps. A: monsters as data (`MonsterSpec`, `parse` and its hostile-input tests,

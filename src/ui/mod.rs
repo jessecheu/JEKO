@@ -1,4 +1,5 @@
 pub mod dialogue_panel;
+pub mod field_guide_panel;
 pub mod game_over_panel;
 pub mod goalpost_panel;
 pub mod hud;

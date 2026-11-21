@@ -36,10 +36,13 @@ src/
     mod.rs                content events, the roster of loaded spec monsters, where the content dir is (JEKO_CONTENT_DIR)
     monster_spec.rs       a monster as JSON data: parse + validate (clamped, unit-tested), stats from a tier table
     watcher.rs            background thread that rescans content/monsters/*.json and hot-reloads edits
-    studio.rs             background thread that has the model design new monsters and writes them to content/monsters/gen-*.json
+    studio.rs             background thread that has the model design new monsters, write lesson packs and tips, into the content dir
+    lessons.rs            lesson packs: practice problems whose answers are verified before they load
+    tips.rs               Professor Pebble's tips on topics the player keeps missing
     prompts.rs            what the studio asks the model for
   llm/
     buffer.rs             ready-question buffer, the pure look-ahead planner, and the wait readout
+    expr.rs               a tiny arithmetic evaluator that checks a generated problem's answer against its own sum
     cerebras_client.rs    OpenAI-compatible chat-completions call to Cerebras, async wrapper
     task_gen.rs           prompt templates + JSON extraction helpers
     usage.rs              per-request token counts + tokens/sec, session totals (feeds the token panel)
@@ -60,7 +63,8 @@ src/
     battle.rs             wild-encounter battle: transition, phases, battle-view drawing (moonlit clearing)
     dialogue.rs           NPC dialogue with typewriter reveal (Professor Pebble in the hub)
     task_trigger.rs        state machine: Idle -> Loading -> Active -> Resolved
-    prefetch.rs            looks up the road and asks for questions ahead of need; soft deadlines
+    prefetch.rs            looks up the road and asks for questions ahead of need; soft deadlines; picks the next lesson pack
+    field_guide.rs         the field guide's cards, unlocked by beating monsters
     mod.rs                 ties player/world/progression/trigger together
   progression/
     mod.rs                 XP, levels, streak multiplier, upgrade unlocking
@@ -68,6 +72,7 @@ src/
   ui/
     hud.rs                  progress bar + streak + upgrade list + unlock toast
     goalpost_panel.rs        the goalpost badge at the top centre: a circle that unrolls into "name · N m"
+    field_guide_panel.rs     the field guide (G): a card per monster, filled in once beaten
     settings_panel.rs        settings modal (O): panel toggles, reduce flashing, controls reference
     game_over_panel.rs       Game Over screen: run stats, try again
     dialogue_panel.rs        NPC dialogue box
@@ -77,6 +82,8 @@ src/
     gen_content.rs          offline batch generator for NPC dialogue (not called at runtime)
 content/
   monsters/*.json          monsters defined as data, loaded at runtime and hot-reloaded while the game runs
+  lessons/*.json           lesson packs the studio writes (a per-machine cache; created on first use)
+  tips/*.json              Professor Pebble's tips the studio writes (created on first use)
 assets/
   tasks_fallback.json      hand-written fallback math tasks (used if no API key, or the live call fails)
   dialogue.json            NPC flavor lines; Professor Pebble says one after the hub tutorial. Regenerate with gen_content
@@ -119,7 +126,7 @@ hunting required.
    (clicking the field and Submit still works). **Space** jumps,
    **Ctrl** rolls (3 in a row, then a short wait) and **F** shoots an arrow from your bow (all cosmetic for
    now; in a battle, a right answer is shown as a bow shot). **P** pauses,
-   and **O** opens settings
+   **G** opens the field guide (a card for each monster you've beaten) and **O** opens settings
    (O or Esc closes them).
    The run starts in Professor Pebble's camp at the forest edge (press E by
    Professor Pebble for a quick tutorial); walk north through the iron gate

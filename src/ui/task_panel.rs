@@ -1,4 +1,5 @@
 use crate::game::task_trigger::TriggerState;
+use crate::game::Explain;
 use egui_macroquad::egui;
 
 pub enum TaskPanelEvent {
@@ -13,6 +14,7 @@ pub fn draw(
     input_buffer: &mut String,
     focus_answer: &mut bool,
     in_battle: bool,
+    explain: Option<&Explain>,
 ) -> Option<TaskPanelEvent> {
     let mut event = None;
     // Beside the road; under the fighters in a battle.
@@ -91,5 +93,34 @@ pub fn draw(
         }
     }
 
+    if let Some(e) = explain {
+        draw_explanation(ctx, e, in_battle);
+    }
+
     event
+}
+
+/// How a wrong answer works out (FR22): the problem, then numbered steps.
+/// Sits clear of the question window and fades out as its time runs low.
+fn draw_explanation(ctx: &egui::Context, e: &Explain, in_battle: bool) {
+    let (align, offset) = if in_battle {
+        (egui::Align2::CENTER_BOTTOM, egui::vec2(0.0, -150.0))
+    } else {
+        (egui::Align2::LEFT_CENTER, egui::vec2(24.0, 150.0))
+    };
+    let fade = (e.left / 0.6).clamp(0.0, 1.0);
+    egui::Area::new(egui::Id::new("explanation"))
+        .anchor(align, offset)
+        .interactable(false)
+        .show(ctx, |ui| {
+            ui.set_opacity(fade);
+            egui::Frame::window(ui.style()).show(ui, |ui| {
+                ui.set_max_width(380.0);
+                ui.label(egui::RichText::new("How that works").strong());
+                ui.label(egui::RichText::new(&e.problem).italics().weak().small());
+                for (i, step) in e.steps.iter().enumerate() {
+                    ui.label(format!("{}. {step}", i + 1));
+                }
+            });
+        });
 }

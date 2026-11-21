@@ -8,6 +8,9 @@
 //! Prefetching only fills the buffer. It never starts a question: that's
 //! `Game::request_task`, still the only door (invariant 6).
 
+use crate::content::lessons::normalize_topic;
+use crate::content::prompts::topics_for_level;
+use crate::content::studio::LessonJob;
 use crate::game::world::{GoalKind, Upcoming};
 use crate::llm::buffer::{plan_prefetch, PrefetchCaps, QuestionBuffer, Source, LEVELS};
 use crate::llm::cerebras_client::CerebrasClient;
@@ -164,6 +167,48 @@ impl Prefetch {
     }
 }
 
+/// Ready questions at the player's level below which the studio writes a lesson pack.
+pub const LESSON_LOW: usize = 3;
+/// Problems asked for in a pack, and in a "similar practice" pack.
+pub const LESSON_N: usize = 8;
+pub const LIKE_N: usize = 4;
+
+/// Which lesson pack, if any, the studio should write next (FR22). Pure.
+///
+/// A problem the player missed comes first: a small pack of similar ones at
+/// its level. Otherwise, when fewer than `LESSON_LOW` questions are ready at
+/// the player's `level`, a full pack on the topic they're weakest at, or, if
+/// nothing is weak yet, the next topic in the level's rotation.
+pub fn plan_lesson(
+    level: u32,
+    ready_at_level: usize,
+    weakest: Option<&str>,
+    missed: Option<&MathTask>,
+    rotation: usize,
+) -> Option<LessonJob> {
+    if let Some(m) = missed {
+        return Some(LessonJob {
+            topic: normalize_topic(&m.topic),
+            level: m.difficulty.clamp(1, LEVELS as u32),
+            n: LIKE_N,
+            like: Some(m.problem.clone()),
+        });
+    }
+    if ready_at_level >= LESSON_LOW {
+        return None;
+    }
+    let topics = topics_for_level(level);
+    let topic = weakest
+        .map(str::to_string)
+        .unwrap_or_else(|| topics[rotation % topics.len()].to_string());
+    Some(LessonJob {
+        topic,
+        level: level.clamp(1, LEVELS as u32),
+        n: LESSON_N,
+        like: None,
+    })
+}
+
 /// What the road ahead will need, nearest first, as `(difficulty, how many)`:
 /// a flask wants one question at the player's level, and a monster wants one
 /// per hit at `level + its bias`, plus a spare for a miss.
@@ -218,6 +263,51 @@ mod tests {
         ];
         // Level 2: the flask at 2, the patch at 3, the boss clamped to 5.
         assert_eq!(demand(&ups, 2), vec![(2, 1), (3, 3), (5, 6)]);
+    }
+
+    fn missed(topic: &str, problem: &str, difficulty: u32) -> MathTask {
+        MathTask {
+            topic: topic.into(),
+            problem: problem.into(),
+            difficulty,
+            ..task()
+        }
+    }
+
+    #[test]
+    fn a_missed_problem_comes_back_as_similar_practice_first() {
+        let m = missed("Fractions", "What is 1/2 of 8?", 3);
+        let job = plan_lesson(2, 99, Some("division"), Some(&m), 0).unwrap();
+        assert_eq!(
+            job,
+            LessonJob {
+                topic: "fractions".into(),
+                level: 3,
+                n: LIKE_N,
+                like: Some("What is 1/2 of 8?".into())
+            }
+        );
+    }
+
+    #[test]
+    fn a_low_buffer_asks_for_the_weakest_topic_else_the_rotation() {
+        let job = plan_lesson(3, 1, Some("division"), None, 7).unwrap();
+        assert_eq!(
+            (job.topic.as_str(), job.level, job.n),
+            ("division", 3, LESSON_N)
+        );
+        assert_eq!(job.like, None);
+        let a = plan_lesson(3, 0, None, None, 0).unwrap();
+        let b = plan_lesson(3, 0, None, None, 1).unwrap();
+        assert_ne!(a.topic, b.topic, "the rotation moves on");
+        assert!(topics_for_level(3).contains(&a.topic.as_str()));
+        assert_eq!(plan_lesson(9, 0, None, None, 0).unwrap().level, 5);
+    }
+
+    #[test]
+    fn a_stocked_buffer_needs_no_pack() {
+        assert_eq!(plan_lesson(2, LESSON_LOW, Some("division"), None, 0), None);
+        assert!(plan_lesson(2, LESSON_LOW - 1, None, None, 0).is_some());
     }
 
     #[test]

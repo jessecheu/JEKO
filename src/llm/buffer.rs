@@ -39,25 +39,48 @@ impl QuestionBuffer {
         self.len() == 0
     }
 
+    /// Like `push`, but not if a question with the same text is already
+    /// waiting, so reloading a lesson pack file doesn't double its questions.
+    /// Returns whether it was added.
+    pub fn push_unique(&mut self, difficulty: u32, task: MathTask) -> bool {
+        if self
+            .slots
+            .iter()
+            .flatten()
+            .any(|t| t.problem == task.problem)
+        {
+            return false;
+        }
+        self.push(difficulty, task);
+        true
+    }
+
     /// A ready question for `difficulty`: the exact one if there is one, else
     /// one a level below (a question a level too easy is better than a wait,
-    /// and a level-up can leave the buffer one behind). `topic` prefers a
-    /// matching question within the level (FR22's themed battles); it never
-    /// makes the call fail.
+    /// and a level-up can leave the buffer one behind). With a `topic` (a
+    /// monster's theme, FR22) only a question on that topic will do, so a
+    /// fraction-loving jellyfish never asks about eggs; no match means `None`
+    /// and the caller asks live with the topic in the prompt.
     pub fn take(&mut self, difficulty: u32, topic: Option<&str>) -> Option<MathTask> {
         let d = slot(difficulty);
         let levels = [Some(d), d.checked_sub(1)];
         for i in levels.into_iter().flatten() {
             let q = &mut self.slots[i];
-            let at = topic
-                .and_then(|t| q.iter().position(|task| task.topic.eq_ignore_ascii_case(t)))
-                .or(if q.is_empty() { None } else { Some(0) });
+            let at = match topic {
+                Some(t) => q.iter().position(|task| same_topic(&task.topic, t)),
+                None => (!q.is_empty()).then_some(0),
+            };
             if let Some(task) = at.and_then(|at| q.remove(at)) {
                 return Some(task);
             }
         }
         None
     }
+}
+
+/// Topics match ignoring case and surrounding space.
+pub fn same_topic(a: &str, b: &str) -> bool {
+    a.trim().eq_ignore_ascii_case(b.trim())
 }
 
 /// The limits on look-ahead requests.
@@ -230,12 +253,25 @@ mod tests {
     }
 
     #[test]
-    fn take_prefers_the_topic_within_a_level_but_never_fails_for_it() {
+    fn a_topic_asks_for_that_topic_only() {
         let mut b = QuestionBuffer::default();
         b.push(1, task("addition", 1));
         b.push(1, task("Fractions", 1));
-        assert_eq!(b.take(1, Some("fractions")).unwrap().topic, "Fractions");
-        assert_eq!(b.take(1, Some("fractions")).unwrap().topic, "addition");
+        assert_eq!(b.take(1, Some(" fractions ")).unwrap().topic, "Fractions");
+        assert!(
+            b.take(1, Some("fractions")).is_none(),
+            "no other topic will do"
+        );
+        assert_eq!(b.take(1, None).unwrap().topic, "addition");
+    }
+
+    #[test]
+    fn the_same_question_is_not_added_twice() {
+        let mut b = QuestionBuffer::default();
+        assert!(b.push_unique(1, task("a", 1)));
+        assert!(!b.push_unique(1, task("a", 1)));
+        assert!(!b.push_unique(3, task("a", 3)), "any level");
+        assert_eq!(b.len(), 1);
     }
 
     #[test]

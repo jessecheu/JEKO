@@ -1,6 +1,6 @@
 use crate::config::Config;
 use crate::llm::usage::{RequestKind, RequestUsage, TokenStats};
-use crate::llm::{fallback_bank, task_gen, MathTask};
+use crate::llm::{expr, fallback_bank, task_gen, MathTask};
 use rand::seq::SliceRandom;
 use serde_json::{json, Value};
 use std::sync::mpsc::{self, Receiver};
@@ -80,26 +80,31 @@ impl CerebrasClient {
     /// not a real executor that can drive arbitrary futures — so the
     /// network call runs on a plain OS thread instead of being awaited
     /// in-frame.
-    pub fn request_task_async(&self, difficulty: u32) -> Receiver<anyhow::Result<MathTask>> {
-        self.request_task_as(difficulty, RequestKind::Question)
+    pub fn request_task_async(
+        &self,
+        difficulty: u32,
+        topic: Option<String>,
+    ) -> Receiver<anyhow::Result<MathTask>> {
+        self.request_task_as(difficulty, topic, RequestKind::Question)
     }
 
     /// Like `request_task_async`, but tagged as a look-ahead request (FR32),
     /// so the token panel can tell it from a question the player waits on.
     pub fn prefetch_task_async(&self, difficulty: u32) -> Receiver<anyhow::Result<MathTask>> {
-        self.request_task_as(difficulty, RequestKind::Prefetch)
+        self.request_task_as(difficulty, None, RequestKind::Prefetch)
     }
 
     fn request_task_as(
         &self,
         difficulty: u32,
+        topic: Option<String>,
         kind: RequestKind,
     ) -> Receiver<anyhow::Result<MathTask>> {
         let (tx, rx) = mpsc::channel();
         let client = self.clone();
 
         std::thread::spawn(move || {
-            let result = client.request_task_blocking(difficulty, kind);
+            let result = client.request_task_blocking(difficulty, topic.as_deref(), kind);
             let _ = tx.send(result);
         });
 
@@ -109,18 +114,27 @@ impl CerebrasClient {
     fn request_task_blocking(
         &self,
         difficulty: u32,
+        topic: Option<&str>,
         kind: RequestKind,
     ) -> anyhow::Result<MathTask> {
         if let Some(delay) = self.fake_delay {
-            return Ok(self.fake_task(difficulty, kind, delay));
+            return Ok(self.fake_task(difficulty, topic, kind, delay));
         }
-        let (system, user) = task_gen::build_prompt(difficulty);
+        let (system, user) = task_gen::build_prompt(difficulty, topic);
         let content = self.request_tagged_blocking(kind, &system, &user)?;
 
         let json_slice = task_gen::extract_json_object(&content)
             .ok_or_else(|| anyhow::anyhow!("no JSON object in model response: {content}"))?;
 
-        Ok(serde_json::from_str(json_slice)?)
+        let mut task: MathTask = serde_json::from_str(json_slice)?;
+        // Nothing the model writes reaches a child with an answer key that
+        // doesn't match its own sum: a failure here falls back to the bank.
+        expr::verify(&task)
+            .map_err(|why| anyhow::anyhow!("rejected the model's problem: {why:?}"))?;
+        if let Some(topic) = topic {
+            task.topic = topic.to_string();
+        }
+        Ok(task)
     }
 
     /// Lower-level call shared by live math-task generation and the
@@ -171,7 +185,13 @@ impl CerebrasClient {
 
     /// The stand-in model: waits, then answers from the offline bank with a
     /// made-up token count, so the panel has something to show.
-    fn fake_task(&self, difficulty: u32, kind: RequestKind, delay: Duration) -> MathTask {
+    fn fake_task(
+        &self,
+        difficulty: u32,
+        topic: Option<&str>,
+        kind: RequestKind,
+        delay: Duration,
+    ) -> MathTask {
         let started = Instant::now();
         std::thread::sleep(delay);
         let bank = fallback_bank();
@@ -180,6 +200,9 @@ impl CerebrasClient {
             .cloned()
             .expect("fallback task bank must not be empty");
         task.difficulty = difficulty;
+        if let Some(topic) = topic {
+            task.topic = topic.to_string();
+        }
         self.record_fake(kind, 140, 60, started.elapsed());
         task
     }

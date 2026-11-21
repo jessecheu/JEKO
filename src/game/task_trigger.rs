@@ -41,6 +41,19 @@ impl TriggerState {
     }
 }
 
+/// A bank question on `topic` if the bank has one, else any (the bank is small
+/// and offline play must always have a question).
+pub fn pick_fallback_for(bank: &[MathTask], topic: Option<&str>) -> MathTask {
+    let on_topic: Vec<&MathTask> = bank
+        .iter()
+        .filter(|t| topic.is_some_and(|p| crate::llm::buffer::same_topic(&t.topic, p)))
+        .collect();
+    match on_topic.choose(&mut rand::thread_rng()) {
+        Some(t) => (*t).clone(),
+        None => pick_fallback(bank),
+    }
+}
+
 pub fn pick_fallback(bank: &[MathTask]) -> MathTask {
     bank.choose(&mut rand::thread_rng())
         .cloned()

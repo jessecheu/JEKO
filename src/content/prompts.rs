@@ -72,6 +72,22 @@ nothing scary beyond a spooky-cute look, nothing violent, no weapons, no real pe
     (system, user)
 }
 
+/// The topics a lesson pack rotates through for a player at `level`, when
+/// nothing in particular needs practice.
+pub fn topics_for_level(level: u32) -> &'static [&'static str] {
+    match level {
+        0..=1 => &["addition", "subtraction"],
+        2 => &["addition", "subtraction", "multiplication", "place value"],
+        3 => &["multiplication", "division", "fractions", "word problems"],
+        _ => &[
+            "fractions",
+            "division",
+            "perimeter and area",
+            "word problems",
+        ],
+    }
+}
+
 /// The maths topics a monster can lean on, in rough order of difficulty.
 pub const TOPICS: &[&str] = &[
     "addition",
@@ -140,6 +156,17 @@ mod tests {
         assert!(user.contains("Mossmunch, Inkwisp"));
         let (_, plain) = monster_prompt(1, "addition", &[]);
         assert!(!plain.contains("Do not reuse"));
+    }
+
+    #[test]
+    fn every_level_has_topics_and_they_fit_a_theme() {
+        for level in 0..=9 {
+            let topics = topics_for_level(level);
+            assert!(!topics.is_empty());
+            assert!(topics
+                .iter()
+                .all(|t| t.len() <= crate::content::monster_spec::THEME_MAX));
+        }
     }
 
     #[test]

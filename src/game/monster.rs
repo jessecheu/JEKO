@@ -59,6 +59,18 @@ impl Species {
             Species::Spec(s) => &s.name,
         }
     }
+
+    /// The maths topic its questions lean on (FR22): a spec monster's
+    /// `theme`, when it's a maths one. The built-ins ask about anything.
+    pub fn topic(&self) -> Option<String> {
+        let Species::Spec(s) = self else {
+            return None;
+        };
+        let subject = s.theme.subject.trim().to_lowercase();
+        let topic = crate::content::lessons::normalize_topic(&s.theme.topic);
+        (!topic.is_empty() && (subject.is_empty() || subject == "math" || subject == "maths"))
+            .then_some(topic)
+    }
 }
 
 impl MonsterKind {
@@ -81,6 +93,41 @@ impl MonsterKind {
             MonsterKind::GullBandit => "Gull Bandit",
             MonsterKind::DuneWyrm => "Dune Wyrm",
             MonsterKind::TideTitan => "Tide Titan",
+        }
+    }
+
+    /// The field guide card's text (FR22): a one-line blurb and a true,
+    /// well-known fact about the real animal or thing it's drawn from.
+    pub fn card(self) -> (&'static str, &'static str) {
+        match self {
+            MonsterKind::Pinchling => (
+                "A snappy little crab that scuttles out of the ferns.",
+                "Crabs walk sideways because of the way their legs bend.",
+            ),
+            MonsterKind::Jellyglow => (
+                "A drifting jellyfish that glows in the dark.",
+                "Jellyfish have no brain, no heart and no bones.",
+            ),
+            MonsterKind::Puffspike => (
+                "A grumpy pufferfish that puffs up when it's wrong-footed.",
+                "A pufferfish puffs up by gulping water, which makes it hard to swallow.",
+            ),
+            MonsterKind::CocoKnight => (
+                "A coconut in a helmet, guarding the road with a rattle.",
+                "Coconuts float, so palm trees can spread to far-away shores.",
+            ),
+            MonsterKind::GullBandit => (
+                "A cheeky seagull with an eye for hats.",
+                "Gulls can drink sea water: they get rid of the extra salt through their beaks.",
+            ),
+            MonsterKind::DuneWyrm => (
+                "A long sand worm that rises out of the dunes.",
+                "Sand dunes creep slowly downwind as the wind blows the grains along.",
+            ),
+            MonsterKind::TideTitan => (
+                "The huge guardian of every 500 m, rising with the tide.",
+                "Tides rise and fall because of the pull of the Moon.",
+            ),
         }
     }
 

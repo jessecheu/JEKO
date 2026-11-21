@@ -3,9 +3,11 @@
 //! hot-reloaded by a background watcher. Plain Rust with no macroquad or
 //! egui, like `config` and `llm`. `game` draws and fights what's here.
 
+pub mod lessons;
 pub mod monster_spec;
 pub mod prompts;
 pub mod studio;
+pub mod tips;
 pub mod watcher;
 
 pub use monster_spec::{MonsterInfo, MonsterSpec};
@@ -23,6 +25,14 @@ pub enum ContentEvent {
         spec: Arc<MonsterSpec>,
         reloaded: bool,
     },
+    /// A lesson pack loaded (FR22): verified problems for the question
+    /// buffer. `reloaded` is true when the file was edited while the game ran.
+    Lessons {
+        pack: std::sync::Arc<lessons::Pack>,
+        reloaded: bool,
+    },
+    /// A file of tips for an NPC loaded (FR22).
+    Tips(std::sync::Arc<tips::Tips>),
     /// The file for `id` was deleted.
     Removed { id: String },
     /// A file failed to parse or validate. Whatever loaded from it before
@@ -48,7 +58,9 @@ impl Roster {
             ContentEvent::Removed { id } => {
                 self.monsters.remove(id);
             }
-            ContentEvent::Invalid { .. } => {}
+            // Lessons and tips go to other places in the game, not the roster.
+            ContentEvent::Lessons { .. } | ContentEvent::Tips(_) | ContentEvent::Invalid { .. } => {
+            }
         }
     }
 

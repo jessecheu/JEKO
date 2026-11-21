@@ -6,3 +6,7 @@
 # Monsters the studio designs (FR21): a per-machine cache. Rename one (drop the
 # "gen-" prefix and fix its id) to keep it and commit it.
 /content/monsters/gen-*.json
+
+# Lesson packs and Pebble's tips the studio writes (FR22): per-machine caches too.
+/content/lessons/
+/content/tips/

@@ -3,6 +3,7 @@ pub mod bow;
 pub mod curse;
 pub mod decor;
 pub mod dialogue;
+pub mod field_guide;
 pub mod flicker;
 pub mod gfx;
 pub mod goalpost;
@@ -16,7 +17,7 @@ pub mod skills;
 pub mod task_trigger;
 pub mod world;
 
-use crate::content::studio::{self, MonsterJob, Studio, StudioStatus};
+use crate::content::studio::{self, MonsterJob, Studio, StudioStatus, TipsJob};
 use crate::content::{ContentEvent, Roster};
 use crate::llm::buffer::{Source, WaitStats};
 use crate::llm::cerebras_client::CerebrasClient;
@@ -54,6 +55,8 @@ pub const INTERACT_KEY: KeyCode = KeyCode::E;
 pub const PAUSE_KEY: KeyCode = KeyCode::P;
 /// Opens and closes the settings modal (FR7); Esc also closes it.
 pub const SETTINGS_KEY: KeyCode = KeyCode::O;
+/// Opens and closes the field guide (FR22); Esc also closes it.
+pub const GUIDE_KEY: KeyCode = KeyCode::G;
 
 /// Player-facing switches, edited in the settings modal (FR7) and read by
 /// the systems they control. Not saved between runs yet.
@@ -105,6 +108,10 @@ pub struct Game {
     /// The settings modal is open (FR7). Kept apart from `paused` so
     /// closing the modal doesn't undo a P pause made before it opened.
     pub settings_open: bool,
+    /// The field guide is open (FR22). Pauses the game like the settings do.
+    pub guide_open: bool,
+    /// Cards for the monsters beaten so far this session.
+    pub guide: field_guide::FieldGuide,
     pub settings: Settings,
     /// Player HP (FR13).
     pub health: Health,
@@ -181,16 +188,43 @@ pub struct Game {
     /// the roster until the watcher's next scan, and counting it as missing
     /// would order a second one.
     studio_made_seen: u32,
+    studio_bad_seen: u32,
     studio_settle: f32,
     /// The roster has been frozen into the world's pool for this run: spec
     /// monsters can stand in zones, and new files join only on the next run.
     roster_frozen: bool,
+    /// How the last wrong answer works out, shown beside the question (FR22).
+    pub explain: Option<Explain>,
+    /// Lesson packs loaded and problems they gave the buffer this session.
+    packs_loaded: u32,
+    /// Lesson jobs asked for, to rotate topics.
+    lesson_jobs: usize,
+    /// Topics Professor Pebble has been asked for tips on this session.
+    tips_asked: std::collections::HashSet<String>,
+    /// Tips waiting for Pebble to say them, oldest first (FR22).
+    pebble_tips: std::collections::VecDeque<String>,
 }
+
+/// A worked explanation of a problem the player got wrong (FR22): shown beside
+/// the next question for a few seconds, long enough to read.
+#[derive(Clone, Debug)]
+pub struct Explain {
+    pub problem: String,
+    pub steps: Vec<String>,
+    /// Seconds left on screen (game time).
+    pub left: f32,
+}
+
+/// Seconds an explanation stays up: a few to start, and a while per step.
+const EXPLAIN_BASE_S: f32 = 3.0;
+const EXPLAIN_PER_STEP_S: f32 = 2.0;
 
 /// How many unseen generated monsters of the tier coming up the studio keeps
 /// ready. A zone never waits for one (FR32), so the stock has to be built
 /// ahead of the player.
 const STUDIO_STOCK: usize = 3;
+/// Seconds the studio rests after a job the model got wrong.
+const STUDIO_BACKOFF_S: f32 = 20.0;
 
 fn camera_target(player_y: f32) -> f32 {
     player_y - screen_height() * CAMERA_ANCHOR
@@ -213,6 +247,8 @@ impl Game {
             toast: None,
             paused: false,
             settings_open: false,
+            guide_open: false,
+            guide: Default::default(),
             settings: Settings::default(),
             health: Health::default(),
             curse: Curse::new(),
@@ -244,8 +280,14 @@ impl Game {
             studio: None,
             seen_generated: Default::default(),
             studio_made_seen: 0,
+            studio_bad_seen: 0,
             studio_settle: 0.0,
             roster_frozen: false,
+            explain: None,
+            packs_loaded: 0,
+            lesson_jobs: 0,
+            tips_asked: Default::default(),
+            pebble_tips: Default::default(),
         }
     }
 
@@ -305,6 +347,27 @@ impl Game {
                     eprintln!("content: {file}: {error} (keeping the last good version)");
                     self.toast = Some((format!("{file}: {error}"), 4.0));
                 }
+                ContentEvent::Lessons { pack, .. } => {
+                    // Verified problems join the question buffer, keyed by
+                    // their level, and are used by `request_task`.
+                    let added = pack
+                        .tasks
+                        .iter()
+                        .filter(|t| self.prefetch.buffer.push_unique(pack.level, (*t).clone()))
+                        .count();
+                    if added > 0 {
+                        self.packs_loaded += 1;
+                    }
+                }
+                ContentEvent::Tips(tips) => {
+                    if tips.npc == "Professor Pebble" {
+                        for line in &tips.lines {
+                            if !self.pebble_tips.contains(line) && self.pebble_tips.len() < 12 {
+                                self.pebble_tips.push_back(line.clone());
+                            }
+                        }
+                    }
+                }
                 ContentEvent::Removed { .. } => {}
             }
         }
@@ -325,7 +388,12 @@ impl Game {
     /// True while the world is frozen: paused with P or the settings
     /// modal is open.
     pub fn is_paused(&self) -> bool {
-        self.paused || self.settings_open
+        self.paused || self.settings_open || self.guide_open
+    }
+
+    /// Every field guide card, found or not, for the panel.
+    pub fn guide_cards(&self) -> Vec<field_guide::GuideCard> {
+        self.guide.cards(&self.roster)
     }
 
     /// The cloud model client, for the HUD's token-usage readout.
@@ -357,7 +425,13 @@ impl Game {
                 || (self.settings_open && is_key_pressed(KeyCode::Escape))
             {
                 self.settings_open = !self.settings_open;
-            } else if !self.settings_open && is_key_pressed(PAUSE_KEY) {
+                self.guide_open = false;
+            } else if !self.settings_open
+                && (is_key_pressed(GUIDE_KEY)
+                    || (self.guide_open && is_key_pressed(KeyCode::Escape)))
+            {
+                self.guide_open = !self.guide_open;
+            } else if !self.settings_open && !self.guide_open && is_key_pressed(PAUSE_KEY) {
                 self.paused = !self.paused;
             }
         }
@@ -365,6 +439,7 @@ impl Game {
             // Keep polling so a Cerebras response that lands mid-pause is
             // stored, not lost; nothing else advances.
             self.poll_questions(0.0);
+            self.set_studio_gate();
             return;
         }
         self.time += dt;
@@ -375,6 +450,12 @@ impl Game {
                 self.toast = None;
             }
         }
+        if let Some(e) = &mut self.explain {
+            e.left -= dt;
+            if e.left <= 0.0 {
+                self.explain = None;
+            }
+        }
         if let Some((t, _)) = &mut self.item_get {
             *t += dt;
             if *t > player::CHEER_S + 0.4 {
@@ -382,6 +463,8 @@ impl Game {
             }
         }
         self.tick_goalpost(dt);
+        // The studio works in battles and dialogues too, behind the questions.
+        self.tick_studio(dt);
         if self.battle.is_some() {
             self.update_battle(dt);
             return;
@@ -426,7 +509,6 @@ impl Game {
 
         self.poll_questions(dt);
         self.tick_prefetch();
-        self.tick_studio(dt);
 
         // Stepping into a monster's patch of ferns starts a battle.
         if !busy {
@@ -518,7 +600,11 @@ impl Game {
             .iter()
             .map(|s| s.to_string())
             .collect();
-        if let Some(bank) = self
+        // A tip written for what the player has been missing comes before the
+        // usual encouragement (FR22).
+        if let Some(tip) = self.pebble_tips.pop_front() {
+            lines.push(tip);
+        } else if let Some(bank) = self
             .dialogue_bank
             .iter()
             .find(|n| n.npc == "Professor Pebble")
@@ -568,10 +654,11 @@ impl Game {
         // Ask for the first question now: the entry transition and the intro
         // (1.8 s) cover the round trip. It's shown when the intro ends.
         let bias = species.info().difficulty_bias;
+        let topic = species.topic();
         let mut battle = Battle::new(species, zone.unwrap_or(usize::MAX));
         battle.new_species = new_species;
         self.battle = Some(battle);
-        self.next_question = Some(self.request_task(bias, prefetch::SOFT_DEADLINE_BATTLE_S));
+        self.next_question = Some(self.request_task(bias, prefetch::SOFT_DEADLINE_BATTLE_S, topic));
     }
 
     /// Advances the battle's phases: transition, intro, attacks, faint.
@@ -638,6 +725,8 @@ impl Game {
         };
         let (info, zone) = (b.info, b.zone);
         let name = b.species.name().to_string();
+        let topic = b.species.topic();
+        let species = b.species.clone();
 
         if let Some((halves, stun_s, steals_hat)) = monster_hit {
             self.damage_player(halves, None);
@@ -652,7 +741,11 @@ impl Game {
         if next_question && self.game_over.is_none() {
             // Usually already asked for, or even back (see `battle_answer`).
             let asked = self.next_question.take().unwrap_or_else(|| {
-                self.request_task(info.difficulty_bias, prefetch::SOFT_DEADLINE_BATTLE_S)
+                self.request_task(
+                    info.difficulty_bias,
+                    prefetch::SOFT_DEADLINE_BATTLE_S,
+                    topic,
+                )
             });
             self.show_question(asked);
         }
@@ -668,9 +761,15 @@ impl Game {
             self.run.monsters_beaten += 1;
             self.stash_questions();
             self.trigger_state = TriggerState::Idle;
+            // Beating a monster unlocks its field guide card (FR22).
+            let card = if self.guide.unlock(&species) {
+                " New field guide card!"
+            } else {
+                ""
+            };
             let line = match opened {
-                true => format!("You beat the {name}! The road is open."),
-                false => format!("You beat the {name}!"),
+                true => format!("You beat the {name}! The road is open.{card}"),
+                false => format!("You beat the {name}!{card}"),
             };
             self.toast = Some((line, 2.5));
         }
@@ -693,6 +792,7 @@ impl Game {
         b.hit_landed = false;
         let xp = b.info.xp_per_hit;
         let bias = b.info.difficulty_bias;
+        let topic = b.species.topic();
         // The answer that lands the last hit leaves nothing to ask.
         let last_hit = correct && b.hits_left <= 1;
         if correct {
@@ -718,7 +818,8 @@ impl Game {
         // or 0.9 s) covers the round trip, instead of starting the request
         // once the attack is over.
         if !last_hit && self.next_question.is_none() {
-            self.next_question = Some(self.request_task(bias, prefetch::SOFT_DEADLINE_BATTLE_S));
+            self.next_question =
+                Some(self.request_task(bias, prefetch::SOFT_DEADLINE_BATTLE_S, topic));
         }
     }
 
@@ -786,6 +887,7 @@ impl Game {
         self.toast = None;
         self.paused = false;
         self.settings_open = false;
+        self.guide_open = false;
         self.health = Health::default();
         self.curse = Curse::new();
         self.run = RunStats::default();
@@ -800,6 +902,7 @@ impl Game {
         self.dialogue = None;
         self.npc_in_reach = false;
         self.goalpost = Tracker::new();
+        self.explain = None;
     }
 
     /// One line of run state, printed by the `JEKO_SHOT` hook so scripted
@@ -815,7 +918,7 @@ impl Game {
             "STATE hp={}/{} level={} xp={} streak={} dist={}m flasks={} beaten={} \
              zones_cleared={} battle={:?} trigger={} dialogue={} game_over={} hat_stolen={} \
              arrows={} roster={} spec_zones={} curse={:.2} blocker_in_reach={} blockers_left={} goalpost={} \
-             questions=[{}] buffered={:?} flying={} studio={}",
+             questions=[{}] buffered={:?} flying={} packs_loaded={} pebble_tips={} weakest={} explain={} studio={}",
             self.health.current,
             self.health.max,
             self.progression.level,
@@ -851,6 +954,12 @@ impl Game {
                 .unwrap_or_else(|| "none shown yet".into()),
             self.prefetch.buffer.counts(),
             self.prefetch.in_flight(),
+            self.packs_loaded,
+            self.pebble_tips.len(),
+            self.progression.weakest_topic().unwrap_or("none"),
+            self.explain
+                .as_ref()
+                .map_or(0, |e| e.steps.len()),
             self.studio_status().map_or_else(
                 || "off".to_string(),
                 |s| format!(
@@ -1004,6 +1113,13 @@ impl Game {
             }
             "pause" => self.paused = true,
             "settings" => self.settings_open = true,
+            "guide" => self.guide_open = true,
+            // Win a card without the fight: every built-in, for a full-page shot.
+            "cards" => {
+                for k in MonsterKind::ALL.iter().take(4) {
+                    self.guide.unlock(&Species::Builtin(*k));
+                }
+            }
             "calm" => self.settings.reduce_flashing = true,
             // The curse (FR1) at the fever stage, and at full.
             "curse" => self.curse.force(0.75),
@@ -1021,17 +1137,23 @@ impl Game {
         self.world.spots[i].state = SpotState::Pending;
         self.active_spot = Some(i);
         self.interact_target = None;
-        let asked = self.request_task(0, prefetch::SOFT_DEADLINE_FLASK_S);
+        let asked = self.request_task(0, prefetch::SOFT_DEADLINE_FLASK_S, None);
         self.show_question(asked);
     }
 
     /// A fresh question, the only way one starts (invariant 6): a ready one
     /// from the buffer if there is one, otherwise live from the model if
     /// there's a key, otherwise from the fallback bank. `bias` raises the
-    /// difficulty (tough monsters ask harder questions). `deadline_s` is how
+    /// difficulty (tough monsters ask harder questions), and `topic` themes
+    /// it (a spec monster's theme, FR22): only a question on that topic will do. `deadline_s` is how
     /// long a live call may take before a bank question is shown instead.
     /// The result goes to `show_question`, now or when it's needed.
-    fn request_task(&mut self, bias: u32, deadline_s: f32) -> (TriggerState, Ask) {
+    fn request_task(
+        &mut self,
+        bias: u32,
+        deadline_s: f32,
+        topic: Option<String>,
+    ) -> (TriggerState, Ask) {
         let difficulty = (self.progression.level + bias).min(5);
         let ask = |source| Ask {
             difficulty,
@@ -1040,14 +1162,14 @@ impl Game {
             deadline: deadline_s,
             counts: true,
         };
-        if let Some(task) = self.prefetch.buffer.take(difficulty, None) {
+        if let Some(task) = self.prefetch.buffer.take(difficulty, topic.as_deref()) {
             return (TriggerState::Active(task), ask(Source::Buffer));
         }
         if self.client.has_api_key() {
-            let rx = self.client.request_task_async(difficulty);
+            let rx = self.client.request_task_async(difficulty, topic);
             (TriggerState::Loading(rx), ask(Source::Live))
         } else {
-            let task = task_trigger::pick_fallback(&self.fallback_tasks);
+            let task = task_trigger::pick_fallback_for(&self.fallback_tasks, topic.as_deref());
             let offline = Ask {
                 counts: false,
                 ..ask(Source::Fallback)
@@ -1143,28 +1265,64 @@ impl Game {
     /// it. It's the lowest lane (FR32): it waits while a question is loading,
     /// a look-ahead is in flight, or the game is paused.
     fn tick_studio(&mut self, dt: f32) {
+        self.set_studio_gate();
         let Some(studio) = &self.studio else {
             return;
         };
-        let loading = |s: &TriggerState| matches!(s, TriggerState::Loading(_));
-        let busy = self.is_paused()
-            || loading(&self.trigger_state)
-            || self.next_question.as_ref().is_some_and(|(s, _)| loading(s))
-            || self.prefetch.in_flight() > 0;
-        studio.set_live_busy(busy);
 
         // One job at a time keeps the queue short and the stock honest, and a
-        // new file gets a moment to reach the roster (the watcher scans every
-        // `watcher::POLL`) before the stock is counted again.
+        // new file gets a moment to reach the roster or the buffer (the
+        // watcher scans every `watcher::POLL`) before it's counted again. A
+        // turned-down or failed job waits longer, so a model that keeps
+        // answering badly doesn't burn the token budget in a loop.
         let status = studio.status();
         if status.made != self.studio_made_seen {
             self.studio_made_seen = status.made;
             self.studio_settle = crate::content::watcher::POLL.as_secs_f32() * 3.0;
         }
+        let bad = status.rejected + status.failed;
+        if bad != self.studio_bad_seen {
+            self.studio_bad_seen = bad;
+            self.studio_settle = STUDIO_BACKOFF_S;
+        }
         self.studio_settle = (self.studio_settle - dt).max(0.0);
         if status.queued + usize::from(status.working) > 0 || self.studio_settle > 0.0 {
             return;
         }
+
+        // 1. Practice, first: a problem the player missed comes back as similar
+        //    ones, and a thin buffer at their level gets a pack on the topic
+        //    they're weakest at (FR22).
+        let level = self.progression.level.clamp(1, 5);
+        // Look-ahead requests already on their way count: they'll be ready too.
+        let ready = self.prefetch.buffer.counts()[level as usize - 1] + self.prefetch.in_flight();
+        let weakest = self.progression.weakest_topic().map(str::to_string);
+        let plan = prefetch::plan_lesson(
+            level,
+            ready,
+            weakest.as_deref(),
+            self.progression.peek_missed(),
+            self.lesson_jobs,
+        );
+        if let Some(job) = plan {
+            if job.like.is_some() {
+                self.progression.take_missed();
+            }
+            self.lesson_jobs += 1;
+            studio.enqueue(studio::Job::Lessons(job));
+            return;
+        }
+        // 2. Professor Pebble's tips on a topic that keeps going wrong, once each.
+        if let Some(topic) = weakest {
+            if self.tips_asked.insert(topic.clone()) {
+                studio.enqueue(studio::Job::Tips(TipsJob {
+                    npc: "Professor Pebble".into(),
+                    topic,
+                }));
+                return;
+            }
+        }
+        // 3. New monsters for the tier ahead (they join the next run, FR21).
         let tier = crate::content::monster_spec::tier_for_meters(self.distance_m() + 100);
         let stock = self
             .roster
@@ -1178,6 +1336,22 @@ impl Game {
         if stock < STUDIO_STOCK {
             self.enqueue_monster(tier);
         }
+    }
+
+    /// Tells the studio whether something that outranks it is using the model
+    /// (FR32's lanes): the game is paused, a question is loading (the shown one
+    /// or a battle's next), or a look-ahead is in flight. It starts no request
+    /// while this is set. Runs every frame, paused or not.
+    fn set_studio_gate(&self) {
+        let Some(studio) = &self.studio else {
+            return;
+        };
+        let loading = |s: &TriggerState| matches!(s, TriggerState::Loading(_));
+        let busy = self.is_paused()
+            || loading(&self.trigger_state)
+            || self.next_question.as_ref().is_some_and(|(s, _)| loading(s))
+            || self.prefetch.in_flight() > 0;
+        studio.set_live_busy(busy);
     }
 
     /// Asks the studio for a monster of `tier`, on a maths topic that fits
@@ -1235,11 +1409,23 @@ impl Game {
         };
 
         let correct = (given - task.answer).abs() < 1e-6;
+        let (task_for_record, steps) = (task.clone(), task.explanation.clone());
 
         if self.player.stunned() {
             // FR12: too dizzy to answer until the stars clear.
             self.toast = Some(("Too dizzy! Wait for the stars to clear...".into(), 1.5));
             return;
+        }
+        // Count it toward its topic, and show how a wrong one works out (FR22).
+        // A dizzy player's refused submit (above) isn't an answer, so it's not here.
+        self.progression.record_topic(&task_for_record, correct);
+        if !correct && !steps.is_empty() {
+            let left = EXPLAIN_BASE_S + EXPLAIN_PER_STEP_S * steps.len() as f32;
+            self.explain = Some(Explain {
+                problem: task_for_record.problem.clone(),
+                steps,
+                left,
+            });
         }
         if self.battle.is_some() {
             self.battle_answer(correct);

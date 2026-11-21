@@ -23,7 +23,9 @@ timestamp: 2026-11-21
 > Besides the hand-drawn monsters, monsters can be defined as JSON specs in a content
 > dir (FR21). A watcher thread reloads them while the game runs, over the same kind
 > of polled channel, and a studio thread designs new ones with the model in the
-> background and writes them to that dir, lowest priority, never in a question's way.
+> background and writes them to that dir, lowest priority, never in a question's way. The same
+> studio writes lesson packs ahead of need: every generated problem's answer is checked against
+> its own arithmetic before a child sees it (FR22).
 > Once the player steps onto the road, the doctor's curse (FR1) worsens while they
 > linger, which is what keeps them moving.
 
@@ -59,12 +61,14 @@ src/main.rs: one macroquad loop, one iteration per frame
 Game::tick_prefetch ── world.upcoming(1.5 screens) ─▶ plan_prefetch ─▶ prefetch_task_async
   └─ answers land in prefetch.buffer (QuestionBuffer); request_task takes from it first
 
-content::watcher thread ── rescans <content dir>/monsters/*.json every 0.5 s
+content::watcher thread ── rescans <content dir>/monsters, lessons and tips (*.json) every 0.5 s
   └─ ContentEvent over mpsc ── Game::poll_content, try_recv() each frame ──▶ Game.roster
 
 content::studio thread ── waits for a job and for the model to be free (Game::tick_studio)
   └─ prompt ─▶ model ─▶ finish_monster (tier forced, special limited, text vetted, parse)
-       └─ writes <content dir>/monsters/gen-<name>.json ──▶ the watcher above loads it
+       │                 finish_pack (every answer checked against its expression) · tips::finish
+       └─ writes <content dir>/monsters/gen-<name>.json · lessons/<topic>-<level>.json · tips/<topic>.json
+            └─▶ the watcher above loads them: specs to the roster, packs to the question buffer, tips to Pebble
 ```
 
 *Figure: the frame loop and its two background paths: questions from Cerebras (asked
@@ -106,19 +110,23 @@ The layering holds today, and new code should keep it:
 | Module | Owns |
 |---|---|
 | `config.rs` | `Config::load()`: reads `CEREBRAS_API_KEY`, `CEREBRAS_MODEL`, `CEREBRAS_BASE_URL` from the environment, after `dotenvy` loads `.env`. An empty key counts as no key. `instance_name()`: `JEKO_INSTANCE`, else the folder the binary was built from (`CARGO_MANIFEST_DIR`), shown in the window title. |
-| `content/mod.rs` | `ContentEvent` (a spec loaded or reloaded, a file removed, a file rejected), `Roster` (the loaded specs by id, sorted), and `content_dir()`. |
+| `content/mod.rs` | `ContentEvent` (a spec, lesson pack or tips file loaded or reloaded, a monster removed, a file rejected), `Roster` (the loaded specs by id, sorted), and `content_dir()`. |
 | `content/monster_spec.rs` | `MonsterSpec`, a monster as data, and `parse`, the only way in: JSON in, a clamped and validated spec out. `MonsterInfo`, the gameplay numbers every monster has, and the tier table (`MonsterSpec::info`). |
-| `content/studio.rs` | `Studio`, the background designer: one thread, a job queue (`Job::Monster`), the gate that keeps it behind live questions (`set_live_busy`), the per-minute cap and token budget (`StudioConfig`), and `StudioStatus`. `finish_monster` turns a model reply into a spec file (the only writer of generated specs), `vet_text` is the word blocklist, and `fake_monster_json` is the stand-in model's creature. |
+| `content/studio.rs` | `Studio`, the background designer and writer: one thread, a job queue (`Job::Monster`, `Job::Lessons`, `Job::Tips`), the gate that keeps it behind live questions (`set_live_busy`), the per-minute cap and token budget (`StudioConfig`), and `StudioStatus`. `finish_monster` turns a model reply into a spec file (the only writer of generated specs), `vet_text` is the word blocklist, and `fake_monster_json` is the stand-in model's creature. |
 | `content/prompts.rs` | `monster_prompt`: what the studio asks the model for (a kid-safe, original creature in the spec's own vocabulary, with a shipped spec as the shape to follow), the lists of allowed values, and the maths topics. |
-| `content/watcher.rs` | `Scanner` (one rescan of `monsters/*.json`, by modification time and length) and `spawn`, the thread that runs it every `POLL` (0.5 s). |
+| `content/lessons.rs` | Lesson packs (FR22): `parse_pack` (verifies every problem when a file loads), `finish_pack` (a model reply to a verified pack file, never overwriting), and the stand-in model's pack. |
+| `content/tips.rs` | Professor Pebble's tips (FR22): the prompt, `parse` and `finish`. |
+| `content/watcher.rs` | `Scanner` (one rescan of `monsters/`, `lessons/` and `tips/`, by modification time and length) and `spawn`, the thread that runs it every `POLL` (0.5 s). |
 | `llm/mod.rs` | `MathTask { topic, problem, answer: f64, hint, difficulty, explanation, expression }`, the one task type every question path produces (the last two are FR22's and default to empty), and `fallback_bank()`, the compiled-in bank. |
-| `llm/buffer.rs` | `QuestionBuffer` (ready questions per difficulty), `plan_prefetch` (the pure look-ahead policy and its `PrefetchCaps`), and `WaitStats` (where each shown question came from and how long the player waited). |
+| `llm/expr.rs` | `eval` (a tiny arithmetic evaluator) and `verify` (a generated problem passes only if its `answer` equals its `expression`; FR22). |
+| `llm/buffer.rs` | `QuestionBuffer` (ready questions per difficulty, with an optional strict topic), `plan_prefetch` (the pure look-ahead policy and its `PrefetchCaps`), and `WaitStats` (where each shown question came from and how long the player waited). |
 | `llm/cerebras_client.rs` | `CerebrasClient`: the async wrappers (live and look-ahead), the blocking chat-completions call with its `RequestKind` tag, the shared token stats, and the `fakemodel` stand-in. |
-| `llm/task_gen.rs` | The prompt template (`build_prompt(difficulty)`) and lenient JSON extraction (`extract_json_object` / `_array`). |
+| `llm/task_gen.rs` | The prompt templates (`build_prompt(difficulty, topic)` for a live question, `build_pack_prompt` for a lesson pack) and lenient JSON extraction (`extract_json_object` / `_array`). |
 | `llm/usage.rs` | `RequestKind` (question, prefetch, monster, lesson), `RequestUsage` (one call's tokens and speed) and `TokenStats` (session totals, per-kind totals, and the last 24 requests). |
 | `game/mod.rs` | `Game`: run state, the per-frame update and draw, the mode precedence, the damage, answer and reset entry points, and the dev events. |
 | `game/task_trigger.rs` | `TriggerState`, the question state machine (§4), `Arrival` (how a `Loading` request ended), and `pick_fallback`. |
-| `game/prefetch.rs` | `Prefetch`: the question buffer, the look-ahead requests in flight and their per-minute budget; `demand` (what the road ahead needs); the soft deadlines; `Ask` (a question asked for and not yet shown). |
+| `game/prefetch.rs` | `Prefetch`: the question buffer, the look-ahead requests in flight and their per-minute budget; `demand` (what the road ahead needs); `plan_lesson` (which pack the studio writes next); the soft deadlines; `Ask` (a question asked for and not yet shown). |
+| `game/field_guide.rs` | `FieldGuide` (the cards unlocked this session) and `GuideCard`. Pure data; `ui/field_guide_panel.rs` draws it. |
 | `game/world.rs` | Coordinates and camera (`View`), path geometry, chunking, potion flasks (`Spot`), encounter zones and road blockers (`EncounterZone`, `clamp_blocked`), the goalposts the tracker counts down to (`Goalpost`, `goalposts_in_chunk`, `pick_goalpost`, `World::next_goalpost`), what will need a question soon (`Upcoming`, `upcoming_in`, `World::upcoming`), the depth-sorted `Tall` items, and drawing the ground, the cobbled road, the light pools, the mist, the bats and fireflies, and where the manor sits on screen. |
 | `game/decor.rs` | Per-chunk forest scenery generation (`generate_chunk`), the hand-placed hub camp (`hub_layout`), how each prop draws, and which props cast light (`Decoration::lights`). |
 | `game/manor.rs` | The gothic manor backdrop (`draw`, with an optional lake reflection), its lightning timing (`lightning`), and the shared `bat` silhouette. |
@@ -134,8 +142,8 @@ The layering holds today, and new code should keep it:
 | `game/monster_rig.rs` | `draw_spec`: draws any `MonsterSpec` from its body shape, parts, eyes, accessory, idle and attack. |
 | `game/battle.rs` | `Battle` and its `Phase`s, the iris transition, and the battle-view drawing. |
 | `game/dialogue.rs` | `Dialogue` (typewriter reveal), the `PEBBLE_TUTORIAL` lines, and `load_bank()` for `assets/dialogue.json`. |
-| `progression/` | `Progression` (XP, level curve, streak multiplier, upgrade unlocks) and `upgrades.rs` (upgrade definitions). |
-| `ui/` | One egui function per panel (`hud`, `goalpost_panel`, `task_panel`, `token_panel`, `settings_panel`, `dialogue_panel`, `game_over_panel`), plus `style::apply`. |
+| `progression/` | `Progression` (XP, level curve, streak multiplier, upgrade unlocks, and FR22's per-topic accuracy and the problems missed) and `upgrades.rs` (upgrade definitions). |
+| `ui/` | One egui function per panel (`hud`, `goalpost_panel`, `task_panel`, `token_panel`, `settings_panel`, `field_guide_panel`, `dialogue_panel`, `game_over_panel`), plus `style::apply`. |
 
 ---
 
@@ -187,9 +195,9 @@ what the frame does:
 |---|---|---|---|
 | 0 | (every frame) | | `poll_content` drains the content watcher into `roster` (§8). It runs before everything else, so an edit shows while paused or after death. |
 | 1 | **Game over** | `game_over.is_some()` | Only the death animation advances. After `DEATH_ANIM_S` (1.2 s), E or Enter calls `reset()`. |
-| 2 | Toggles | not `typing` | O toggles `settings_open`, and Esc closes it. With settings closed, P toggles `paused`. |
-| 3 | **Paused** | `paused \|\| settings_open` | Only `poll_questions(0.0)` runs (the shown question, the battle's next one and the look-ahead receivers), so a response that arrives isn't lost. The clock doesn't advance, and neither does the soft deadline. |
-| 4 | (every unpaused frame) | | Advance `time`, shake, the toast and the item-get timers, then `tick_goalpost` (the tracker, §10). |
+| 2 | Toggles | not `typing` | O toggles `settings_open`, and Esc closes it. With settings closed, G toggles the field guide (`guide_open`, Esc closes it) and P toggles `paused`. |
+| 3 | **Paused** | `paused \|\| settings_open \|\| guide_open` | Only `poll_questions(0.0)` runs (the shown question, the battle's next one and the look-ahead receivers), so a response that arrives isn't lost, and the studio's gate is set to busy. The clock doesn't advance, and neither does the soft deadline. |
+| 4 | (every unpaused frame) | | Advance `time`, shake, the toast, the explanation card and the item-get timers, then `tick_goalpost` (the tracker, §10) and `tick_studio` (§8), which also runs in battles and dialogues. |
 | 5 | **Battle** | `battle.is_some()` | `update_battle`: the player is held, phases advance (§8), and each question is asked for early and shown when the phase reaches `Question` (§5). |
 | 6 | **Dialogue** | `dialogue.is_some()` | The player is held. E reveals the line, then advances, then closes. |
 | 7 | **Road** | otherwise | See below. |
@@ -207,7 +215,7 @@ The road frame, in order:
    while paused.
 3. The camera eases toward the player (anchor 0.66 of screen height, rate `1 − e^(−6·dt)`).
    `world.ensure_generated` keeps one chunk past the top of the screen generated.
-4. `poll_questions(dt)`, then `tick_prefetch` (§5), then `tick_studio(dt)` (§8).
+4. `poll_questions(dt)`, then `tick_prefetch` (§5).
 5. If not busy, stepping into an uncleared fern patch starts a battle.
 6. Interaction targets: the nearest fresh flask in reach (`interact_target`), or else
    an undefeated road blocker in reach (`blocker_target`), or else Professor Pebble.
@@ -223,7 +231,7 @@ to change each rule:
   starts the damage flicker (`HURT_INVULN_S` = 1 s), knocks the player back 22 px away
   from `from` (clamped to the path and short of any road blocker), shakes the screen unless reduce flashing is on,
   and calls `die()` at 0 HP.
-- `Game::request_task(bias, deadline_s)` is the only way a question starts (§5). Look-ahead
+- `Game::request_task(bias, deadline_s, topic)` is the only way a question starts (§5). Look-ahead
   only fills the buffer it reads from.
 - `Game::submit_answer()` is the only way an answer is judged, for flasks and battles alike.
 - `Game::reset()` starts a new run without relaunching. It keeps the client, the
@@ -294,6 +302,11 @@ the game asks before the player needs the answer:
   `Prefetch` and goes into the buffer. The 8 s HTTP timeout remains the backstop. The same
   adoption saves the answers of requests that a new battle, the end of a battle or a reset
   abandons (`stash_questions`).
+- **Themed battles** (FR22). A spec monster's `theme.topic` (when its subject is maths)
+  goes through `Species::topic()` into `request_task`. With a topic, `QuestionBuffer::take`
+  takes only a question on that topic (lesson packs are what fill it), a live call puts it in
+  the prompt and forces it onto the task, and the offline bank prefers it. A fraction-loving
+  jellyfish asks about fractions; the built-ins ask about anything.
 - **The wait is measured.** `Game.waits` (`llm::buffer::WaitStats`) records where each shown
   question came from (`Buffer`, `Ready`, `Live`, `Fallback`, `Deadline`) and how long the
   player watched the spinner. Offline play records nothing. The token panel shows "ready
@@ -326,6 +339,29 @@ the game asks before the player needs the answer:
 `pick_fallback` panics if the bank is empty.
 `pick_fallback` takes a random entry (`rand::thread_rng`, the only non-deterministic
 randomness in the game). The game must stay fully playable with no key and no network.
+
+**Checked before a child sees it** (FR22). The live prompt also asks for the sum behind the
+answer (`expression`, numbers and `+ - * /` only) and 2 to 4 `explanation` steps.
+`llm::expr::verify` evaluates the expression with a small pure evaluator and rejects the
+problem if the result isn't the `answer`; the call then fails like any other and the
+fallback bank steps in. The same check runs on every prefetch and on every problem in a lesson
+pack, where a missing or unparseable expression is also a rejection. The compiled-in bank
+has expressions and explanations too, and a test verifies all of it.
+
+**Lesson packs and practice** (FR22). The studio writes `lessons/<topic>-<level>.json`
+(`Job::Lessons`, 8 problems; `Game::tick_studio` asks when fewer than 3 questions are ready
+or coming at the player's level, `plan_lesson`). The watcher loads each pack's verified
+problems into the question buffer (`push_unique`, so a reload doesn't double them), where
+`request_task` takes them like any prefetched question. `Progression.topics` counts
+answers per topic this run (`record_topic`, called from `submit_answer`), `weakest_topic()` is
+the topic below 75% with at least 2 tries, and `plan_lesson` aims the next pack at it. A wrong
+answer is remembered (`missed`, the last four) and comes back as a small pack of similar
+problems (`like`). A topic that stays weak also gets one tips job for Professor Pebble
+(`tips/<topic>.json`), whose lines Pebble says in the hub before the usual ones.
+
+**Explanations.** A wrong answer with `explanation` steps sets `Game.explain`, a card
+(`task_panel::draw_explanation`) beside the next question for 3 s plus 2 s a step, on the game
+clock. The bank's questions have steps, so it works offline.
 
 **Answers and their effects** (`Game::submit_answer`):
 
@@ -576,8 +612,8 @@ three-colour palette, eyes (1–3, size, stalks, `cute`/`grumpy`/`sleepy`), up t
 size and side), an accessory, an `idle` (`bob`, `scuttle`, `float`, `sway`, `pulse`)
 and an `attack` (`lunge`, `zap`, `spin`, `slam`, `spit`). `monster_rig::draw_spec` draws
 it inside `monster::draw`, so it gets the same canvas, poses, hurt flash, faint fade
-and reduce flashing as the built-ins. Also stored, not used yet: a `fact` and a
-`theme` (for FR22).
+and reduce flashing as the built-ins. A `theme` (`{subject, topic}`) steers its questions
+(§5), and its `fact` goes on its field guide card.
 
 A spec can't set its numbers. It picks a `tier` and a `special`, and
 `MonsterSpec::info` looks them up in a table that follows the built-ins' bands. Specs
@@ -618,6 +654,13 @@ Spec monsters stand in zones too (§6, *Spec monsters in zones*): `challenge_blo
 stepping into ferns start the battle with `zone.species()`. The first time the player meets a
 studio-made species (`gen-…`), the nameplate carries a "NEW SPECIES!" tag until the first answer
 (`Battle.new_species`, from `Game.seen_generated`). `battle:<id>` still fights any spec directly.
+
+**The field guide** (FR22, `game/field_guide.rs`, `ui/field_guide_panel.rs`). Winning a battle
+calls `FieldGuide::unlock(species)`; the first time, the victory toast adds "New field guide
+card!". Cards are the seven built-ins (`MonsterKind::card()`: a blurb and a true fact each) and
+every spec in the roster (its blurb and `fact`), and a card that isn't unlocked shows as
+"???". G or the settings modal opens the panel, and the game is paused while it's open. The
+collection lasts for the session, survives `reset()` and isn't saved to disk.
 
 **The studio** (FR21, `content/studio.rs`). With a key (or `JEKO_DEV=fakemodel`) and
 unless `JEKO_STUDIO=off`, `main` starts one long-lived thread that designs monsters.
@@ -721,6 +764,9 @@ unless `JEKO_STUDIO=off`, `main` starts one long-lived thread that designs monst
   upgrades. Today there's one: Quickstep Boots, +25% at 100 XP. To add an upgrade, add
   an entry to `default_upgrades()` and, for a new kind, its effect. The unlock logic is generic.
 - Difficulty is `progression.level + bias`, capped at 5 (§5).
+- FR22's learner data, in memory for the run only: accuracy per topic (`topics`), which
+  topic is weakest, and the last four problems missed. Nothing is saved: persisting it is
+  the first learner data the game would keep, which needs the owner's privacy decision.
 
 **The UI** (`ui/`) is immediate-mode egui, rebuilt every frame from `Game`. A panel
 owns no state: it reads what it's given, and the only things it changes are the
@@ -731,10 +777,11 @@ values passed to it as `&mut`.
 | `hud::draw` | top right | `Progression`, `distance_m` | none |
 | `hud::draw_toast` | top centre (below the badge while it's up) | `game.toast`, a top offset | none |
 | `goalpost_panel::draw` | top centre | `game.goalpost.view()` (`TrackerView`) | none |
-| `task_panel::draw` | left centre (bottom centre in a battle) | `TriggerState` | `input_buffer`, `focus_answer`; returns `Submit` |
+| `task_panel::draw` | left centre (bottom centre in a battle); the explanation card below (above) it | `TriggerState`, `Game.explain` | `input_buffer`, `focus_answer`; returns `Submit` |
 | `token_panel::draw` | bottom right | `CerebrasClient::token_stats()`, model, base URL | none |
 | `dialogue_panel::draw` | | `Dialogue` | none |
-| `settings_panel::draw` | modal | | `Settings`, `settings_open` |
+| `settings_panel::draw` | modal | | `Settings`, `settings_open`, `guide_open` |
+| `field_guide_panel::draw` | modal | the guide's cards | `guide_open` |
 | `game_over_panel::draw` | modal | `Game` (run stats, best distance) | returns `true` to restart |
 
 **The goalpost badge** (FR31). `Game::tick_goalpost` asks `World::next_goalpost` for the next
@@ -758,7 +805,7 @@ prompts match the panels. `Settings` (`show_hud`, `show_token_panel`,
 
 **Assets** are compiled into the binary with `include_str!`, so editing them needs a
 rebuild. The exception is the content dir, which is read at runtime and hot-reloaded
-(`content/monsters/*.json`, §8):
+(`content/monsters/*.json`, `lessons/*.json` and `tips/*.json`, §8, §5):
 
 | File | Loaded by | Used for |
 |---|---|---|
@@ -799,7 +846,8 @@ driving the window:
   call from the fallback bank after 700 ms, with made-up token counts, so the buffer, the
   soft deadline and the token panel's wait readout can be tried with no key. The studio
   uses it too: it writes made-up creatures, so the whole path from job to a fightable
-  monster runs offline. `genmonster@N` queues one tier 2 job. `tospec` and `tospecblock` teleport to the first
+  monster runs offline. `genmonster@N` queues one tier 2 job, `cards` unlocks four field guide cards and
+  `guide` opens the guide. `tospec` and `tospecblock` teleport to the first
   zone (or road blocker) that holds a spec monster.
 - With either variable set, the loop steps a fixed 1/60 s, so a run is repeatable
   frame by frame. Without an API key, questions come straight from the fallback
@@ -811,17 +859,24 @@ driving the window:
 | Module | What's covered |
 |---|---|
 | `content/monster_spec.rs` (8) | A good spec loads with defaults. Huge and negative numbers are clamped. Unknown enum values are rejected. Bad ids, empty names and malformed colours are rejected. Long or multi-line text is cut and cleaned. Too-dark colours are lightened until they read against `INK`. Stats come from the tier table only, whatever extra fields say. The tier for a distance matches the table's `min_m`. |
-| `content/watcher.rs` (3) | A missing dir is empty. A file loads, an edit reloads it, a broken edit and a mismatched id are reported, and a delete is reported. The specs shipped in `content/monsters/` all load. |
+| `content/watcher.rs` (4) | A missing dir is empty. A file loads, an edit reloads it, a broken edit and a mismatched id are reported, and a delete is reported. Lesson packs and tips load and reload, a wrong answer key is dropped on load and an unusable pack is reported. The specs shipped in `content/monsters/` all load. |
+| `content/lessons.rs` (9) | A good reply becomes a pack file that loads back, never overwriting; a wrong answer key, an unparseable expression, an empty step, off-limits words and overlong text are dropped and never written; bad replies write nothing; the pack is capped; a hand-edited wrong answer is caught on load; topics normalise. |
+| `content/tips.rs` (3) | A good reply becomes a tips file that loads back; bad lines are dropped and an empty result is an error; the prompt names the topic. |
+| `game/field_guide.rs` (4) | Every built-in has a card with a fact; a card unlocks once and stays; spec monsters get cards after the built-ins; ids never collide. |
+| `progression/` (3) | Answers count per topic ignoring case; the weakest topic needs a few tries and a poor score; missed problems come back once, oldest first, and only a few are kept. |
 | `content/studio.rs` (12) | A good reply becomes a loadable file with the tier forced and the special limited. Ids are unique, fit the limit and alphabet. Bad, off-limits and hostile replies are rejected or clamped and write nothing. Whole-word vetting. The stand-in model's creatures always pass. The worker writes one file per job, holds jobs while a live question is loading, obeys the minute cap and stops at the token budget. No key or switched off means no studio. |
-| `content/prompts.rs` (4) | The shipped example is valid, every value the prompt lists is accepted by the parser, the prompt carries the tier, topic and names to avoid. |
+| `content/prompts.rs` (5) | The shipped example is valid, every value the prompt lists is accepted by the parser, the prompt carries the tier, topic and names to avoid, and every level has topics that fit a theme. |
 | `content/mod.rs` (1) | A rejected file keeps the last good version in the roster; a delete removes it. |
 | `game/monster_rig.rs` (2) | The palette check's `INK_RGB` matches `gfx::INK`; parts spread evenly. |
 | `game/world.rs` (30) | Scenery never lands on the road. Every flask is reachable and on the road. Generation is deterministic. Interact reaches only nearby fresh flasks. The clamp keeps the player on the road. Encounters are on the road and deterministic. A Titan guards every 500 m, blocking the road. Monsters block the road regularly (no gap over 100 m, the first under 70 m) and deterministically. A blocker shuts the road, can be challenged but doesn't ambush, and opens once beaten. Tougher monsters appear further up. The hub is wide, dry and bounded. The walkable width is continuous through the gate. Goalposts are deterministic and stand in their chunk, nothing hostile is one in the hub, the pick is always north of the player, nearest first and the bigger event first within 25 m, a solved flask or beaten monster is never offered again, and a blocker counts down to its line. `upcoming_in` is nearest first and in range, matches where the world places things, shows no monster in the hub, takes a monster's hits and bias from its stats, and `World::upcoming` leaves out what's been dealt with. About 40% of zones get a spec monster and never a boss, one far enough up the road; an empty pool changes nothing; the same pool gives the same zones and the layout never depends on it; rebinding a built world matches building it with the pool; an edited spec shows in its zones; `upcoming` uses a held spec's tier. |
 | `game/goalpost.rs` (7) | A new goalpost pops in as a circle and then unrolls. The metres go down as the player walks, rounded up, and the ring fills. It pulses under 10 m and says "Now!" on arrival. It closes before the next one appears, hides while a battle or problem is open and comes back, and shows nothing with nothing ahead. Labels. |
 | `game/manor.rs` (1) | Lightning strikes now and then (under 12% of frames), stays in 0..1, and is the same every run. |
 | `llm/usage.rs` (6) | Provider-timed vs round-trip speed, zero time ignored, no usage block, the capped history, totals split by kind. |
-| `llm/buffer.rs` (10) | The buffer gives the exact difficulty, else one below, never a harder one, and prefers a topic. `plan_prefetch` asks for what's missing nearest first, counts ready and in-flight questions, and obeys the in-flight, per-difficulty and per-minute caps. `WaitStats` reads out as the panel shows it. |
-| `game/prefetch.rs` (4) | A flask wants one question and a monster its hits plus a spare, clamped to difficulty 5. Env switches parse. Landed answers reach the buffer and failures vanish. A disabled prefetcher asks for nothing. |
+| `llm/expr.rs` (5) | The evaluator follows the usual rules (precedence, parentheses, unary minus, `×` `÷` `−`), rejects anything that isn't plain arithmetic (powers, functions, division by zero, `1 2` as 12), bounds hostile input (nesting, length), and `verify` passes a problem only when its answer matches its expression. |
+| `llm/mod.rs` (2) | The compiled-in bank loads, every answer in it checks out and has an explanation; a task without the FR22 fields still loads. |
+| `llm/task_gen.rs` (3) | The live prompt asks for an expression and explanation and takes a topic; the pack prompt names count, topic, level and what was missed; JSON is pulled out of chatty replies. |
+| `llm/buffer.rs` (11) | The buffer gives the exact difficulty, else one below, never a harder one, and prefers a topic. `plan_prefetch` asks for what's missing nearest first, counts ready and in-flight questions, and obeys the in-flight, per-difficulty and per-minute caps. `WaitStats` reads out as the panel shows it. A topic takes only that topic; a question isn't added twice. |
+| `game/prefetch.rs` (7) | A flask wants one question and a monster its hits plus a spare, clamped to difficulty 5. Env switches parse. Landed answers reach the buffer and failures vanish. A disabled prefetcher asks for nothing. A missed problem comes back first as similar practice; a thin buffer asks for the weakest topic, else the rotation; a stocked one asks for nothing. |
 | `game/bow.rs` (2) | The shot draws, then releases, then lowers. An arrow flies the way it was loosed, comes down a believable distance away, then goes away. |
 | `game/health.rs` (4) | Starts full; damage, heal and refill clamping. |
 | `game/curse.rs` (8) | Nothing happens in the hub before the road. It starts the first time the player is past the gate. Standing still fills it, then drains on the interval. Walking north holds it back, even at the far end of the ramp. Old ground gives no relief. The hub lifts it. Stage toasts replay only after it clears. Cleanse and speed clamp. |
@@ -900,13 +955,19 @@ still to make:
   but not the characters: the hero wears a straw sun hat and swim shorts, and the
   roster is crabs, jellyfish, pufferfish, coconuts, gulls, a sand worm and a Tide
   Titan. Restyling them is FR25.
+- **Learner data isn't kept.** Per-topic accuracy, the missed problems and the field guide live in
+  memory and are gone on exit (FR14); whether to persist them is a privacy decision for the owner.
+- **Questions are numeric and maths-only.** Lesson packs, themes and the field guide's facts
+  stay inside that (FR3's open question, FR16).
 - **The studio's monsters wait for the next run.** The zone pool is the roster frozen at
   the start of a run, so a monster written mid-run first appears on the road after a
   restart (§6). On a fresh checkout the first run has only the hand-written specs.
-- **The studio's prompt hasn't been checked against the real model.** It runs end to end
-  with the stand-in model and is covered by tests, but the sandbox it was built in had no
-  network, so a real reply's quality (and how often `finish_monster` turns one down) is
-  unmeasured. `make gen-monsters N=8` is the way to look.
+- **The studio's prompts haven't been checked against the real model.** The monster, lesson
+  and tips paths run end to end with the stand-in model and are covered by tests, but the sandbox
+  they were built in had no network, so a real reply's quality (and how often a reply is turned
+  down) is unmeasured. The live question prompt now also asks for an expression, and a reply
+  without a checkable one falls back to the bank, so a model that ignores it would make every
+  question a bank question. `make gen-monsters N=8` is the way to look at monsters.
 - **The settled-for-now defaults** from FR1–FR3, FR5–FR15, FR20, FR24, FR26 and FR31 are listed for the owner in FR16.
 
 See [FeatureRequestToDo.md](../FeatureRequestToDo.md) for the backlog.

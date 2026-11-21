@@ -122,7 +122,15 @@ async fn main() {
                 game.reset();
             }
             if game.settings_open {
-                ui::settings_panel::draw(ctx, &mut game.settings, &mut game.settings_open);
+                ui::settings_panel::draw(
+                    ctx,
+                    &mut game.settings,
+                    &mut game.settings_open,
+                    &mut game.guide_open,
+                );
+            }
+            if game.guide_open {
+                ui::field_guide_panel::draw(ctx, &game.guide_cards(), &mut game.guide_open);
             }
             if game.game_over.is_none() {
                 if let Some(ui::task_panel::TaskPanelEvent::Submit) = ui::task_panel::draw(
@@ -131,6 +139,7 @@ async fn main() {
                     &mut game.input_buffer,
                     &mut game.focus_answer,
                     game.battle.is_some(),
+                    game.explain.as_ref(),
                 ) {
                     game.submit_answer();
                 }

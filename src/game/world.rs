@@ -1465,14 +1465,11 @@ mod tests {
                 continue;
             };
             zones += 1;
-            match pick_spec(k, &e, &pool) {
-                Some(s) => {
-                    specs += 1;
-                    assert!(!e.kind.info().boss, "chunk {k}: a boss was replaced");
-                    let meters = ((ROAD_START_Y - e.pos.y) / PX_PER_METER) as u32;
-                    assert!(s.info().min_m <= meters, "{} too early at {meters} m", s.id);
-                }
-                None => {}
+            if let Some(s) = pick_spec(k, &e, &pool) {
+                specs += 1;
+                assert!(!e.kind.info().boss, "chunk {k}: a boss was replaced");
+                let meters = ((ROAD_START_Y - e.pos.y) / PX_PER_METER) as u32;
+                assert!(s.info().min_m <= meters, "{} too early at {meters} m", s.id);
             }
         }
         let share = specs as f32 / zones as f32;

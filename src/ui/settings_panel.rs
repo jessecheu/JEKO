@@ -10,13 +10,14 @@ const CONTROLS: &[(&str, &str)] = &[
     ("Space", "Jump"),
     ("Ctrl", "Roll (3 charges)"),
     ("F", "Shoot an arrow"),
+    ("G", "Field guide"),
     ("P", "Pause"),
     ("O / Esc", "Settings"),
 ];
 
 /// The settings modal (FR7). Changes apply immediately; `open` is cleared
 /// when the player presses Close.
-pub fn draw(ctx: &egui::Context, settings: &mut Settings, open: &mut bool) {
+pub fn draw(ctx: &egui::Context, settings: &mut Settings, open: &mut bool, guide_open: &mut bool) {
     egui::Window::new("Settings")
         .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
         .resizable(false)
@@ -42,6 +43,10 @@ pub fn draw(ctx: &egui::Context, settings: &mut Settings, open: &mut bool) {
 
             ui.separator();
             ui.horizontal(|ui| {
+                if ui.button("Field guide").clicked() {
+                    *open = false;
+                    *guide_open = true;
+                }
                 if ui.button("Close").clicked() {
                     *open = false;
                 }
