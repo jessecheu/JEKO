@@ -2,7 +2,7 @@
 type: Feature Request
 title: JEKO — Feature Requests
 description: Concrete, actionable feature requests for JEKO (Math Quest) — work that is scoped and wanted but not yet built. Each entry states the motivation, a proposed approach, and what "done" looks like. Maintained as the shared agent todo list.
-tags: [feature-request, backlog, gameplay, urgency, lava, monsters, battle, education, minigames, pets, controls, pause, settings, health, death, art-direction, spawn, tooling, ci-cd, dagger, content-generation, hot-reload, live-content, villain, story, live-dialogue, setting, forest, manor]
+tags: [feature-request, backlog, gameplay, urgency, lava, monsters, battle, education, minigames, pets, controls, pause, settings, health, death, art-direction, spawn, tooling, ci-cd, dagger, content-generation, hot-reload, live-content, villain, story, live-dialogue, setting, forest, manor, map, exploration, regions, village, castle, rest-stops, road, obstacles]
 timestamp: 2026-11-21
 ---
 
@@ -36,7 +36,7 @@ Entries are grouped by area. Numbering is stable; don't renumber when one is rem
 
 ## Numbering
 
-**The next free number is FR27**; bump it when you file one. Numbers are never
+**The next free number is FR30**; bump it when you file one. Numbers are never
 reused or renumbered when an entry is removed. Take the next number, not the first gap.
 
 ---
@@ -574,6 +574,303 @@ gets wrong can steer what gets generated next.
 
 ---
 
+# World — the map and the destination
+
+**Goal:** give the road somewhere to go and a way to see how far you've come.
+Today the road is endless (`docs/ARCHITECTURE.md` *World model*) and nothing shows
+the player where they've been. The owner wants a map that fills in as the player
+explores, and a destination at the end: a village town with a castle, where the mad
+scientist lives.
+
+## FR27. A discovery map on M, and a village with the mad scientist's castle at the end of the road
+
+**Status.** **Not started.** Requested by the owner; the approach is suggested only.
+
+**Depends on:** [] _(pairs with FR23: the castle is the mad scientist's home and the
+natural place for a final showdown; touches FR24's manor, see open questions)_
+
+**Motivation.** Walking north with no picture of the journey makes every 100 m feel
+the same. A map that reveals the road as the player walks it rewards exploring, and a
+goal marked on it (the castle, still in fog) turns "walk forever" into "get to the
+castle". The owner also wants to grow the map over time, adding places along the
+road as the game develops, so the map has to be built from data that's easy to
+extend, not a hand-drawn picture.
+
+**What the owner asked for.**
+
+- Pressing **M** opens a map of what the player has discovered so far.
+- The map is dynamic: it fills in as the player goes up the road, and the owner can
+  keep adding to the world and have the map pick it up.
+- The end goal is a **village town** with a **castle** at the far end. The castle is
+  where the mad scientist lives.
+
+**Proposed approach.** *(suggested, not decided)*
+
+- **Discovery state.** A small `Discovery` on `Game` (new `game/map.rs`) records the
+  furthest north `y` reached and the landmarks seen (flasks solved, monsters beaten,
+  bosses, regions entered). It resets with `Game::reset()` like the rest of the run
+  (FR14), unless persistence lands.
+- **The map draws from the world functions, not a stored map.** Because the world is
+  a pure function of `y` and the chunk index (invariant 3), the map can sample
+  `world::path_center` between the hub and the furthest point reached and place
+  icons with `spot_for_chunk` / `encounter_for_chunk`: the hub camp, the gate, a
+  marker every 50 m (the milestones), solved and unsolved flasks, beaten monsters,
+  Tide Titan marks, and a "you are here" marker. Anything north of the furthest point
+  is fog.
+- **Regions.** A table of regions along the road, keyed by distance (for example:
+  the dark forest, then the village outskirts, then the town, then the castle), kept
+  as data (`assets/regions.json` or a const table in `world.rs`) so adding a region
+  is one entry. Each region gives a name, a map colour and icon, and what
+  `decor::generate_chunk` places there. Entering one shows its name as a banner and
+  labels it on the map. This is how the owner grows the map over time.
+- **The destination.** The last region is the village and the castle. The road
+  ends at the castle gate, so the road is no longer endless. The castle shows on the
+  map from the start as a silhouette in the fog with a "?", so the player always
+  knows where they're headed.
+- **The panel.** `ui/map_panel.rs`, an egui window in the parchment theme. It reads
+  `Discovery` and the region table and returns events only (invariant 5). M toggles
+  it and Escape closes it. Whether the game pauses while it's open is an open
+  question.
+
+**Milestones (each lands on its own).**
+
+1. **A: the map.** `Discovery`, the M key, the map panel with the discovered road,
+   landmarks, fog and the player marker, all inside today's forest.
+2. **B: regions.** The region table, region banners and labels on the map, and
+   scenery chosen per region.
+3. **C: the village and the castle.** The village and town regions, the castle at
+   the end of the road, its silhouette on the map from the start, and what happens
+   when the player arrives (see open questions; a showdown with the mad scientist
+   would build on FR23 and FR2/FR3).
+
+**Open questions.**
+
+- **How far is the castle?** A fixed distance (say 2 000 m), or does it grow as the
+  owner adds regions? What happens past it: the run ends with a win screen, the
+  road continues, or a new loop starts?
+- **The castle and FR24's manor.** The manor across the lake is already drawn as the
+  mad scientist's home, pinned ahead on the screen. Does the castle replace it, does
+  the manor become the castle seen from afar, or are they two places?
+- **FR23's "never reached" villain.** FR23 keeps the doctor always out of reach. Does
+  the player finally catch them at the castle?
+- **Pause.** Does opening the map pause the game (like settings, FR7), or stay live
+  so the player can glance at it while walking? Can it open during a flask problem
+  or a battle?
+- **How much detail?** Show every flask and monster zone, or only landmarks (hub,
+  gate, milestones, bosses, regions)? Does it show unsolved flasks the player walked
+  past?
+- **Fog.** Is the castle the only thing visible in the fog, or are the region names
+  hinted too?
+- **Persistence.** Should discovery carry over between runs (a map that stays
+  filled in), which needs the persistence that doesn't exist yet (*Known limits*)?
+- **A minimap.** Is a small always-on minimap in a corner wanted too, or only the
+  full map on M?
+
+**Acceptance criteria.**
+
+- [ ] Pressing M opens a map and pressing it again (or Escape) closes it. M is listed
+  in the controls reference.
+- [ ] The map shows the hub, the gate and the road the player has walked so far, with
+  landmarks and a "you are here" marker. The road north of the furthest point
+  reached is fogged.
+- [ ] Walking further north fills in more of the map, the same way every run.
+- [ ] Adding a region is one entry in the region table, and the map and the world
+  both pick it up.
+- [ ] The road ends at a village town with a castle at the far end, where the mad
+  scientist lives. The castle is marked on the map as the goal before it's reached.
+- [ ] The map changes no XP, HP, answers or battle results (invariant 7), and the
+  panel keeps no gameplay state (invariant 5).
+- [ ] A dev event (for example `map`) opens the map without the keyboard, and one
+  (`tocastle`) snaps the player near the end, so both can be checked by screenshot.
+- [ ] Tests cover `Discovery` updates and that regions and the castle sit at fixed
+  distances (invariant 3).
+- [ ] `docs/ARCHITECTURE.md` (the road is no longer endless, the new modules, the
+  panel, the region table, the dev events, *Known limits*) and the README layout are
+  updated.
+
+---
+
+# World — the road itself
+
+**Goal:** make the road worth walking for its own sake. Today it's one cobbled lane
+with an unbroken fence on both sides, a gentle sway, and nowhere to stop between
+the hub and wherever the player dies. The owner wants places to rest along the way
+(FR28) and a road that bends, narrows and is cluttered with things to walk around
+(FR29).
+
+## FR28. Safe stops along the road: a little house to rest at
+
+**Status.** **Not started.** Requested by the owner; the approach is suggested only.
+The owner's wording was "safe hubs like a quick mouse"; this entry reads it as a
+small house or rest stop. Confirm that reading (see open questions).
+
+**Depends on:** [] _(pairs with FR1: a safe stop is where the lava gives the player
+a breather; FR27's map shows each stop as a landmark; FR17's shells could be spent
+here)_
+
+**Motivation.** Once the player leaves the hub there's no let-up: flasks, monsters
+and (with FR1) the lava, all the way up. A safe stop every so often gives the run a
+rhythm (push, rest, push), a place to heal before a Tide Titan, and a goal a little
+way ahead that's closer than the castle.
+
+**What the owner asked for.**
+
+- Safe hubs as part of the road, which the player comes across as they walk.
+- Something like a small house the player can stop at.
+
+**Proposed approach.** *(suggested, not decided)*
+
+- **Placement.** A pure function `world::safe_stop_for_chunk(k)`, like
+  `spot_for_chunk` and `encounter_for_chunk` (invariant 3). A fixed spacing reads
+  best, for example one stop every 250 m, put a chunk or two *before* each 500 m
+  Tide Titan so the player can heal before the boss. A chunk with a stop gets no
+  flask and no encounter zone, and the chunk either side gets no encounter zone.
+- **The clearing.** The road widens into a small lantern-lit clearing at the stop.
+  `walkable_x` and the fence ease out and back in around it the way they already do
+  through the hub funnel, so the fence opens onto the clearing.
+- **The house.** A hand-laid layout per stop (like `decor::hub_layout`, with a
+  seeded variant so stops differ): a small cottage with lit windows, a bench, a
+  lamppost or two, a well or a campfire. New `decor::Kind`s where needed (`Bench`,
+  `Well`). Optionally a keeper NPC who talks through the dialogue bank
+  (`assets/dialogue.json`), the way Professor Pebble does.
+- **What makes it safe.** Inside a stop's span: no encounters spawn, the player
+  can't be damaged, and (with FR1) the lava pauses or slows. Resting there heals:
+  either a full `Health::refill` on arrival, or a slow heal while the player stands
+  in the clearing (one door per rule, invariant 6).
+- **Optional extras** (the owner picks): a checkpoint so dying restarts at the last
+  stop reached instead of the hub (FR14's restart currently goes back to the start);
+  a shop that spends shells (FR17); a "rest" prompt on E that shows the run stats so
+  far.
+- **Invariant 4** says the hub is the safe zone. This extends it: "nothing hostile
+  spawns south of `ROAD_SOUTH_END` or inside a safe stop's span". Changing the
+  invariant is the owner's call; record the answer in `docs/ARCHITECTURE.md`.
+
+**Open questions.**
+
+- **Is "a small house / rest stop" what was meant by "a quick mouse"?** Or was it
+  something else, such as a mouse character who runs the stop?
+- **How often?** Every 250 m, every 500 m before the Titan, or more often early on
+  and less often further up?
+- **What does resting give?** A full heal on arrival, a slow heal while inside, or a
+  heal only once per stop per run?
+- **Checkpoint?** Does dying send the player back to the last stop, or still to the
+  hub?
+- **Can the player linger forever?** If FR1's lava pauses at a stop, the player can
+  stand there indefinitely. Is that fine, or does the lava keep creeping (slower) so
+  the stop is a breather, not a hiding place?
+- **A keeper?** Is there someone at each stop (one recurring character, or a
+  different one each time), or is it an empty house?
+
+**Acceptance criteria.**
+
+- [ ] Safe stops appear along the road at fixed distances, the same every run.
+- [ ] Each stop is a clearing off the road with a small house and props, and the
+  fence and walkable width open onto it smoothly.
+- [ ] No encounter zone, flask or (with FR1) lava threatens the player inside a stop.
+- [ ] Resting at a stop heals as decided above, through `Health`.
+- [ ] Placement is covered by a test: stops are deterministic, on the road, never
+  share a chunk with a flask or a zone, and never sit next to a zone.
+- [ ] A dev event (for example `tostop`) snaps the player next to the first stop so
+  it can be checked by screenshot.
+- [ ] `docs/ARCHITECTURE.md` (*World model* table, invariant 4, the new `decor`
+  kinds, the dev event) is updated.
+
+---
+
+## FR29. A road that winds, a fence that breaks, and things in the way
+
+**Status.** **Not started.** Requested by the owner; the approach is suggested only.
+
+**Depends on:** [] _(touches FR28's clearings and FR27's map, which both read
+`path_center`; FR2's blockers and FR29's obstacles share the collision work)_
+
+**Motivation.** The road today is almost a straight line north. `path_center` is two
+slow sines with at most ±88 px of sway, `PATH_HALF_W` never changes, and the fence is
+an unbroken row of posts every 84 px on both sides. After a minute every stretch
+looks the same. A road that bends hard, narrows and widens, with a fence that's
+broken in places and junk left on the cobbles, makes the walk feel like a journey
+and gives the player something to steer around.
+
+**What the owner asked for.**
+
+- The road doesn't have to run so straight up the screen.
+- The fence doesn't have to be so straight. Make it more dynamic.
+- Objects on the road: broken-down cars, benches, and so on. Other ideas welcome.
+
+**Proposed approach.** *(suggested, not decided)*
+
+- **A road that bends.** Give `path_center` more range: larger, slower sweeps plus
+  occasional sharp bends (a sum of sines with a seeded bend every few hundred
+  metres). The catch is the camera. `View::new` only follows `y` and centres the
+  960 px strip, so a road that swings more than about ±150 px walks off the screen.
+  The camera has to follow the road's x too (ease `View.offset.x` towards
+  `path_center` at the player's `y`), and the lake and woods (`bank_x`,
+  `treeline_x`) already follow the path, so they come along. Keep the ramp in from
+  straight near the gate so the hub is unchanged.
+- **A road that changes width.** Make the half-width a function `path_half_w(y)`:
+  narrow stretches between the trees, wide stretches, and the clearings for FR28.
+  `walkable_x`, `clamp_to_path`, the cobbles and the fence all read it instead of the
+  `PATH_HALF_W` constant.
+- **A fence that isn't a ruler line.** In `World::posts`, per post and seeded with
+  `gfx::hash01`: a small jitter in spacing and inset, posts that lean, a missing rail,
+  a gap of two or three missing posts, a fallen post lying on the verge. Some
+  stretches swap the iron fence for something else: a low stone wall, a broken
+  wooden rail, a hedge, or no fence at all where the road crosses open ground. The
+  fence stays visual: `clamp_to_path` is still the edge whether there's a post or not.
+- **Things on the road.** A new per-chunk placement, `world::obstacles_for_chunk(k)`
+  (invariant 3), of props that sit on the cobbles and that the player has to walk
+  around. Ideas, to fit the dark forest:
+  - a broken-down car or an abandoned carriage with a missing wheel (the owner's
+    call which fits better; a rusted old car could be the mad scientist's)
+  - a bench, a toppled lamppost, a fallen tree across half the road
+  - crates and barrels from the doctor's lab, a spilled cart of pumpkins
+  - a pothole or puddle (slows the player, no collision), a cracked stretch of
+    cobbles
+  - a short wooden bridge where a stream crosses, a stone well, a road sign at a
+    bend
+- **Collision.** Today `clamp_to_path` is the only movement constraint. Solid
+  obstacles need a second one: a simple circle or box per obstacle, pushed out after
+  the path clamp, also applied to knockback and rolls. Placement must always leave a
+  gap wider than the player (say 60 px of clear cobbles) and never sit on a flask,
+  an encounter zone or a FR28 stop.
+- **More ideas (welcome, not required):** a fork where two roads split around an
+  island of trees and rejoin; a stretch where the road runs along the lake shore with
+  no fence; fog banks that thicken in hollows; a crow that flies off when the player
+  gets close.
+
+**Open questions.**
+
+- **How wild can the bends get?** Gentle S-curves, or proper hairpins the camera has
+  to swing round for? Does the camera following x bother anyone (motion), and should
+  reduce-motion keep it gentler?
+- **Cars or carriages?** The setting is a gothic forest. Do broken-down cars fit,
+  or should the wrecks be carriages and carts?
+- **Do obstacles block or just decorate?** Solid things to steer round, or
+  props the player walks over? Can arrows (FR20) hit them?
+- **Any that interact?** For example, sit on a bench to rest (overlaps FR28), or kick
+  a barrel to find a shell (FR17).
+- **Forks.** Wanted, or out of scope? A fork means two walkable lanes at one `y`,
+  which `walkable_x` (one range per `y`) can't express today.
+
+**Acceptance criteria.**
+
+- [ ] The road visibly winds left and right, with some sharper bends, and the camera
+  keeps the player and the road on screen at the default window size.
+- [ ] The road's width varies along its length, and the walkable width, cobbles and
+  fence all follow it.
+- [ ] The fence varies: jittered and leaning posts, gaps, and at least one other
+  edge style (wall, wooden rail, hedge or none).
+- [ ] Obstacles such as a wreck (car or carriage), a bench and crates sit on the
+  road, and solid ones can't be walked through.
+- [ ] The road is always passable: a test walks every chunk and checks a clear gap
+  past every obstacle, and that no obstacle covers a flask, a zone or a stop.
+- [ ] Generation stays deterministic (same world every run), with a test.
+- [ ] The hub and the gate look and play as they do today.
+- [ ] `docs/ARCHITECTURE.md` (*World model*: path geometry, the camera, the new
+  placement and collision; *Rendering*: the fence) is updated.
+
+---
+
 # Story — the villain
 
 **Goal:** give the endless road a face and a reason. Today nothing ties the
@@ -769,7 +1066,9 @@ decided.
 - **The "ultimate" fight.** Is there ever a showdown? On an endless road, a choice
   is a boss battle every 1000 m (after which the doctor flees in their cart and
   shows up again further on), or a single finale at a set distance. That needs
-  battle work, so it would be its own FR built on FR2/FR3.
+  battle work, so it would be its own FR built on FR2/FR3. *(Raised by FR27: the
+  owner wants the road to end at a village with the mad scientist's castle, which
+  points to a single finale there.)*
 - **Moderation.** Are a schema, a length cap, a blocklist and a kid-safe prompt
   enough for live lines, or should live lines be optional, with the reviewed
   fallback bank as the default?
