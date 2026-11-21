@@ -4,6 +4,7 @@
 //! The questions themselves come through the same `TriggerState` pipeline
 //! (and fallback bank) as the bottles.
 
+use super::bow;
 use super::gfx;
 use super::monster::{self, MonsterCanvas, MonsterKind, Pose};
 use super::player::Player;
@@ -16,7 +17,11 @@ const ENTER_SWAP_S: f32 = 0.6;
 pub const INTRO_S: f32 = 0.8;
 pub const PLAYER_ATTACK_S: f32 = 0.8;
 /// When in the player's attack the blow lands.
-pub const PLAYER_HIT_AT: f32 = 0.3;
+/// When in the player's attack the arrow lands; it leaves the bow at
+/// `bow::RELEASE_S`.
+pub const PLAYER_HIT_AT: f32 = 0.4;
+/// How long the impact star shows on the monster.
+const IMPACT_S: f32 = 0.16;
 pub const MONSTER_ATTACK_S: f32 = 0.9;
 pub const MONSTER_HIT_AT: f32 = 0.4;
 pub const FAINT_S: f32 = 1.0;
@@ -139,12 +144,7 @@ impl Battle {
             gfx::ellipse_outline(p + vec2(0.0, 4.0), rx, 16.0, 2.0, gfx::INK);
         }
 
-        let toward = monster_at - player_at;
-        let lunge = match self.phase {
-            Phase::PlayerAttack(u) => (u / PLAYER_ATTACK_S * std::f32::consts::PI).sin() * 0.55,
-            _ => 0.0,
-        };
-        player.draw_at(player_at + toward * lunge, 2.0, reduce_flashing);
+        player.draw_at(player_at, 2.0, reduce_flashing);
 
         let pose = match self.phase {
             Phase::Enter(_) => Pose::Intro(0.0),
@@ -169,6 +169,10 @@ impl Battle {
                 t,
                 reduce_flashing,
             );
+        }
+
+        if let Phase::PlayerAttack(u) = self.phase {
+            draw_shot(player_at, monster_at, u, 2.0);
         }
 
         // Nameplate with a pip per hit still needed.
@@ -220,6 +224,36 @@ impl Battle {
                 gfx::shade(gfx::INK, 1.6),
             );
         }
+    }
+}
+
+/// The player's arrow (FR19) from the bow to the monster, `u` seconds into
+/// the attack, then a star where it strikes. `scale` matches the sprites'.
+fn draw_shot(player_at: Vec2, monster_at: Vec2, u: f32, scale: f32) {
+    let from = player_at + bow::NOCK_FROM_FOOT * scale;
+    let target = monster_at + vec2(-12.0, -26.0) * scale;
+    if (bow::RELEASE_S..PLAYER_HIT_AT).contains(&u) {
+        // A shallow arc: up, then down onto the target.
+        let k = (u - bow::RELEASE_S) / (PLAYER_HIT_AT - bow::RELEASE_S);
+        let arc = 26.0 * scale;
+        let at = |k: f32| from.lerp(target, k) - vec2(0.0, (k * std::f32::consts::PI).sin() * arc);
+        let along = (at(k + 0.02) - at(k)).normalize_or(vec2(1.0, 0.0));
+        let len = bow::ARROW_LEN * scale;
+        bow::draw_arrow(at(k) - along * len, along, len, scale, 1.0, true);
+    } else if (PLAYER_HIT_AT..PLAYER_HIT_AT + IMPACT_S).contains(&u) {
+        let k = (u - PLAYER_HIT_AT) / IMPACT_S;
+        let r = (10.0 + 10.0 * k) * scale;
+        let gold = Color::new(1.0, 0.86, 0.25, 1.0 - k);
+        gfx::star(
+            target,
+            r + 2.0,
+            r * 0.4 + 1.0,
+            6,
+            0.3,
+            1.0,
+            gfx::with_alpha(gfx::INK, 1.0 - k),
+        );
+        gfx::star(target, r, r * 0.4, 6, 0.3, 1.0, gold);
     }
 }
 

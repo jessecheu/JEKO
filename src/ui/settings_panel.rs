@@ -9,6 +9,7 @@ const CONTROLS: &[(&str, &str)] = &[
     ("Enter", "Submit an answer"),
     ("Space", "Jump"),
     ("Ctrl", "Roll"),
+    ("F", "Shoot an arrow"),
     ("P", "Pause"),
     ("O / Esc", "Settings"),
 ];

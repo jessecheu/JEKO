@@ -1,6 +1,7 @@
+use super::bow::{self, Arrow};
 use super::flicker::{Flicker, FlickerKind};
 use super::gfx::{self, INK};
-use super::world::View;
+use super::world::{self, View};
 use macroquad::prelude::*;
 use std::cell::OnceCell;
 use std::f32::consts::{PI, TAU};
@@ -13,6 +14,8 @@ const ROLL_S: f32 = 0.4;
 /// Holding Shift multiplies walking speed by this. It stacks with the
 /// Speed Boost upgrade.
 const SPRINT_MULTIPLIER: f32 = 1.6;
+/// Raises the bow and shoots (FR19).
+pub const SHOOT_KEY: KeyCode = KeyCode::F;
 /// How long the stun's stars take to pop and fade once it ends (FR12).
 const STUN_POP_S: f32 = 0.35;
 /// How long the "item get" pose holds (FR9).
@@ -43,6 +46,13 @@ pub enum Action {
         t: f32,
         dir: f32,
     },
+    /// Raising the bow and loosing an arrow (FR19), facing `dir`.
+    /// `volley` is false in a battle, whose view draws its own arrow.
+    Shoot {
+        t: f32,
+        dir: f32,
+        volley: bool,
+    },
 }
 
 pub struct Player {
@@ -70,6 +80,8 @@ pub struct Player {
     cheer: f32,
     /// A Gull Bandit has the hat (FR10) until it's beaten.
     pub hat_stolen: bool,
+    /// Arrows loosed on the road (FR19), oldest first. Cosmetic.
+    pub arrows: Vec<Arrow>,
     /// Off-screen canvas the sprite is drawn into when it has to be
     /// rotated, squashed or made translucent as one piece.
     canvas: OnceCell<RenderTarget>,
@@ -92,6 +104,35 @@ impl Player {
             anim_t: 0.0,
             cheer: 0.0,
             hat_stolen: false,
+            arrows: Vec::new(),
+        }
+    }
+
+    /// Raises the bow and looses an arrow the way the player faces (F).
+    pub fn shoot(&mut self) {
+        self.action = Action::Shoot {
+            t: 0.0,
+            dir: self.facing,
+            volley: true,
+        };
+    }
+
+    /// A battle's attack: turns to the monster on the right and shoots,
+    /// leaving the arrow's flight to the battle view.
+    pub fn shoot_at_monster(&mut self) {
+        self.facing = 1.0;
+        self.action = Action::Shoot {
+            t: 0.0,
+            dir: 1.0,
+            volley: false,
+        };
+    }
+
+    /// The direction the bow points while a shot plays.
+    fn aiming(&self) -> Option<(f32, f32)> {
+        match self.action {
+            Action::Shoot { t, dir, .. } => Some((t, dir)),
+            _ => None,
         }
     }
 
@@ -156,17 +197,49 @@ impl Player {
         } else {
             self.stun_pop = (self.stun_pop - dt).max(0.0);
         }
+        if let Action::Shoot {
+            t,
+            dir,
+            volley: true,
+        } = self.action
+        {
+            if t < bow::RELEASE_S && t + dt >= bow::RELEASE_S {
+                self.loose_arrow(dir);
+            }
+        }
         self.action = match self.action {
             Action::Jump { t } if t + dt < JUMP_S => Action::Jump { t: t + dt },
             Action::Roll { t, dir } if t + dt < ROLL_S => Action::Roll { t: t + dt, dir },
+            Action::Shoot { t, dir, volley } if t + dt < bow::SHOOT_S => Action::Shoot {
+                t: t + dt,
+                dir,
+                volley,
+            },
             _ => Action::None,
         };
+        for a in &mut self.arrows {
+            a.update(dt);
+        }
+        self.arrows.retain(|a| !a.done());
         if let Some(f) = &mut self.flicker {
             f.update(dt);
             if !f.active() {
                 self.flicker = None;
             }
         }
+    }
+
+    /// Sends an arrow off from the bow hand.
+    fn loose_arrow(&mut self, dir: f32) {
+        if self.arrows.len() >= bow::MAX_ARROWS {
+            self.arrows.remove(0);
+        }
+        let off = bow::NOCK_FROM_FOOT;
+        self.arrows.push(Arrow::new(
+            self.pos + vec2(off.x * dir, 0.0),
+            world::ground_lift(self.pos.y) - off.y,
+            dir,
+        ));
     }
 
     /// W/Up walks north along the boardwalk, A/D steer across it, S backs
@@ -187,6 +260,8 @@ impl Player {
                     t: 0.0,
                     dir: self.facing,
                 };
+            } else if is_key_pressed(SHOOT_KEY) {
+                self.shoot();
             }
         }
 
@@ -204,7 +279,8 @@ impl Player {
             dir.x += 1.0;
         }
 
-        if dir.x != 0.0 {
+        // Mid-shot the archer keeps aiming the same way, even strafing.
+        if dir.x != 0.0 && self.aiming().is_none() {
             self.facing = dir.x.signum();
         }
 
@@ -251,7 +327,7 @@ impl Player {
 
     fn action_pose(&self) -> (f32, f32, f32, f32) {
         match self.action {
-            Action::None => (0.0, 1.0, 1.0, 0.0),
+            Action::None | Action::Shoot { .. } => (0.0, 1.0, 1.0, 0.0),
             Action::Jump { t } => {
                 let u = t / JUMP_S;
                 let hop = (u * PI).sin() * JUMP_HEIGHT;
@@ -360,6 +436,10 @@ impl Player {
         let bob = step.abs() * 2.5;
 
         let skin = Color::new(0.98, 0.80, 0.62, 1.0);
+        let aiming = self.aiming();
+        if aiming.is_none() && self.cheer <= 0.0 {
+            bow::draw_slung(foot + vec2(0.0, -15.0 - bob));
+        }
         let sandal = Color::new(0.95, 0.45, 0.35, 1.0);
         for (side, phase) in [(-1.0f32, step), (1.0, -step)] {
             let x = foot.x + side * 4.0;
@@ -404,7 +484,7 @@ impl Player {
         // Arms swing opposite the legs (raised overhead while cheering,
         // drawn after the hat below).
         let cheering = self.cheer > 0.0;
-        if !cheering {
+        if !cheering && aiming.is_none() {
             for side in [-1.0f32, 1.0] {
                 let hand = body + vec2(side * 10.5, 1.0 + side * step * 2.0);
                 draw_circle(hand.x, hand.y, 3.8, INK);
@@ -425,9 +505,13 @@ impl Player {
         gfx::ellipse(head + vec2(7.0, 5.0), 2.6, 1.8, blush);
 
         let look = self.facing * 2.0;
-        for dx in [-4.0, 4.0] {
+        // Sighting down the arrow: the eye away from the target shuts.
+        let squint = aiming.is_some_and(|(t, _)| bow::aim(t).draw > 0.3);
+        for dx in [-4.0f32, 4.0] {
             let eye = vec2(head.x + look + dx, head.y + 1.5);
-            if self.stunned() {
+            if squint && dx.signum() != self.facing.signum() {
+                gfx::line(eye - vec2(2.2, 0.0), eye + vec2(2.2, 0.0), 1.6, INK);
+            } else if self.stunned() {
                 // Dizzy spiral eyes.
                 let pts: Vec<Vec2> = (0..14)
                     .map(|i| {
@@ -472,6 +556,24 @@ impl Player {
             gfx::ellipse_outline(crown, 9.5, 6.5, 2.0, INK);
         }
         self.draw_halo(halo, true);
+
+        if let Some((t, dir)) = aiming {
+            // Held out in front of everything, so the bow reads at a glance.
+            let aim = bow::aim(t);
+            let rest = |side: f32| body + vec2(side * 10.5, 1.0);
+            let grip = rest(dir).lerp(body + vec2(dir * 18.0, -3.0), aim.raise);
+            bow::draw_held(grip, dir, &aim);
+            let pull = if aim.nocked {
+                bow::nock_point(grip, dir, &aim)
+            } else {
+                // The string hand stays back after the release, then drops.
+                rest(-dir).lerp(grip - vec2(dir * 16.0, 0.0), aim.raise)
+            };
+            for hand in [grip, pull] {
+                draw_circle(hand.x, hand.y, 3.8, INK);
+                draw_circle(hand.x, hand.y, 2.8, skin);
+            }
+        }
 
         if cheering {
             // Both hands up, holding the reward overhead.

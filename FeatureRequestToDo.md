@@ -36,7 +36,7 @@ Entries are grouped by area. Numbering is stable; don't renumber when one is rem
 
 ## Numbering
 
-**The next free number is FR19**; bump it when you file one. Numbers are never
+**The next free number is FR21**; bump it when you file one. Numbers are never
 reused or renumbered when an entry is removed. Take the next number, not the first gap.
 
 ---
@@ -223,7 +223,7 @@ its "help" is animation. It never changes XP, speed, answers or battle outcomes.
 (see [Completed](#completed)), each on a provisional answer so the work could
 land; this entry keeps the questions so they are answered, not settled silently.
 
-## FR16. Confirm the provisional answers from FR5–FR15
+## FR16. Confirm the provisional answers from FR5–FR15 and FR20
 
 **Status.** **Waiting on the owner.** Every default below is live in the code.
 Tick an item once the owner confirms it, or replace it with the owner's answer
@@ -231,7 +231,7 @@ and file the change as its own FR if it needs code.
 
 **Depends on:** [] _(answers here may spawn small follow-up FRs)_
 
-**Motivation.** FR5–FR15 were built in one pass. Their open questions are the
+**Motivation.** FR5–FR15 were built in one pass, and FR20 later on its own. Their open questions are the
 owner's to answer, so each was given a reasonable, easily changed default and
 recorded here.
 
@@ -262,6 +262,10 @@ recorded here.
   refills.* Wrong **bottle** answer costs HP? *Yes, 1 heart.*
 - [ ] **FR14** Progression on death? *Everything resets.* Same world each run? *Yes
   (hash-seeded).* Persist a best distance? *No, session only.*
+- [ ] **FR20** Do arrows hit anything on the road (monsters in sea-grass, bottles)?
+  *No, cosmetic like jump/roll (invariant 7): they arc, stick and fade.* Key? *F.*
+  Limited ammo? *No.* In a battle? *A right answer plays as a bow shot instead of the
+  old lunge; the hit is still decided by the answer alone.*
 - [ ] **FR15** Hub size/contents? *~1.3 screens of scenery plus Professor Pebble's
   tutorial.* Walk back into the hub? *Yes.* Restart in the hub? *Yes.*
 
@@ -306,9 +310,14 @@ HUD. Give them a use (e.g. a shop in the FR15 hub, or extra hearts).
 When an entry is fully built, delete it above and add one line here, newest
 first: `FR<n> — title — date — why it closed (commit)`. Its number stays retired.
 
+- FR20 — A bow the hero can shoot — 2026-11-21 — requested directly and built in one
+  pass: `game/bow.rs` (shot timing, slung/held bow, arrow drawing, cosmetic `Arrow`s
+  that arc, stick or splash, tested), `Action::Shoot` on F with a raise/draw/release
+  animation, arrows in the depth sort, and the battle attack shown as a bow shot
+  (`battle::draw_shot`). Provisional answers (cosmetic arrows, key, no ammo) are in FR16
 - FR18 — Sprint on Shift, roll moved to Ctrl — 2026-11-21 — built: holding Shift
   multiplies walk speed by `SPRINT_MULTIPLIER` (1.6, stacks with Speed Boost) in
-  `Player::update`; roll rebound to Ctrl; controls reference updated (uncommitted)
+  `Player::update`; roll rebound to Ctrl; controls reference updated (578161f)
 - FR9 — Classic adventure-platformer look & feel — 2026-11-21 — built: refreshed
   hero (bolder ink, bigger eyes, pouch), "item get" pose with `gfx::item_get` rays,
   sparkles and "+N XP!" banner on a solved bottle, framed egui style with hard drop

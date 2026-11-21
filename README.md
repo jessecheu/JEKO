@@ -38,7 +38,8 @@ src/
     world.rs              endless boardwalk path, camera view, chunked scenery, bottle triggers, ocean/sand/deck drawing
     decor.rs              beach props (palms, umbrellas, huts, boats...) — per-chunk generation + drawing
     gfx.rs                shared drawing helpers (ink outline, shadows, ribbons, stars)
-    player.rs             WASD/arrow movement along the path, speed multiplier from upgrades and Shift sprint, player sprite, jump/roll
+    player.rs             WASD/arrow movement along the path, speed multiplier from upgrades and Shift sprint, player sprite, jump/roll/shoot
+    bow.rs                the bow: shot timing, bow and arrow drawing, cosmetic arrows that arc and stick where they land
     flicker.rs            reusable flicker look (spawn ghost, damage blink), honours "reduce flashing"
     health.rs             player HP in half-hearts (damage/heal/refill, clamped, unit-tested)
     monster.rs            monster roster (stats, rarity by distance) + per-monster drawing and animations
@@ -96,8 +97,10 @@ hunting required.
    message-in-a-bottle and an **E** key prompt floats over it; press E to
    open its task (you stay put until it's answered). Press E again to jump
    into the answer field, type the number, and hit Enter. No mouse needed
-   (clicking the field and Submit still works). **Space** jumps and
-   **Ctrl** rolls (cosmetic for now). **P** pauses, and **O** opens settings
+   (clicking the field and Submit still works). **Space** jumps,
+   **Ctrl** rolls and **F** shoots an arrow from your bow (all cosmetic for
+   now; in a battle, a right answer is shown as a bow shot). **P** pauses,
+   and **O** opens settings
    (O or Esc closes them).
    The run starts in a beach hub (press E by Professor Pebble for a quick
    tutorial); walk north through the "THE ROAD" arch
@@ -107,7 +110,7 @@ hunting required.
 
    Dev aids: `JEKO_SHOT=out.png:120` saves a screenshot at frame 120 and
    exits; `JEKO_DEV=jelly@150,wrong@270` fires scripted events (`hurt`,
-   `kill`, `restart`, `jump`, `roll`, `stun`, `cheer`, `pause`, `settings`,
+   `kill`, `restart`, `jump`, `roll`, `shoot`, `stun`, `cheer`, `pause`, `settings`,
    battles `pinch`/`jelly`/`puff`/`coco`/`gull`/`wyrm`/`titan`, `right`/
    `wrong` answers through the real submit path, `e` presses E, and
    teleports `tobottle`/`tozone`/`topebble`) at those frames, stepping a

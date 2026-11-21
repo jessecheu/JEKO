@@ -93,7 +93,8 @@ The layering holds today, and new code should keep it:
 | `game/world.rs` | Coordinates and camera (`View`), path geometry, chunking, bottles (`Spot`), encounter zones, ground and deck drawing, and the depth-sorted `Tall` items. |
 | `game/decor.rs` | Per-chunk scenery generation (`generate_chunk`), the hand-placed spawn hub (`hub_layout`), and how each prop draws. |
 | `game/gfx.rs` | The shared drawing vocabulary: the `INK` and `SHADOW` colours, shading, ellipses, ribbons, stars, hearts, the key prompt, the item-get burst, and `hash01`. |
-| `game/player.rs` | `Player`: movement, the cosmetic `Action`s (jump, roll), stun, cheer, death, the stolen hat, and the sprite drawn through a render target. |
+| `game/player.rs` | `Player`: movement, the cosmetic `Action`s (jump, roll, shoot), the arrows it has loosed, stun, cheer, death, the stolen hat, and the sprite drawn through a render target. |
+| `game/bow.rs` | The bow: the shot's timing (`aim`, `SHOOT_S`, `RELEASE_S`), drawing the bow slung and held and an arrow (`draw_arrow`), and `Arrow`, a cosmetic projectile that arcs, then sticks in the ground or splashes in the sea. |
 | `game/flicker.rs` | `Flicker` / `FlickerKind` (spawn ghost, damage blink). It turns elapsed time into a `Look` (tint and alpha) and honours reduce flashing. |
 | `game/health.rs` | `Health`, counted in half-hearts: damage, heal, refill, clamped. |
 | `game/monster.rs` | The `MonsterKind` roster, `MonsterInfo` stats, distance-weighted `pick`, and per-monster drawing and animation. |
@@ -317,9 +318,10 @@ up), warm cast shadows (`gfx::SHADOW`), and **back-to-front sorting by ground `y
    under the bottles.
 3. **The depth-sorted pass.** `world.tall_items(&view)` returns every `Tall` item on
    screen: `Decor` (palms, huts, umbrellas, …), railing `Post`s with their rope, and
-   `Bottle`s. The player is added, everything is sorted by `sort_y()`, and the items
-   are drawn in order. The player walks behind a palm north of them and in front of
-   one south of them.
+   `Bottle`s. The player and their arrows (keyed by the ground under them) are added,
+   everything is sorted by `sort_y()`, and the items are drawn in order. The player
+   walks behind a palm north of them and in front of one south of them. The sort is
+   stable and arrows go in after the player, so a fresh arrow draws over the archer.
 4. `world.draw_overhead`: gulls, always on top.
 5. Key prompts (E) over the bottle or NPC in reach, drawn last so they're never hidden.
 6. The item-get burst and banner, then the hearts, which are always shown whatever the
@@ -347,7 +349,8 @@ Any new flash, blink or shake must check it.
 ## 8. Battles and monsters (`game/battle.rs`, `game/monster.rs`)
 
 Walking into an uncleared zone calls `Game::start_battle(kind, zone)`, which clears
-the trigger, input and action and sets `battle = Some(Battle::new(..))`. The battle
+the trigger, input and action, turns the player to face the monster on the right,
+and sets `battle = Some(Battle::new(..))`. The battle
 reuses the question pipeline (§5) for every question.
 
 ```
@@ -356,7 +359,7 @@ Enter (1.0 s: flash, iris closes on the player, opens on the battle)
                          │ correct              │ wrong          │
                          ▼                      ▼                │
                  PlayerAttack (0.8 s)    MonsterAttack (0.9 s)   │
-                 hit at 0.3 s:           hit at 0.4 s:           │
+                 arrow hits at 0.4 s:    hit at 0.4 s:           │
                  hits_left −= 1          damage_player(damage),  │
                          │               stun, hat steal         │
                 hits_left == 0? ──no─────────────┴── next question
@@ -367,6 +370,12 @@ Enter (1.0 s: flash, iris closes on the player, opens on the battle)
 
 *Figure: `battle::Phase`. Each move into `Question` requests a new task with the
 monster's `difficulty_bias`.*
+
+The player's attack is a bow shot. A correct answer calls `Player::shoot_at_monster`,
+and the battle view (`battle::draw_shot`) flies an arrow from the bow at
+`bow::RELEASE_S` (0.26 s) onto the monster at `PLAYER_HIT_AT` (0.4 s), with an
+impact star. The player stays on their pad. The shot is drawing only: the hit is
+counted by the phase timer, as before.
 
 On victory the zone is marked `cleared`, a stolen hat comes back, `monsters_beaten`
 goes up, and a toast shows. There's no fleeing. Dev battles (`JEKO_DEV=jelly@…`) use
@@ -395,8 +404,16 @@ roster by distance: Pinchlings thin out, and the tough ones grow common further 
   cycle advances by the distance actually moved, so it stops against the railing. A
   stun or the cheer pose blocks movement. `Player::stop(dt)` holds the player in place
   but keeps effects ticking.
-- **Cosmetic actions.** `Action::Jump` (Space) and `Action::Roll` (Ctrl) change only
-  how the sprite is drawn. They never change position, speed or anything gameplay reads.
+- **Cosmetic actions.** `Action::Jump` (Space), `Action::Roll` (Ctrl) and
+  `Action::Shoot` (F, `SHOOT_KEY`) change only how the sprite is drawn. They never
+  change position, speed or anything gameplay reads. Only one runs at a time.
+- **The bow** (`game/bow.rs`). It rides slung across the back. A shot lasts `SHOOT_S`
+  (0.55 s): raise, draw (the far eye squints), release at `RELEASE_S`, follow through,
+  lower. Facing is locked while it plays. On the road the release looses an `Arrow`
+  into `Player.arrows` (at most `MAX_ARROWS`, 8). It flies across at 560 px/s, comes
+  down under gravity about 340 px away, then sticks in the deck or sand for 1.4 s, or
+  splashes if it lands west of `shore_x`. Arrows tick with the player's effects, so
+  they freeze with a pause. Nothing collides with them.
 - **Status.** Stun (`stun(secs)` extends a running one) shows a halo of stars, blocks
   movement and blocks submitting an answer. The cheer is the item-get pose. `dead`
   drives the flop-and-fade. `hat_stolen` is set by the Gull Bandit.
@@ -466,7 +483,7 @@ driving the window:
 - `JEKO_SHOT=out.png:120` saves a screenshot at frame 120, prints
   `Game::debug_summary()` (a `STATE …` line) to stderr, and exits.
 - `JEKO_DEV=name@frame,…` fires scripted events: damage (`hurt`, `kill`), moves
-  (`jump`, `roll`, `stun`, `cheer`), `restart`, `pause`, `settings`, battles
+  (`jump`, `roll`, `shoot`, `stun`, `cheer`), `restart`, `pause`, `settings`, battles
   (`pinch`, `jelly`, `puff`, `coco`, `gull`, `wyrm`, `titan`), answers through the
   real submit path (`right`, `wrong`), `e` (press E), and teleports (`tobottle`,
   `tozone`, `topebble`).
@@ -481,6 +498,7 @@ driving the window:
 |---|---|
 | `game/world.rs` (10) | Scenery never lands on the deck. Every bottle is reachable and on the deck. Generation is deterministic. Interact reaches only nearby fresh bottles. The clamp keeps the player on the deck. Encounters are on the road and deterministic. A Titan guards every 500 m. Tougher monsters appear further up. The hub is wide, dry and bounded. The walkable width is continuous through the gateway. |
 | `llm/usage.rs` (5) | Provider-timed vs round-trip speed, zero time ignored, no usage block, the capped history. |
+| `game/bow.rs` (2) | The shot draws, then releases, then lowers. An arrow flies the way it was loosed, comes down a believable distance away, then goes away. |
 | `game/health.rs` (4) | Starts full; damage, heal and refill clamping. |
 | `game/dialogue.rs` (2) | The bank has Professor Pebble; the typewriter reveals, then advances, then closes. |
 | `ui/token_panel.rs` (1) | Token counts read `1,284` below 10,000, then `12.9K` / `4.2M`. |
@@ -517,8 +535,8 @@ the owner, and update this section if it goes ahead.
 6. **One door per rule.** HP changes go through `damage_player`, `Health::heal` and
    `Health::refill`. Questions start through `request_task`. Answers are judged in
    `submit_answer`.
-7. **Cosmetic means cosmetic.** `Action`s, the planned pet (FR4) and visual effects
-   never change XP, speed, answers or battle results.
+7. **Cosmetic means cosmetic.** `Action`s, the bow's arrows, the planned pet (FR4)
+   and visual effects never change XP, speed, answers or battle results.
 8. **Animation runs on the game clock.** Use `Game.time` or per-object timers advanced
    by `dt`, so pausing freezes everything.
 9. **Reduce flashing is honoured** by every flicker, flash and shake.

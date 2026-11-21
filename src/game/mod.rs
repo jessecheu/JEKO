@@ -1,4 +1,5 @@
 pub mod battle;
+pub mod bow;
 pub mod decor;
 pub mod dialogue;
 pub mod flicker;
@@ -334,6 +335,8 @@ impl Game {
         self.interact_target = None;
         self.input_buffer.clear();
         self.player.action = player::Action::None;
+        // The battle view puts the monster on the right.
+        self.player.facing = 1.0;
         self.battle = Some(Battle::new(kind, zone.unwrap_or(usize::MAX)));
     }
 
@@ -445,6 +448,7 @@ impl Game {
         let xp = b.kind.info().xp_per_hit;
         if correct {
             b.phase = Phase::PlayerAttack(0.0);
+            self.player.shoot_at_monster();
             let level = self.progression.level;
             for upgrade in self.progression.record_correct(xp) {
                 self.toast = Some((format!("Unlocked: {}", upgrade.name), 3.0));
@@ -547,7 +551,8 @@ impl Game {
         };
         format!(
             "STATE hp={}/{} level={} xp={} streak={} dist={}m bottles={} beaten={} \
-             zones_cleared={} battle={:?} trigger={} dialogue={} game_over={} hat_stolen={}",
+             zones_cleared={} battle={:?} trigger={} dialogue={} game_over={} hat_stolen={} \
+             arrows={}",
             self.health.current,
             self.health.max,
             self.progression.level,
@@ -562,6 +567,7 @@ impl Game {
             self.dialogue.is_some(),
             self.game_over.is_some(),
             self.player.hat_stolen,
+            self.player.arrows.len(),
         )
     }
 
@@ -582,6 +588,7 @@ impl Game {
                     dir: self.player.facing,
                 }
             }
+            "shoot" => self.player.shoot(),
             "restart" => self.reset(),
             "pinch" => self.start_battle(MonsterKind::Pinchling, None),
             "jelly" => self.start_battle(MonsterKind::Jellyglow, None),
@@ -743,24 +750,38 @@ impl Game {
         // One back-to-front pass over everything that stands up off the
         // ground, keyed by where it touches the ground, so the player walks
         // behind a railing post or palm north of them and in front of one
-        // south of them.
-        let mut items: Vec<(f32, Option<world::Tall<'_>>)> = self
+        // south of them. Arrows go in by the ground under them, after the
+        // player so one just loosed draws over the archer (the sort is
+        // stable).
+        enum Layer<'a> {
+            World(world::Tall<'a>),
+            Player,
+            Arrow(&'a bow::Arrow),
+        }
+        let mut items: Vec<(f32, Layer<'_>)> = self
             .world
             .tall_items(&view)
             .into_iter()
-            .map(|item| (item.sort_y(), Some(item)))
+            .map(|item| (item.sort_y(), Layer::World(item)))
             .collect();
-        items.push((self.player.pos.y, None));
+        items.push((self.player.pos.y, Layer::Player));
+        items.extend(
+            self.player
+                .arrows
+                .iter()
+                .map(|a| (a.ground.y, Layer::Arrow(a))),
+        );
         items.sort_by(|a, b| a.0.total_cmp(&b.0));
 
         for (_, item) in &items {
             match item {
-                Some(item) => item.draw(&view, t),
-                None => self.player.draw(
+                Layer::World(item) => item.draw(&view, t),
+                Layer::Player => self.player.draw(
                     &view,
                     world::ground_lift(self.player.pos.y),
                     self.settings.reduce_flashing,
                 ),
+                Layer::Arrow(a) => a.draw(&view),
             }
         }
 
