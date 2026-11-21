@@ -2,7 +2,7 @@
 type: Feature Request
 title: JEKO — Feature Requests
 description: Concrete, actionable feature requests for JEKO (Math Quest) — work that is scoped and wanted but not yet built. Each entry states the motivation, a proposed approach, and what "done" looks like. Maintained as the shared agent todo list.
-tags: [feature-request, backlog, gameplay, urgency, lava, monsters, battle, education, minigames, pets, controls, pause, settings, health, death, art-direction, spawn, tooling, ci-cd, dagger, content-generation, hot-reload, live-content, villain, story, live-dialogue, setting, forest, manor, map, exploration, regions, village, castle, rest-stops, road, obstacles]
+tags: [feature-request, backlog, gameplay, urgency, lava, monsters, battle, education, minigames, pets, controls, pause, settings, health, death, art-direction, spawn, tooling, ci-cd, dagger, content-generation, hot-reload, live-content, villain, story, live-dialogue, setting, forest, manor, map, exploration, regions, village, castle, rest-stops, road, obstacles, agents, openclaw]
 timestamp: 2026-11-21
 ---
 
@@ -36,7 +36,7 @@ Entries are grouped by area. Numbering is stable; don't renumber when one is rem
 
 ## Numbering
 
-**The next free number is FR30**; bump it when you file one. Numbers are never
+**The next free number is FR31**; bump it when you file one. Numbers are never
 reused or renumbered when an entry is removed. Take the next number, not the first gap.
 
 ---
@@ -1246,6 +1246,150 @@ the build container runs every step through **`flake.nix`**, and CD targets
 - [ ] `make ci` and the `dagger` CLI in the dev shell let a developer run the same
   pipeline locally; README and *Content, configuration and dev hooks* in
   `docs/ARCHITECTURE.md` describe it.
+
+---
+
+# Tooling — agents
+
+**Goal:** run the game's model-driven jobs (content, monsters, lessons, the
+villain, playtesting) as OpenClaw agents the owner can schedule, steer and talk to,
+without making the game depend on them.
+
+## FR30. Run JEKO's agent-shaped jobs as OpenClaw agents
+
+**Status.** **Not started.** Requested by the owner; the approach is suggested only.
+Check the OpenClaw details below (endpoints, config keys, skill layout) against
+[docs.openclaw.ai](https://docs.openclaw.ai) before building. They were read on
+2026-11-21 and OpenClaw changes quickly.
+
+**Depends on:** [] _(milestone A needs nothing; milestone B shares FR21's content dir
+and watcher, and the agents it enables are FR21's monsters, FR22's lessons and FR23's
+villain; FR19's CI is a natural place for the playtest agent)_
+
+**Motivation.** Several jobs in JEKO already are agents, or are planned to be: work
+that runs in the background, calls a model, and writes something for the game to
+pick up. Today each one is wired by hand: `make gen-content` is run manually, and
+FR21/FR22/FR23 each plan their own Cerebras loop inside the game. OpenClaw is a
+self-hosted agent gateway with skills (`SKILL.md`), cron jobs, sub-agents, inbound
+webhooks and chat channels (Telegram, WhatsApp, Discord, …). Running these jobs
+there gives the owner one place to schedule them, change their instructions without
+a rebuild, see what they did, and message them from a phone ("make three swamp
+monsters for tomorrow").
+
+**What the owner asked for.**
+
+- Integrate everything that can be an agent as an OpenClaw agent.
+- A plan for how to introduce OpenClaw to the project.
+
+**What can be an agent, and what can't.**
+
+| Job | Today / planned | As an OpenClaw agent? |
+|---|---|---|
+| Live questions at a flask or in a battle | `CerebrasClient::request_task_async`, `llm/task_gen.rs` | **No, stays direct.** It's on the play path: the player is frozen until it arrives, and the offline fallback has to be instant (invariants 1 and 2). A gateway hop adds latency and a moving part. An agent can *pre-generate* question packs instead (see lessons). |
+| NPC dialogue (`assets/dialogue.json`) | `make gen-content`, run by hand | **Yes, first.** A skill that runs the existing generator, checks the output, and opens a PR or leaves a diff. A cron job can refresh it weekly. |
+| Generated monsters | FR21's `Studio` writing `content/monsters/<id>.json` | **Yes.** A "monster designer" agent writes `MonsterSpec` JSON into the content dir; FR21's watcher and validation load it. The in-game `Studio` stays as the offline-friendly path. |
+| Lesson packs, explanations, field guide | FR22 | **Yes.** A "lesson writer" agent fills `lessons/<topic>-<level>.json`, steered by the run log (topics the player gets wrong). |
+| The mad scientist's lines and schemes | FR23 | **Partly.** A "villain" agent with a persistent persona and memory across runs writes a queue of lines and schemes ahead of time; the game plays from the queue and falls back to the bank when it's empty. Live per-event lines stay direct to Cerebras if they must land within a second. |
+| Playtesting | `JEKO_SHOT`, `JEKO_DEV` scripted events | **Yes.** A "playtester" agent runs scripted sessions, reads the screenshots, and reports what looks broken. Pairs with FR19's CI. |
+| Progress reports | nothing yet | **Yes, new.** A "tutor" agent reads the run log and sends a short summary to a parent or teacher over a chat channel ("40 problems today, fractions still tricky"). Needs the owner's decision on what child data leaves the machine. |
+| Feature work on this repo | coding agents reading this file | **Out of scope here.** OpenClaw could drive a coding agent, but the handoff through this file already works; revisit separately if wanted. |
+
+**Proposed approach.** *(suggested, not decided)*
+
+- **The rule: the game never needs OpenClaw.** OpenClaw is an optional producer
+  beside the game, never inside the frame. The game talks to it only through files
+  and, later, a fire-and-forget event post on a background thread. Without OpenClaw
+  the game plays exactly as today (invariants 1 and 2). This is the boundary that
+  keeps the integration safe to add one agent at a time.
+- **The file contract.** Two directories make the whole interface:
+  - **In:** FR21's content dir (`JEKO_CONTENT_DIR`, `content/`). Agents write
+    `monsters/`, `lessons/`, `villain/` files there, atomically (write a temp file,
+    then rename). The game's watcher validates and loads them, and a bad file keeps
+    the last good version. The game doesn't know or care who wrote a file.
+  - **Out:** a run log, `content/runs/<date>.jsonl`, that the game appends to (flask
+    solved or missed with the topic, battle won or lost, death, distance). Agents
+    read it to adapt. Nothing personal goes in it beyond what the owner approves.
+- **Skills live in the repo.** An `openclaw/` folder with one skill per agent
+  (`openclaw/skills/jeko-dialogue/SKILL.md`, `jeko-monsters/`, `jeko-lessons/`,
+  `jeko-villain/`, `jeko-playtest/`, `jeko-tutor/`). Each `SKILL.md` says what the
+  agent writes, the schema it must match (pointing at the serde types and an example
+  file), the kid-safe rules, and the command to validate its output. A small
+  validator binary (`src/bin/validate_content.rs`, reusing FR21's pure validation)
+  lets an agent check its own work before the game sees it.
+- **Agent config, also in the repo.** `openclaw/README.md` describes the OpenClaw
+  config: one agent per job (`agents.list[]`), each limited to its own skill and
+  given write access only to its part of the content dir; cron entries (nightly
+  dialogue refresh, a monster batch before play time); the model provider (Cerebras,
+  if OpenClaw can reach it through an OpenAI-compatible endpoint, so prompts and
+  costs stay where they are today).
+- **Live events, later.** Once the file contract works, the game can optionally
+  `POST` events to the Gateway's inbound hook (`/hooks/agent`, with the hook token
+  and `hooks.allowedAgentIds` limiting which agents can be woken) from a background
+  thread, so the villain agent reacts within seconds instead of on a schedule.
+  Env vars `JEKO_AGENT_URL` and `JEKO_AGENT_TOKEN`. Unset means off. Replies still
+  come back as files. OpenClaw has no outbound webhook to push results to an app.
+  This bridge lives in `llm/` or a new non-graphics module (invariant 10).
+- **Safety.** ClawHub skills from third parties are untrusted. Only the repo's own
+  skills are installed for these agents. The Gateway listens on localhost only.
+  Everything an agent writes goes through the same validation as FR21's specs
+  (schema, length caps, blocklist, kid-safe prompt), because a child plays the game.
+
+**How the owner introduces it** (milestones, each lands on its own):
+
+1. **A. Try it with no game changes.** Install OpenClaw locally and start the
+   Gateway. Add the repo's `openclaw/skills/jeko-dialogue/` as a workspace skill
+   (symlink it into `~/.openclaw/workspace/skills/`, or point the agent's workspace
+   at the repo). Ask the agent in chat to refresh the dialogue. It runs
+   `make gen-content`, checks the JSON, and shows the diff. Add a weekly cron. If
+   this feels useful, carry on; if not, nothing in the game changed.
+2. **B. The file contract.** Build FR21 milestone A's content dir and watcher (if not
+   already built), the run log, and the validator binary. Then add the monster and
+   lesson agents, which only write files. The game picks them up live.
+3. **C. Playtester.** A skill that runs `JEKO_DEV` and `JEKO_SHOT` scenarios and
+   reports on the screenshots. Optionally run it from FR19's CI.
+4. **D. Live bridge and the villain.** Add the optional event post and FR23's
+   villain agent with a line queue.
+5. **E. Tutor reports.** Connect a chat channel and the tutor agent, once the owner
+   has decided what it may send.
+
+**Open questions.**
+
+- **Which jobs first?** The order above starts with the safest (dialogue), but the
+  owner may want monsters or the villain sooner.
+- **Where does OpenClaw run?** On the dev machine only, or on an always-on box so
+  cron jobs fire when the laptop is shut? (Cron runs inside the Gateway, so it needs
+  the Gateway running.)
+- **Which model?** Cerebras for everything (one key, one bill), or a different model
+  for agents that need more reasoning (the villain's schemes, the playtester reading
+  screenshots)?
+- **Do generated files get committed?** Agent output straight into the running game's
+  content dir, or through a PR the owner reviews first? (FR21 has the same question
+  for `content/`.)
+- **Child data.** What may the run log record, and may any of it leave the machine
+  through a chat channel? Who gets the tutor reports?
+- **Does the villain need to be live?** Is a queue refreshed every few minutes good
+  enough, or do lines have to react to the exact moment?
+- **Coding agents.** Should OpenClaw also drive coding agents over this file, or keep
+  that separate?
+
+**Acceptance criteria.**
+
+- [ ] With OpenClaw absent, the game builds, runs and plays exactly as before, with
+  and without `CEREBRAS_API_KEY`.
+- [ ] `openclaw/` holds a skill per agent and a README with the config and setup
+  steps, and following it from a clean OpenClaw install gets the dialogue agent
+  working.
+- [ ] The dialogue agent refreshes `assets/dialogue.json` on request and on a
+  schedule, and its output passes validation.
+- [ ] Monster and lesson agents write files the game loads live, through the same
+  validation as FR21's specs, and a bad file never crashes the game.
+- [ ] The game writes a run log the agents can read, with only the fields the owner
+  approved.
+- [ ] If the live bridge is built, it's off unless `JEKO_AGENT_URL` is set, never
+  blocks the frame, and failures are silent apart from a dev-mode toast.
+- [ ] `docs/ARCHITECTURE.md` (*Content, configuration and dev hooks*: the agent dirs,
+  run log, env vars, validator; *The question pipeline* if any question path changes)
+  and the README layout are updated.
 
 ---
 
