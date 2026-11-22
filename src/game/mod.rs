@@ -567,6 +567,9 @@ impl Game {
             // The curse holds still while a question is loading or open
             // (owner, FR1), like the player.
             self.tick_curse(dt);
+            // Hearts mend on their own while the player is free to roam,
+            // unless the fever is at full (invariant 6: through `heal`).
+            self.health.tick(dt, self.curse.level < 1.0);
             if self.game_over.is_some() {
                 return;
             }
@@ -1870,8 +1873,13 @@ impl Game {
             let fill = self.health.current.saturating_sub(i * 2).min(2);
             gfx::heart(vec2(28.0 + i as f32 * 30.0, 28.0), 24.0, fill);
         }
+        let mut y = 50.0;
+        if self.health.regenerating() {
+            health::draw_regen_bar(vec2(16.0, y), &self.health, self.curse.level >= 1.0);
+            y += 16.0;
+        }
         if self.curse.started {
-            curse::draw_meter(vec2(16.0, 50.0), self.curse.level);
+            curse::draw_meter(vec2(16.0, y), self.curse.level);
         }
     }
 

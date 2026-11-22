@@ -144,7 +144,7 @@ The layering holds today, and new code should keep it:
 | `game/villain.rs` | The mad scientist (FR23, milestone A): `Villain` (where they stand, what they're doing, the bubble and the cue waiting to be said), `VillainAction`, `Mood` and `Pose` (the animation as pure numbers), `VillainCue` (what happened), `Snapshot` and `Villain::observe` (turns level, streak, distance and hearts into cues), `target_pos` (the pure rule for where they stand), and `load_bank` / `check_bank` for `assets/villain_lines.json`. Draws the doctor and their cart through a 2× canvas, and the bubble. No model call: everything it says is from the bank. |
 | `game/flicker.rs` | `Flicker` / `FlickerKind` (spawn ghost, damage blink). It turns elapsed time into a `Look` (tint and alpha) and honours reduce flashing. |
 | `game/goalpost.rs` | `Tracker` (FR31): which goalpost the top-centre badge shows, the metres left, and its pop, unroll, "Now!" and close animation. It produces a `TrackerView` and draws nothing. |
-| `game/health.rs` | `Health`, counted in half-hearts: damage, heal, refill, clamped. |
+| `game/health.rs` | `Health`, counted in half-hearts: damage, heal, refill, clamped, and slow regeneration with its HUD bar. |
 | `game/curse.rs` | `Curse` (FR1): the curse level and its rules (`tick` returns a `Tick` for `Game` to act on, `cleanse`, `speed_factor`), its `Stage`s, and its drawing (`draw_tint`, `draw_wisps`, `draw_meter`). |
 | `game/monster.rs` | `Species` (a built-in `MonsterKind` or a `MonsterSpec`), the `MonsterKind` roster and its stats, distance-weighted `pick`, the shared canvas and poses, and per-monster drawing and animation. |
 | `game/monster_rig.rs` | `draw_spec`: draws any `MonsterSpec` from its body shape, parts, eyes, accessory, idle and attack. |
@@ -756,7 +756,13 @@ unless `JEKO_STUDIO=off`, `main` starts one long-lived thread that designs monst
   `damage_player`. Each stage toasts once on the way up, and the toasts can play again
   once it has lifted back to clear.
 - **Health** (`game/health.rs`). 5 hearts, stored as 10 half-hearts and clamped at both
-  ends. Heals: ½ heart for a correct flask, a full refill on a level-up. Death sets
+  ends. Heals: ½ heart for a correct flask, a full refill on a level-up, and regeneration.
+  `Health::tick` (called from `Game::update` on the free-roam frame, beside `tick_curse`,
+  so it freezes in a battle, a question, a dialogue and a pause) waits `REGEN_DELAY_S`
+  (4 s) after the last hit, then restores ½ heart every `REGEN_EVERY_S` (8 s) through
+  `Health::heal`. A hit empties the progress. It holds, keeping its progress, while the
+  curse is full. `draw_regen_bar` shows the progress under the hearts ("Heal", dimmed while
+  it waits) only while the player is hurt; the curse meter sits below it. Death sets
   `game_over = Some(0.0)`, clears pause and settings, records `best_distance_m`, and
   marks any open flask `Missed`.
 - **The mad scientist** (`game/villain.rs`, FR23 milestone A). `Game.villain` is Dr. Nix
@@ -952,7 +958,7 @@ driving the window:
 | `llm/buffer.rs` (11) | The buffer gives the exact difficulty, else one below, never a harder one, and prefers a topic. `plan_prefetch` asks for what's missing nearest first, counts ready and in-flight questions, and obeys the in-flight, per-difficulty and per-minute caps. `WaitStats` reads out as the panel shows it. A topic takes only that topic; a question isn't added twice. |
 | `game/prefetch.rs` (9) | A flask wants one question and a monster its hits plus a spare, clamped to difficulty 5. Env switches parse. Landed answers reach the buffer and failures vanish. A look-ahead has a circle that closes when it lands and goes quietly when it fails, and sending one opens it. A disabled prefetcher asks for nothing. A missed problem comes back first as similar practice; a thin buffer asks for the weakest topic, else the rotation; a stocked one asks for nothing. |
 | `game/bow.rs` (2) | The shot draws, then releases, then lowers. An arrow flies the way it was loosed, comes down a believable distance away, then goes away. |
-| `game/health.rs` (4) | Starts full; damage, heal and refill clamping. |
+| `game/health.rs` (8) | Starts full; damage, heal and refill clamping; regen interval, the delay and reset after a hit, holding while not allowed, and stopping at full or dead. |
 | `game/curse.rs` (8) | Nothing happens in the hub before the road. It starts the first time the player is past the gate. Standing still fills it, then drains on the interval. Walking north holds it back, even at the far end of the ramp. Old ground gives no relief. The hub lifts it. Stage toasts replay only after it clears. Cleanse and speed clamp. |
 | `game/skills.rs` (5) | Three rolls then a lockout that refills all; a spent charge trickles back; sprinting drains and running dry winds; stamina waits, then recovers, and winded ends at the threshold; a short break doesn't refill. |
 | `game/map.rs` (6) | Discovery starts at the gate and only moves north. The range has a floor and grows with progress. Landmarks never sit in the fog, while flasks further up exist but stay hidden. Milestones every 50 m. The same walk gives the same map. Solved flasks show as solved. |
