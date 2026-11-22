@@ -180,6 +180,40 @@ fn draw_icon(painter: &egui::Painter, kind: GoalKind, c: Pos2, s: f32) {
             ];
             painter.add(egui::Shape::convex_polygon(roof, LANTERN, ink));
         }
+        // A signpost, for a region's border (FR27).
+        GoalKind::Region => {
+            let post = egui::Rect::from_center_size(
+                c + egui::vec2(0.0, s * 0.25),
+                egui::vec2(s * 0.3, s * 1.5),
+            );
+            painter.rect(post, 1.0, WOOD_DARK, ink, egui::StrokeKind::Middle);
+            let board = egui::Rect::from_center_size(
+                c + egui::vec2(0.0, -s * 0.35),
+                egui::vec2(s * 1.7, s * 0.8),
+            );
+            painter.rect(board, 2.0, CREAM, ink, egui::StrokeKind::Middle);
+        }
+        // A keep with two towers, for the castle (FR27).
+        GoalKind::Castle => {
+            let l = s * 0.85;
+            let keep = egui::Rect::from_min_max(
+                c + egui::vec2(-l * 0.55, -l * 0.3),
+                c + egui::vec2(l * 0.55, l * 0.8),
+            );
+            painter.rect(keep, 1.0, STONE, ink, egui::StrokeKind::Middle);
+            for side in [-1.0_f32, 1.0] {
+                let tower = egui::Rect::from_min_max(
+                    c + egui::vec2(side * l * 0.95 - l * 0.28, -l * 0.8),
+                    c + egui::vec2(side * l * 0.95 + l * 0.28, l * 0.8),
+                );
+                painter.rect(tower, 1.0, STONE, ink, egui::StrokeKind::Middle);
+            }
+            let gate = egui::Rect::from_min_max(
+                c + egui::vec2(-l * 0.18, l * 0.1),
+                c + egui::vec2(l * 0.18, l * 0.8),
+            );
+            painter.rect_filled(gate, 1.0, WOOD_DARK);
+        }
         // A crown, for the boss.
         GoalKind::Titan => {
             let l = s * 0.85;

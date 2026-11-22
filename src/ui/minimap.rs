@@ -76,6 +76,13 @@ pub fn draw(ctx: &egui::Context, view: &MapView) -> f32 {
                     LandmarkKind::Stop => {
                         painter.circle_filled(at, 3.5, Color32::from_rgb(60, 150, 80));
                     }
+                    LandmarkKind::Castle => {
+                        painter.rect_filled(
+                            Rect::from_center_size(at, egui::vec2(10.0, 8.0)),
+                            1.0,
+                            Color32::from_rgb(110, 90, 140),
+                        );
+                    }
                     LandmarkKind::Boss { beaten } => {
                         let c = if beaten {
                             Color32::from_rgb(120, 120, 110)

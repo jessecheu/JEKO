@@ -11,3 +11,4 @@ pub mod shop_panel;
 pub mod style;
 pub mod task_panel;
 pub mod token_panel;
+pub mod victory_panel;

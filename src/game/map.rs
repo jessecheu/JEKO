@@ -1,5 +1,6 @@
-//! The discovery map (FR27, milestone A): how far up the road the player has
-//! been, and the landmarks that lie behind that point.
+//! The discovery map (FR27): how far up the road the player has been, the
+//! landmarks and regions that lie behind that point, and the castle that waits
+//! at the far end, the one thing the fog never hides.
 //!
 //! The map is not stored. The world is a pure function of `y` and the chunk
 //! index, so the map samples it: it only has to remember the furthest point
@@ -7,6 +8,7 @@
 //! egui; `ui::map_panel` draws what `Discovery::snapshot` returns.
 
 use super::monster::MonsterKind;
+use super::regions;
 use super::world::{self, SpotState, World};
 
 /// The map always shows at least this much road, so a fresh run isn't a stub.
@@ -36,6 +38,8 @@ pub enum LandmarkKind {
     },
     /// A safe stop (FR28).
     Stop,
+    /// The castle at the end of the road: always on the map, in the fog or not.
+    Castle,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -49,6 +53,17 @@ pub struct Landmark {
     pub label: Option<u32>,
 }
 
+/// One region the player has entered, as a band along the road (FR27).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct RegionBand {
+    pub name: &'static str,
+    /// Metres up the road where the band starts and where it stops: the
+    /// region's end, or the furthest point reached if it hasn't been crossed.
+    pub from_m: f32,
+    pub to_m: f32,
+    pub color: [u8; 3],
+}
+
 /// Everything the panel needs to draw one frame of the map.
 #[derive(Clone, Debug)]
 pub struct MapView {
@@ -60,6 +75,13 @@ pub struct MapView {
     pub landmarks: Vec<Landmark>,
     /// The road's centre every `step_m`, for the discovered stretch only.
     pub road: Vec<(f32, f32)>,
+    /// The regions entered so far, south to north. Regions further up are not
+    /// listed: their names stay in the fog.
+    pub regions: Vec<RegionBand>,
+    /// Metres from the gate to the castle.
+    pub castle_m: f32,
+    /// Metres left for the player to walk to the castle gate.
+    pub to_go_m: f32,
 }
 
 /// How far the player has got. Resets with the run.
@@ -119,8 +141,14 @@ impl Discovery {
             dx: 0.0,
             label: None,
         }];
+        landmarks.push(Landmark {
+            kind: LandmarkKind::Castle,
+            meters: world::CASTLE_M,
+            dx: dx_at(world::CASTLE_GATE_Y),
+            label: None,
+        });
         let mut m = MILESTONE_M;
-        while (m as f32) <= furthest_m {
+        while (m as f32) <= furthest_m && (m as f32) < world::CASTLE_M {
             landmarks.push(Landmark {
                 kind: LandmarkKind::Milestone,
                 meters: m as f32,
@@ -185,13 +213,29 @@ impl Discovery {
         }
         road.push((furthest_m, dx_at(self.furthest_y)));
 
+        let regions = regions::REGIONS
+            .iter()
+            .enumerate()
+            .map(|(i, r)| RegionBand {
+                name: r.name,
+                from_m: r.from_m as f32,
+                to_m: regions::end_m(i, world::CASTLE_M).min(furthest_m),
+                color: r.color,
+            })
+            .filter(|b| b.to_m > b.from_m)
+            .collect();
+        let player_m = meters_at(player_y);
+
         MapView {
             range_m,
             furthest_m,
-            player_m: meters_at(player_y),
+            player_m,
             player_dx: player_x - world::path_center(world::ROAD_START_Y),
             landmarks,
             road,
+            regions,
+            castle_m: world::CASTLE_M,
+            to_go_m: (world::CASTLE_M - player_m).max(0.0),
         }
     }
 }
@@ -237,7 +281,11 @@ mod tests {
         let mut d = Discovery::new();
         d.note(y_at(300.0));
         let v = d.snapshot(&w, y_at(300.0), 0.0);
-        for l in &v.landmarks {
+        for l in v
+            .landmarks
+            .iter()
+            .filter(|l| l.kind != LandmarkKind::Castle)
+        {
             assert!(l.meters <= v.furthest_m + 0.01, "{l:?} is in the fog");
         }
         // Flasks and monsters further up exist but stay hidden.
@@ -292,5 +340,69 @@ mod tests {
             .landmarks
             .iter()
             .any(|l| l.kind == LandmarkKind::FlaskSolved));
+    }
+
+    #[test]
+    fn the_castle_is_on_the_map_from_the_first_step() {
+        let v = Discovery::new().snapshot(&World::new(), world::PLAYER_START_Y, 0.0);
+        let castle = v
+            .landmarks
+            .iter()
+            .find(|l| l.kind == LandmarkKind::Castle)
+            .expect("the castle shows in the fog");
+        assert_eq!(castle.meters, world::CASTLE_M);
+        assert_eq!(v.castle_m, world::CASTLE_M);
+        assert_eq!(v.to_go_m, world::CASTLE_M);
+    }
+
+    #[test]
+    fn the_distance_to_go_counts_down() {
+        let mut d = Discovery::new();
+        d.note(y_at(300.0));
+        let v = d.snapshot(&World::new(), y_at(300.0), 0.0);
+        assert!((v.to_go_m - (world::CASTLE_M - 300.0)).abs() < 0.1);
+        // At the gate there's nothing left.
+        d.note(world::CASTLE_GATE_Y);
+        let v = d.snapshot(&World::new(), world::CASTLE_GATE_Y, 0.0);
+        assert_eq!(v.to_go_m, 0.0);
+    }
+
+    #[test]
+    fn only_the_regions_entered_have_a_band() {
+        let mut d = Discovery::new();
+        assert!(d
+            .snapshot(&World::new(), world::PLAYER_START_Y, 0.0)
+            .regions
+            .is_empty());
+
+        d.note(y_at(300.0));
+        let v = d.snapshot(&World::new(), y_at(300.0), 0.0);
+        assert_eq!(v.regions.len(), 1);
+        assert_eq!(v.regions[0].name, "The Dark Forest");
+        assert_eq!(
+            v.regions[0].to_m, 300.0,
+            "an open band ends at the furthest point"
+        );
+
+        // Past the first border: the forest is closed off at its own end, and
+        // the next region's name appears. Names further up stay hidden.
+        d.note(y_at(950.0));
+        let v = d.snapshot(&World::new(), y_at(950.0), 0.0);
+        let names: Vec<_> = v.regions.iter().map(|b| b.name).collect();
+        assert_eq!(names, ["The Dark Forest", "Tallybrook Fields"]);
+        assert_eq!(v.regions[0].to_m, 900.0);
+        assert_eq!(v.regions[1].to_m, 950.0);
+    }
+
+    #[test]
+    fn the_whole_road_is_covered_by_bands_at_the_gate() {
+        let mut d = Discovery::new();
+        d.note(world::CASTLE_GATE_Y);
+        let v = d.snapshot(&World::new(), world::CASTLE_GATE_Y, 0.0);
+        assert_eq!(v.regions.len(), regions::REGIONS.len());
+        for w in v.regions.windows(2) {
+            assert_eq!(w[0].to_m, w[1].from_m, "no gap between regions");
+        }
+        assert_eq!(v.regions.last().unwrap().to_m, world::CASTLE_M);
     }
 }

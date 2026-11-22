@@ -49,9 +49,11 @@ src/
     task_gen.rs           prompt templates + JSON extraction helpers
     usage.rs              per-request token counts + tokens/sec, session totals (feeds the token panel)
   game/
-    world.rs              endless cobbled road, camera view, chunked scenery, potion-flask triggers, encounter zones and road-blocking monsters, lake/ground/road drawing, light pools, mist, bats and fireflies
+    world.rs              the cobbled road to the castle gate (1,500 m), camera view, chunked scenery, potion-flask triggers, encounter zones and road-blocking monsters, region borders, lake/ground/road drawing, light pools, mist, bats and fireflies
     decor.rs              forest props (pines, gravestones, pumpkins, cottages, lampposts...) and the hub camp — per-chunk generation + drawing
-    map.rs                the discovery map: furthest point reached and the landmarks behind it (FR27)
+    map.rs                the discovery map: furthest point reached, the regions entered, the landmarks behind it and the castle ahead (FR27)
+    regions.rs            the table of regions along the road (forest, fields, village, castle grounds): names, map colours, scenery knobs (FR27)
+    castle.rs             the castle at the road's end: curtain wall, gatehouse towers, portcullis, with the manor's keep behind it (FR27)
     manor.rs              the gothic manor backdrop across the lake (and on the battle horizon), its lightning, bats
     villain.rs            the mad scientist at the top of the road: movement, animation, cues and a speech bubble, with lines from assets/villain_lines.json (FR23)
     gfx.rs                shared drawing helpers (night palette, ink outline, shadows, ribbons, stars, glows, vignette, potion flask, speech bubble)
@@ -80,7 +82,8 @@ src/
     creation_bar.rs          the creation bar under it: a progress circle per model call being written (FR33)
     field_guide_panel.rs     the field guide (G): a card per monster, filled in once beaten
     shop_panel.rs           the safe stop's shop (E at the cottage door)
-    map_panel.rs            the map (M): discovered road, landmarks, fog
+    map_panel.rs            the map (M): discovered road, region bands, landmarks, fog, the castle
+    victory_panel.rs        the screen after reaching the castle gate
     minimap.rs              the always-on minimap, top right
     settings_panel.rs        settings modal (O): panel toggles, reduce flashing, controls reference
     game_over_panel.rs       Game Over screen: run stats, try again
@@ -131,13 +134,13 @@ hunting required.
    `secretspec run -- cargo run` if you went the secretspec route). See
    `make help` for every target (`build`, `release`, `check`, `fmt`, `lint`,
    `test`, `gen-content`, `gen-monsters`, `validate`, `nix-build`).
-3. Controls: W/Up walks up the road (the map scrolls with you, forever),
+3. Controls: W/Up walks up the road (the map scrolls with you, until the castle gate 1,500 m up),
    A/D or Left/Right steer across it, S/Down backs up; hold **Shift** to
    sprint, which drains the stamina meter on the skill bar at the bottom of the
    screen (run it dry and you're winded until it refills). Walk up to a glowing
    potion flask and an **E** key prompt floats over it; press E to
    open its task (you stay put until it's answered). Press E again to jump
-   into the answer field, type the number, and hit Enter. **M** opens the map of the road you've walked (the world pauses). At a safe stop's cottage (every 250 m), **E** opens the gear shop. No mouse needed
+   into the answer field, type the number, and hit Enter. **M** opens the map of the road you've walked, with the castle waiting at the top (the world pauses). Walk all the way to the castle gate to win the run. At a safe stop's cottage (every 250 m), **E** opens the gear shop. No mouse needed
    (clicking the field and Submit still works). **Space** jumps,
    **Ctrl** rolls the way you're steering (3 in a row, then a short wait) and **F** shoots an arrow from your bow (the
    shot is cosmetic for now; in a battle, a right answer is shown as a bow shot). **P** pauses,

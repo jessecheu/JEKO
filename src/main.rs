@@ -108,7 +108,7 @@ async fn main() {
             }
             // The goalpost tracker (FR31) and the toast share the top centre,
             // so the toast steps down while the tracker is up.
-            let tracker = if game.game_over.is_none() && !in_battle {
+            let tracker = if game.game_over.is_none() && game.victory.is_none() && !in_battle {
                 game.goalpost.view()
             } else {
                 None
@@ -127,6 +127,7 @@ async fn main() {
             // never looks like a stall.
             if game.settings.show_creation_bar
                 && game.game_over.is_none()
+                && game.victory.is_none()
                 && game.dialogue.is_none()
                 && !game.map_open
                 && !game.in_hub()
@@ -146,6 +147,9 @@ async fn main() {
                 ui::dialogue_panel::draw(ctx, d);
             }
             if game.can_restart() && ui::game_over_panel::draw(ctx, &game) {
+                game.reset();
+            }
+            if game.victory_panel_up() && ui::victory_panel::draw(ctx, &game) {
                 game.reset();
             }
             if game.map_open {

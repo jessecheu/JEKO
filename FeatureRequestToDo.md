@@ -146,7 +146,7 @@ its "help" is animation. It never changes XP, speed, answers or battle outcomes.
 (see [Completed](#completed)), each on a provisional answer so the work could
 land; this entry keeps the questions so they are answered, not settled silently.
 
-## FR16. Confirm the provisional answers from FR1–FR3, FR5–FR15, FR17, FR20–FR22, FR24, FR26, FR28, FR31, FR32 and FR33
+## FR16. Confirm the provisional answers from FR1–FR3, FR5–FR15, FR17, FR20–FR22, FR24, FR26, FR27, FR28, FR31, FR32 and FR33
 
 **Status.** **Waiting on the owner.** Every default below is live in the code.
 Tick an item once the owner confirms it, or replace it with the owner's answer
@@ -287,6 +287,19 @@ recorded here.
   *Only in the hover, and only once it is made: a monster's name, a pack's topic.*
   Stock line under the circles? *Yes: look-ahead questions and unseen monsters, as counts.*
 
+- [ ] **FR27** The castle. How far? *1,500 m, and the road ends there (the owner's pick).* What
+  happens on arrival? *A win screen with the run's stats and "Walk the road again", "to be
+  continued" (the owner's pick); the gate rises while it comes up; no showdown.* The manor and the
+  castle? *One building: the castle is the manor up close, and the backdrop manor fades out as it
+  nears (the owner's pick).* The regions? *A const table in `game/regions.rs` (the owner's pick), names
+  hidden in the fog; provisional borders at 900 m (Tallybrook Fields), 1,100 m (Tallybrook Village) and
+  1,400 m (The Castle Grounds), names and colours, and what each region looks like.* What is the
+  castle's plaque and name? *"THE CASTLE"; the doctor isn't named on it.* Does the doctor go in
+  or stay on the road? *They duck inside once you're within 16 m of the gate, so they're still never
+  caught.* Does the map persist between runs? *No: it resets with the run, like all state.* How
+  detailed is the map? *Landmarks plus flasks, as milestone A had it; the minimap shows the castle as a
+  purple square.* Is there a boss at the gate? *No: no Titan at 1,500 m; the Titans are at 500 and 1,000 m.*
+  A safe stop before the castle? *Yes, at 1,460 m.*
 - [ ] **FR17** What is the coin in the forest? *Gears: brass cogs dropped from the mad
   scientist's lab (the owner's pick).* What are they for? *Spending at a safe stop's shop
   (the owner's pick): hot soup (4 gears, 2 hearts back) and a heart charm (12 gears, one
@@ -500,124 +513,10 @@ gets there. The waits come from the timing, not from the model being slow.
 # World — the map and the destination
 
 **Goal:** give the road somewhere to go and a way to see how far you've come.
-Today the road is endless (`docs/ARCHITECTURE.md` *World model*) and nothing shows
-the player where they've been. The owner wants a map that fills in as the player
-explores, and a destination at the end: a village town with a castle, where the mad
-scientist lives.
-
-## FR27. A discovery map on M, and a village with the mad scientist's castle at the end of the road
-
-**Status.** **Milestone A built** (map on M, `game/map.rs`, `ui/map_panel.rs`). B
-(regions) and C (village and castle) are not started; next step is B's region table.
-Owner decisions for A: the game **pauses** while the map is open, and it can't open
-during a flask problem, battle, dialogue or settings; it shows **landmarks plus
-flasks** (hub gate, 50 m milestones, flasks fresh/solved/missed, monster zones, Tide
-Titans, you-are-here). Still open: castle distance and end-of-road, manor vs castle,
-FR23, fog hints, persistence, minimap.
-
-**Depends on:** [] _(pairs with FR23: the castle is the mad scientist's home and the
-natural place for a final showdown; touches FR24's manor, see open questions)_
-
-**Motivation.** Walking north with no picture of the journey makes every 100 m feel
-the same. A map that reveals the road as the player walks it rewards exploring, and a
-goal marked on it (the castle, still in fog) turns "walk forever" into "get to the
-castle". The owner also wants to grow the map over time, adding places along the
-road as the game develops, so the map has to be built from data that's easy to
-extend, not a hand-drawn picture.
-
-**What the owner asked for.**
-
-- Pressing **M** opens a map of what the player has discovered so far.
-- The map is dynamic: it fills in as the player goes up the road, and the owner can
-  keep adding to the world and have the map pick it up.
-- The end goal is a **village town** with a **castle** at the far end. The castle is
-  where the mad scientist lives.
-
-**Proposed approach.** *(suggested, not decided)*
-
-- **Discovery state.** A small `Discovery` on `Game` (new `game/map.rs`) records the
-  furthest north `y` reached and the landmarks seen (flasks solved, monsters beaten,
-  bosses, regions entered). It resets with `Game::reset()` like the rest of the run
-  (FR14), unless persistence lands.
-- **The map draws from the world functions, not a stored map.** Because the world is
-  a pure function of `y` and the chunk index (invariant 3), the map can sample
-  `world::path_center` between the hub and the furthest point reached and place
-  icons with `spot_for_chunk` / `encounter_for_chunk`: the hub camp, the gate, a
-  marker every 50 m (the milestones), solved and unsolved flasks, beaten monsters,
-  Tide Titan marks, and a "you are here" marker. Anything north of the furthest point
-  is fog.
-- **Regions.** A table of regions along the road, keyed by distance (for example:
-  the dark forest, then the village outskirts, then the town, then the castle), kept
-  as data (`assets/regions.json` or a const table in `world.rs`) so adding a region
-  is one entry. Each region gives a name, a map colour and icon, and what
-  `decor::generate_chunk` places there. Entering one shows its name as a banner and
-  labels it on the map. This is how the owner grows the map over time.
-- **The destination.** The last region is the village and the castle. The road
-  ends at the castle gate, so the road is no longer endless. The castle shows on the
-  map from the start as a silhouette in the fog with a "?", so the player always
-  knows where they're headed.
-- **The panel.** `ui/map_panel.rs`, an egui window in the parchment theme. It reads
-  `Discovery` and the region table and returns events only (invariant 5). M toggles
-  it and Escape closes it. Whether the game pauses while it's open is an open
-  question.
-
-**Milestones (each lands on its own).**
-
-1. **A: the map.** `Discovery`, the M key, the map panel with the discovered road,
-   landmarks, fog and the player marker, all inside today's forest.
-2. **B: regions.** The region table, region banners and labels on the map, and
-   scenery chosen per region.
-3. **C: the village and the castle.** The village and town regions, the castle at
-   the end of the road, its silhouette on the map from the start, and what happens
-   when the player arrives (see open questions; a showdown with the mad scientist
-   would build on FR23 and FR2/FR3).
-
-**Open questions.**
-
-- **How far is the castle?** A fixed distance (say 2 000 m), or does it grow as the
-  owner adds regions? What happens past it: the run ends with a win screen, the
-  road continues, or a new loop starts?
-- **The castle and FR24's manor.** The manor across the lake is already drawn as the
-  mad scientist's home, pinned ahead on the screen. Does the castle replace it, does
-  the manor become the castle seen from afar, or are they two places?
-- **FR23's "never reached" villain.** FR23 keeps the doctor always out of reach. Does
-  the player finally catch them at the castle?
-- **Pause.** Does opening the map pause the game (like settings, FR7), or stay live
-  so the player can glance at it while walking? Can it open during a flask problem
-  or a battle?
-- **How much detail?** Show every flask and monster zone, or only landmarks (hub,
-  gate, milestones, bosses, regions)? Does it show unsolved flasks the player walked
-  past?
-- **Fog.** Is the castle the only thing visible in the fog, or are the region names
-  hinted too?
-- **Persistence.** Should discovery carry over between runs (a map that stays
-  filled in), which needs the persistence that doesn't exist yet (*Known limits*)?
-- ~~**A minimap.**~~ Answered: yes, top right (built, `ui/minimap.rs`, toggle in settings).
-
-**Acceptance criteria.**
-
-- [x] Pressing M opens a map and pressing it again (or Escape) closes it. M is listed
-  in the controls reference.
-- [x] The map shows the hub, the gate and the road the player has walked so far, with
-  landmarks and a "you are here" marker. The road north of the furthest point
-  reached is fogged.
-- [x] Walking further north fills in more of the map, the same way every run.
-- [ ] Adding a region is one entry in the region table, and the map and the world
-  both pick it up.
-- [ ] The road ends at a village town with a castle at the far end, where the mad
-  scientist lives. The castle is marked on the map as the goal before it's reached.
-- [x] The map changes no XP, HP, answers or battle results (invariant 7), and the
-  panel keeps no gameplay state (invariant 5).
-- [ ] A dev event (for example `map`) opens the map without the keyboard, and one
-  (`tocastle`) snaps the player near the end, so both can be checked by screenshot.
-  *(`map` and `far` exist; `tocastle` waits for milestone C.)*
-- [ ] Tests cover `Discovery` updates and that regions and the castle sit at fixed
-  distances (invariant 3). *(`Discovery` tests done; regions and castle wait for B and C.)*
-- [ ] `docs/ARCHITECTURE.md` (the road is no longer endless, the new modules, the
-  panel, the region table, the dev events, *Known limits*) and the README layout are
-  updated.
-- [ ] The castle, the village and region borders are goalposts for the tracker
-  (FR31: a new `GoalKind` in `world::goalposts_in_chunk`).
+The map on M (FR27, built) fills in as the player explores, the road runs through
+four regions and ends at the castle gate 1,500 m up, where walking up to it wins the
+run. Its open questions are in FR16. What's left of the story there (a showdown with
+the mad scientist inside) is FR23's.
 
 ---
 
@@ -945,9 +844,10 @@ decided.
 - **The "ultimate" fight.** Is there ever a showdown? On an endless road, a choice
   is a boss battle every 1000 m (after which the doctor flees in their cart and
   shows up again further on), or a single finale at a set distance. That needs
-  battle work, so it would be its own FR built on FR2/FR3. *(Raised by FR27: the
-  owner wants the road to end at a village with the mad scientist's castle, which
-  points to a single finale there.)*
+  battle work, so it would be its own FR built on FR2/FR3. *(FR27 is built: the road
+  ends at the castle gate, 1,500 m up, and the doctor ducks inside as the player nears
+  it, so a single finale there is the natural place. The win screen says "to be
+  continued".)*
 - **Moderation.** Are a schema, a length cap, a blocklist and a kid-safe prompt
   enough for live lines, or should live lines be optional, with the reviewed
   fallback bank as the default?
@@ -1309,6 +1209,26 @@ monsters for tomorrow").
 When an entry is fully built, delete it above and add one line here, newest
 first: `FR<n> — title — date — why it closed (commit)`. Its number stays retired.
 
+- FR27 — A discovery map on M, regions, and a castle at the end of the road — 2026-11-21 — built in
+  three milestones. **A:** the map (`game/map.rs`, `ui/map_panel.rs`, `ui/minimap.rs`), which pauses the
+  game and shows landmarks plus flasks. **B:** `game/regions.rs`, the one table of regions (The Dark Forest,
+  Tallybrook Fields from 900 m, Tallybrook Village from 1,100 m, The Castle Grounds from 1,400 m), each with
+  a name, a map colour and `Scenery` knobs that `decor::region_scenery` turns into thinner pines and graves
+  and more cottages, haystacks, wells, lampposts and columns (the forest is left exactly as it was);
+  `world::region_borders_in_chunk` puts a `Kind::RegionSign` and a `GoalKind::Region` goalpost at each border;
+  `Game::watch_region` shows an "Entering ..." toast once per run; the map has a band and name for each
+  region entered, and names further up stay in the fog. **C:** the road is 1,500 m long (`CASTLE_M`).
+  `game/castle.rs` draws a curtain wall, gatehouse and portcullis with the manor's keep behind it
+  (`manor::draw_keep`), the manor across the lake fading out as it nears; `clamp_to_path` stops at the gate,
+  nothing is placed in the last 20 m or past the wall, no stop or Titan falls at the castle, and the doctor
+  ducks inside as you near. `GoalKind::Castle` is the tracker's top-ranked goalpost and the castle is on the
+  map from the first step, in the fog, with the metres to go. Standing at the gate calls `Game::win`: the gate
+  rises and `ui/victory_panel.rs` shows the run's stats and "Walk the road again". Dev events `tocastle`,
+  `atcastle` and `region:<n>[:<m>]`. about 25 new tests (regions, map, decor, world) and compile-time checks on the castle's proportions; checked by screenshot
+  (the arrival, the panel, the village, the fields, the map). **Owner's answers:** 1,500 m and the road ends;
+  a win screen on arrival; the castle is the manor up close; regions in a const table, names hidden in the
+  fog. **Left out, and why:** a showdown with the doctor (FR23's; the panel says "to be continued"),
+  persistence of the map (nothing persists yet). Provisional answers in FR16. (uncommitted)
 - FR28 — Safe stops along the road: a little house to rest at — 2026-11-21 — built in one pass
   with FR17. `world::safe_stop_for_chunk` places a stop every 250 m (the first at 210 m, each 40 m
   short of a round mark so the 500 m Titan's has room to heal), suppressing the flask in its chunk
@@ -1400,8 +1320,7 @@ first: `FR<n> — title — date — why it closed (commit)`. Its number stays r
   "Now!", close and hide), painted by `ui/goalpost_panel.rs`; the toast steps down
   below it. New dev events `toroad`, `neargoal`, `atgoal`. Checked by screenshot:
   the circle, the pill with its ring, "Now!". Provisional answers to its open
-  questions are in FR16. FR27's regions, FR28's stops and FR29's obstacles each add a
-  `GoalKind` when they land
+  questions are in FR16. FR27's regions and castle and FR28's stops each added a `GoalKind` (`Region`, `Castle`, `Stop`); FR29's obstacles will add one when they land
 
 - FR3 — A battle is an education Q&A — 2026-11-21 — nothing left to build once FR2
   landed: FR10's battles already ask every question through the flask pipeline

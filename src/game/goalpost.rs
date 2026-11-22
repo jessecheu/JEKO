@@ -7,6 +7,7 @@
 //! metres left, shows "Now!" when the player gets there, then closes back
 //! into a circle and pops out before the next goalpost appears.
 
+use super::regions;
 use super::world::{GoalKind, Goalpost, PX_PER_METER};
 
 /// Seconds for the circle to pop in (and out).
@@ -192,6 +193,11 @@ pub fn label(g: &Goalpost) -> String {
         GoalKind::Blocker => "Monster in the road".into(),
         GoalKind::Titan => "Tide Titan".into(),
         GoalKind::Stop => "Rest stop".into(),
+        // A region's name; the table is the one place it lives (FR27).
+        GoalKind::Region => regions::starting_at(g.meters)
+            .map_or("New region", |r| r.name)
+            .into(),
+        GoalKind::Castle => "The castle gate".into(),
     }
 }
 

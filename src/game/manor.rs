@@ -52,6 +52,23 @@ fn strike_seed(t: f32) -> u64 {
 /// `reduce_flashing` there's no strike, only a steady pale glow behind the
 /// towers.
 pub fn draw(at: Vec2, scale: f32, t: f32, reflection: bool, reduce_flashing: bool) {
+    draw_fading(at, scale, t, reflection, reduce_flashing, 1.0);
+}
+
+/// [`draw`] seen through a haze: `fade` runs from 1 (as drawn) to 0 (gone), so
+/// the manor can melt away as the castle, its near self, comes into view
+/// (FR27). Its bolt and bats only show while it's mostly there.
+pub fn draw_fading(
+    at: Vec2,
+    scale: f32,
+    t: f32,
+    reflection: bool,
+    reduce_flashing: bool,
+    fade: f32,
+) {
+    if fade <= 0.0 {
+        return;
+    }
     let flash = if reduce_flashing { 0.0 } else { lightning(t) };
 
     // The sky lit up behind the towers: a steady glow, brighter in a strike.
@@ -64,9 +81,9 @@ pub fn draw(at: Vec2, scale: f32, t: f32, reflection: bool, reduce_flashing: boo
         behind,
         150.0 * scale,
         110.0 * scale,
-        gfx::with_alpha(MOON, steady + 0.35 * flash),
+        gfx::with_alpha(MOON, (steady + 0.35 * flash) * fade),
     );
-    if flash > 0.15 {
+    if flash > 0.15 && fade > 0.5 {
         draw_bolt(at, scale, strike_seed(t), flash);
     }
 
@@ -75,12 +92,39 @@ pub fn draw(at: Vec2, scale: f32, t: f32, reflection: bool, reduce_flashing: boo
             let y = -p.y * 0.55;
             at + vec2(p.x + 2.5 * (t * 1.6 + y * 0.25).sin(), y) * scale
         };
-        building(&m, 0.16, t, flash, false);
+        building(&m, 0.16 * fade, t, flash, false, true);
     }
     let m = |p: Vec2| at + p * scale;
-    building(&m, 1.0, t, flash, true);
+    building(&m, fade, t, flash, true, true);
 
-    // Bats circling the tall tower.
+    if fade > 0.6 {
+        bats_round_the_tower(at, scale, t);
+    }
+}
+
+/// The castle's keep (FR27): the manor seen from close, with no island under
+/// it. `at` is where the foot of its walls stands. It's the same building as
+/// the one across the lake, with the same glow, storms and bats.
+pub fn draw_keep(at: Vec2, scale: f32, t: f32, reduce_flashing: bool) {
+    let flash = if reduce_flashing { 0.0 } else { lightning(t) };
+    let behind = at + vec2(10.0, -120.0) * scale;
+    let steady = if reduce_flashing { 0.16 } else { 0.08 };
+    gfx::glow(
+        behind,
+        170.0 * scale,
+        130.0 * scale,
+        gfx::with_alpha(MOON, steady + 0.35 * flash),
+    );
+    if flash > 0.15 {
+        draw_bolt(at, scale, strike_seed(t), flash);
+    }
+    let m = |p: Vec2| at + p * scale;
+    building(&m, 1.0, t, flash, true, false);
+    bats_round_the_tower(at, scale, t);
+}
+
+/// Bats circling the tall tower.
+fn bats_round_the_tower(at: Vec2, scale: f32, t: f32) {
     let top = at + vec2(0.0, -150.0) * scale;
     for i in 0..4 {
         let fi = i as f32;
@@ -136,8 +180,9 @@ fn draw_bolt(at: Vec2, scale: f32, seed: u64, flash: f32) {
 }
 
 /// The building itself, through the mapping `m`. `alpha` fades it (the
-/// reflection); `rim` adds the moonlit edges, which a reflection skips.
-fn building(m: &dyn Fn(Vec2) -> Vec2, alpha: f32, t: f32, flash: f32, rim: bool) {
+/// reflection); `rim` adds the moonlit edges, which a reflection skips;
+/// `island` draws the rock it stands on (the castle's keep stands on a wall).
+fn building(m: &dyn Fn(Vec2) -> Vec2, alpha: f32, t: f32, flash: f32, rim: bool, island: bool) {
     let a = |c: Color| gfx::with_alpha(c, c.a * alpha);
     let lit = |c: Color| a(gfx::mix(c, MOON, 0.35 * flash));
     let quad = |x0: f32, y0: f32, x1: f32, y1: f32, c: Color| {
@@ -179,7 +224,7 @@ fn building(m: &dyn Fn(Vec2) -> Vec2, alpha: f32, t: f32, flash: f32, rim: bool)
         (118.0, -10.0),
         (130.0, 0.0),
     ];
-    for w in shore.windows(2) {
+    for w in shore.windows(2).filter(|_| island) {
         gfx::quad(
             m(vec2(w[0].0, w[0].1)),
             m(vec2(w[1].0, w[1].1)),
@@ -204,7 +249,10 @@ fn building(m: &dyn Fn(Vec2) -> Vec2, alpha: f32, t: f32, flash: f32, rim: bool)
         (24.0, 8.0),
         (70.0, 10.0),
         (108.0, 6.0),
-    ] {
+    ]
+    .into_iter()
+    .filter(|_| island)
+    {
         let c = m(vec2(x, -2.0));
         let rr = (m(vec2(r, 0.0)) - m(vec2(0.0, 0.0))).length();
         gfx::ellipse(c, rr, rr * 0.55, lit(gfx::shade(ISLAND, 1.5)));
@@ -296,7 +344,7 @@ fn building(m: &dyn Fn(Vec2) -> Vec2, alpha: f32, t: f32, flash: f32, rim: bool)
             lab,
             r * 3.5,
             r * 3.5,
-            gfx::with_alpha(LAB_GREEN, 0.30 * pulse),
+            gfx::with_alpha(LAB_GREEN, 0.30 * pulse * alpha),
         );
     }
     draw_circle(lab.x, lab.y, r, a(gfx::shade(LAB_GREEN, pulse)));

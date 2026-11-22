@@ -531,7 +531,8 @@ impl Villain {
     /// window's height. Called only on the
     /// road, so a battle, a dialogue and a pause leave them frozen.
     pub fn update(&mut self, dt: f32, cam_y: f32, view_h: f32, player: Vec2) {
-        let want = player.y <= world::ROAD_START_Y;
+        // Past the gate and not yet at the castle: near it, they've gone inside (FR27).
+        let want = player.y <= world::ROAD_START_Y && !world::near_the_castle(player.y);
         if want && !self.here {
             self.here = true;
             self.pos = target_pos(cam_y, view_h, player, self.wander);

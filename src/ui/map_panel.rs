@@ -55,6 +55,8 @@ fn icon(painter: &egui::Painter, at: Pos2, l: &Landmark) {
                 Color32::from_rgb(60, 120, 70),
             );
         }
+        // Drawn by `castle_icon`, which needs the whole view.
+        LandmarkKind::Castle => {}
         LandmarkKind::Boss { beaten } => {
             let c = if beaten {
                 Color32::from_rgb(120, 120, 110)
@@ -72,6 +74,57 @@ fn icon(painter: &egui::Painter, at: Pos2, l: &Landmark) {
     }
 }
 
+/// The castle's silhouette (FR27), with a "?" over it while it is still in the
+/// fog and how far there is to go beside it.
+fn castle_icon(painter: &egui::Painter, at: Pos2, view: &MapView) {
+    let reached = view.furthest_m >= view.castle_m;
+    let stone = if reached {
+        Color32::from_rgb(96, 80, 128)
+    } else {
+        Color32::from_rgb(112, 100, 134)
+    };
+    let edge = Stroke::new(1.0_f32, Color32::from_rgb(58, 38, 30));
+    let keep = Rect::from_center_size(at + egui::vec2(0.0, 3.0), egui::vec2(24.0, 12.0));
+    painter.rect(keep, 1.0, stone, edge, egui::StrokeKind::Middle);
+    for side in [-1.0_f32, 1.0] {
+        let tower =
+            Rect::from_center_size(at + egui::vec2(side * 14.0, -1.0), egui::vec2(8.0, 20.0));
+        painter.rect(tower, 1.0, stone, edge, egui::StrokeKind::Middle);
+        let roof = vec![
+            tower.left_top() + egui::vec2(-1.0, 0.0),
+            tower.center_top() + egui::vec2(0.0, -7.0),
+            tower.right_top() + egui::vec2(1.0, 0.0),
+        ];
+        painter.add(egui::Shape::convex_polygon(roof, stone, edge));
+    }
+    painter.rect_filled(
+        Rect::from_center_size(at + egui::vec2(0.0, 6.0), egui::vec2(5.0, 6.0)),
+        1.0,
+        Color32::from_rgb(58, 38, 30),
+    );
+    if !reached {
+        painter.text(
+            at + egui::vec2(0.0, -20.0),
+            Align2::CENTER_CENTER,
+            "?",
+            FontId::proportional(15.0),
+            Color32::from_rgb(90, 76, 120),
+        );
+    }
+    let caption = if view.to_go_m >= 1.0 {
+        format!("Castle\n{} m to go", view.to_go_m.round() as u32)
+    } else {
+        "Castle".to_string()
+    };
+    painter.text(
+        at + egui::vec2(34.0, 0.0),
+        Align2::LEFT_CENTER,
+        caption,
+        FontId::proportional(11.0),
+        Color32::from_rgb(58, 38, 30),
+    );
+}
+
 /// The map (FR27), drawn from a [`MapView`]. It keeps no state and returns
 /// nothing: M or Esc closes it, and `Game` handles those keys.
 pub fn draw(ctx: &egui::Context, view: &MapView) {
@@ -84,7 +137,10 @@ pub fn draw(ctx: &egui::Context, view: &MapView) {
                 ui.allocate_painter(egui::vec2(PANEL_W, PANEL_H), egui::Sense::hover());
             let r = resp.rect;
             let pad = 28.0;
-            let (top, bottom) = (r.top() + pad, r.bottom() - pad);
+            // The castle sits in its own band above the road, so the map's top
+            // edge is always the road's, never crowded by the castle's label.
+            let castle_band = 30.0;
+            let (top, bottom) = (r.top() + pad + castle_band, r.bottom() - pad);
             let cx = r.center().x;
             let y_of = |m: f32| bottom - (m / view.range_m) * (bottom - top);
             let p = |m: f32, dx: f32| Pos2::new(cx + dx * DX_SCALE, y_of(m));
@@ -98,12 +154,39 @@ pub fn draw(ctx: &egui::Context, view: &MapView) {
                 Color32::from_rgb(190, 178, 150),
             );
             painter.text(
-                Pos2::new(cx, (r.top() + fog_y) / 2.0),
+                Pos2::new(cx, (top + fog_y) / 2.0),
                 Align2::CENTER_CENTER,
-                "unexplored",
+                if fog_y - top > 36.0 { "unexplored" } else { "" },
                 FontId::proportional(14.0),
                 Color32::from_rgb(120, 105, 80),
             );
+
+            // The regions entered so far, as bands behind the road. Their names
+            // sit at each band's foot, so a growing band keeps its label.
+            for (i, b) in view.regions.iter().enumerate() {
+                let (y0, y1) = (y_of(b.to_m), y_of(b.from_m));
+                let [cr, cg, cb] = b.color;
+                painter.rect_filled(
+                    Rect::from_min_max(Pos2::new(r.left(), y0), Pos2::new(r.right(), y1)),
+                    0.0,
+                    Color32::from_rgba_unmultiplied(cr, cg, cb, 90),
+                );
+                if i > 0 {
+                    painter.line_segment(
+                        [Pos2::new(r.left(), y1), Pos2::new(r.right(), y1)],
+                        Stroke::new(1.0_f32, Color32::from_rgba_unmultiplied(58, 38, 30, 150)),
+                    );
+                }
+                if y1 - y0 > 14.0 {
+                    painter.text(
+                        Pos2::new(r.left() + 6.0, y1 - 3.0),
+                        Align2::LEFT_BOTTOM,
+                        b.name,
+                        FontId::proportional(11.0),
+                        Color32::from_rgb(58, 38, 30),
+                    );
+                }
+            }
 
             let pts: Vec<Pos2> = view.road.iter().map(|&(m, dx)| p(m, dx)).collect();
             if pts.len() > 1 {
@@ -113,6 +196,12 @@ pub fn draw(ctx: &egui::Context, view: &MapView) {
                 ));
             }
             for l in &view.landmarks {
+                if l.kind == LandmarkKind::Castle {
+                    // Always in its own band above the road, in the fog or not.
+                    let at = Pos2::new(cx + l.dx * DX_SCALE, r.top() + pad);
+                    castle_icon(&painter, at, view);
+                    continue;
+                }
                 let at = p(l.meters, l.dx);
                 icon(&painter, at, l);
                 if let Some(m) = l.label {

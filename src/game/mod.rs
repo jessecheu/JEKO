@@ -1,5 +1,6 @@
 pub mod battle;
 pub mod bow;
+pub mod castle;
 pub mod curse;
 pub mod decor;
 pub mod dialogue;
@@ -14,6 +15,7 @@ pub mod monster;
 pub mod monster_rig;
 pub mod player;
 pub mod prefetch;
+pub mod regions;
 pub mod shop;
 pub mod skills;
 pub mod task_trigger;
@@ -106,6 +108,12 @@ pub const HURT_INVULN_S: f32 = 1.0;
 const KNOCKBACK_PX: f32 = 22.0;
 /// The death animation plays this long before the Game Over panel shows.
 pub const DEATH_ANIM_S: f32 = 1.2;
+/// After reaching the castle gate the portcullis starts to rise this late...
+const GATE_RISE_AFTER_S: f32 = 0.5;
+/// ...and takes this long to open.
+const GATE_RISE_S: f32 = 1.8;
+/// The victory panel shows this long after arrival, once the gate is up.
+pub const VICTORY_PANEL_S: f32 = 2.6;
 
 /// Stats for the current run, for the Game Over screen.
 #[derive(Clone, Copy, Debug, Default)]
@@ -147,6 +155,13 @@ pub struct Game {
     pub shop_note: Option<String>,
     /// The player is at a safe stop's cottage door: E opens the shop.
     stop_target: bool,
+    /// Seconds since the player reached the castle gate (FR27), once they
+    /// have: the run is won and the world holds still but for the gate rising.
+    /// `None` while the road is still being walked.
+    pub victory: Option<f32>,
+    /// The furthest region the player has been told about, by index into
+    /// `regions::REGIONS`, so each region's banner plays once per run (FR27).
+    region_told: Option<usize>,
     /// The safe stop the player was last told about (FR28), by number, so its
     /// welcome toast plays once on arrival; 0 when outside any stop.
     in_stop: u32,
@@ -306,6 +321,8 @@ impl Game {
             shop_open: false,
             shop_note: None,
             stop_target: false,
+            victory: None,
+            region_told: None,
             in_stop: 0,
             sparks: Vec::new(),
             discovery: map::Discovery::new(),
@@ -505,6 +522,20 @@ impl Game {
             return;
         }
 
+        if let Some(t) = &mut self.victory {
+            // The road's end (FR27): the player stands at the gate while it
+            // rises, then the victory panel takes over. Only the restart works.
+            *t += dt;
+            self.time += dt;
+            self.player.stop(dt);
+            if self.victory_panel_up()
+                && (is_key_pressed(INTERACT_KEY) || is_key_pressed(KeyCode::Enter))
+            {
+                self.reset();
+            }
+            return;
+        }
+
         if !self.typing {
             if self.shop_open {
                 if is_key_pressed(KeyCode::Escape) || is_key_pressed(INTERACT_KEY) {
@@ -614,6 +645,11 @@ impl Game {
             self.watch_stop();
         }
         self.discovery.note(self.player.pos.y);
+        self.watch_region();
+        if !busy && world::at_the_gate(self.player.pos.y) {
+            self.win();
+            return;
+        }
 
         let target = camera_target(self.player.pos.y);
         self.cam_y += (target - self.cam_y) * (1.0 - (-dt * CAMERA_FOLLOW).exp());
@@ -670,6 +706,46 @@ impl Game {
                 self.trigger_state = TriggerState::Idle;
             }
         }
+    }
+
+    /// Announces a region the first time the player steps into it (FR27). The
+    /// table in `regions` is the only place a region's name lives.
+    fn watch_region(&mut self) {
+        let y = self.player.pos.y;
+        if world::in_hub(y) {
+            return;
+        }
+        let i = regions::index_at((world::ROAD_START_Y - y) / world::PX_PER_METER);
+        if self.region_told.is_none_or(|told| i > told) {
+            self.region_told = Some(i);
+            self.toast = Some((format!("Entering {}", regions::REGIONS[i].name), 3.5));
+        }
+    }
+
+    /// The player has reached the castle gate (FR27): the run is won. The
+    /// gate starts to rise, and the victory panel follows. It changes no XP,
+    /// answers or hearts (invariant 7); only the best distance is noted.
+    fn win(&mut self) {
+        self.victory = Some(0.0);
+        self.best_distance_m = self.best_distance_m.max(self.distance_m());
+        self.toast = None;
+        self.map_open = false;
+        self.shop_open = false;
+        self.player.cheer();
+    }
+
+    /// How far the castle's portcullis has risen, 0 (shut) to 1 (open): it
+    /// lifts a moment after the player arrives.
+    pub fn castle_open(&self) -> f32 {
+        let u = self.victory.map_or(0.0, |t| {
+            ((t - GATE_RISE_AFTER_S) / GATE_RISE_S).clamp(0.0, 1.0)
+        });
+        u * u * (3.0 - 2.0 * u)
+    }
+
+    /// True once the gate has risen and the victory panel is up.
+    pub fn victory_panel_up(&self) -> bool {
+        matches!(self.victory, Some(t) if t >= VICTORY_PANEL_S)
     }
 
     /// Picks up the gears the player is standing on (FR17): counted in the run,
@@ -1008,7 +1084,10 @@ impl Game {
     /// (e.g. a wrong answer). Returns false if the hit was ignored because
     /// the player is invulnerable or already dead.
     pub fn damage_player(&mut self, halves: u32, from: Option<Vec2>) -> bool {
-        if self.game_over.is_some() || self.player.flicker.is_some_and(|f| f.active()) {
+        if self.game_over.is_some()
+            || self.victory.is_some()
+            || self.player.flicker.is_some_and(|f| f.active())
+        {
             return false;
         }
         // Nothing hurts the player inside a safe stop (FR28).
@@ -1075,6 +1154,8 @@ impl Game {
         self.shop_open = false;
         self.shop_note = None;
         self.stop_target = false;
+        self.victory = None;
+        self.region_told = None;
         self.in_stop = 0;
         self.sparks.clear();
         self.discovery = map::Discovery::new();
@@ -1109,7 +1190,7 @@ impl Game {
             "STATE hp={}/{} level={} xp={} streak={} dist={}m flasks={} beaten={} \
              zones_cleared={} battle={:?} trigger={} dialogue={} game_over={} hat_stolen={} \
              arrows={} gears={} stop={} roster={} spec_zones={} curse={:.2} blocker_in_reach={} blockers_left={} goalpost={} \
-             questions=[{}] buffered={:?} flying={} packs_loaded={} pebble_tips={} weakest={} explain={} studio={} villain={}",
+             questions=[{}] buffered={:?} flying={} packs_loaded={} pebble_tips={} weakest={} explain={} studio={} villain={} victory={} region={}",
             self.health.current,
             self.health.max,
             self.progression.level,
@@ -1169,6 +1250,8 @@ impl Game {
             } else {
                 "away".to_string()
             },
+            self.victory.is_some(),
+            regions::at((world::ROAD_START_Y - self.player.pos.y) / world::PX_PER_METER).name,
         )
     }
 
@@ -1288,6 +1371,40 @@ impl Game {
                     self.cam_y = camera_target(self.player.pos.y);
                 }
             }
+            // Just short of the castle gate (FR27), 12 m back along the road, with
+            // the world around it made, for the castle's first look.
+            "tocastle" => {
+                let y = world::CASTLE_GATE_Y + 12.0 * world::PX_PER_METER;
+                self.world
+                    .ensure_generated(world::CASTLE_GATE_Y - world::CHUNK_H);
+                self.player.pos = vec2(world::path_center(y), y);
+                self.discovery.note(y);
+                self.cam_y = camera_target(y);
+            }
+            // Onto the castle's gate line, so the next frame wins the run.
+            "atcastle" => {
+                let y = world::CASTLE_GATE_Y + 2.0;
+                self.world
+                    .ensure_generated(world::CASTLE_GATE_Y - world::CHUNK_H);
+                self.player.pos = vec2(world::path_center(y), y);
+                self.discovery.note(y);
+                self.cam_y = camera_target(y);
+            }
+            // To the start of the region `region:<n>` (an index into the table),
+            // 12 m on so its banner and scenery can be seen, or `region:<n>:<m>`
+            // for `m` metres on (negative: short of it, to see its sign).
+            n if n.starts_with("region:") => {
+                let mut parts = n["region:".len()..].split(':');
+                let i: usize = parts.next().and_then(|v| v.parse().ok()).unwrap_or(0);
+                let on: f32 = parts.next().and_then(|v| v.parse().ok()).unwrap_or(12.0);
+                if let Some(r) = regions::REGIONS.get(i) {
+                    let y = world::ROAD_START_Y - (r.from_m as f32 + on) * world::PX_PER_METER;
+                    self.world.ensure_generated(y - world::CHUNK_H);
+                    self.player.pos = vec2(world::path_center(y), y);
+                    self.discovery.note(y);
+                    self.cam_y = camera_target(y);
+                }
+            }
             // Onto the road, 40 m up from the gate, for the goalpost tracker.
             "toroad" => {
                 let y = world::ROAD_START_Y - 40.0 * world::PX_PER_METER;
@@ -1326,7 +1443,7 @@ impl Game {
             }
             // Presses E: whatever E would do right now.
             "e" => match (&self.trigger_state, self.interact_target) {
-                _ if self.can_restart() => self.reset(),
+                _ if self.can_restart() || self.victory_panel_up() => self.reset(),
                 _ if self.dialogue.is_some() => self.advance_dialogue(),
                 (TriggerState::Idle, Some(i)) => self.open_spot(i),
                 (TriggerState::Idle, None) if self.blocker_target.is_some() => {
@@ -1876,6 +1993,7 @@ impl Game {
         self.world.draw_manor(&view, t, rf);
         self.world.draw_road(&view, t);
         self.world.draw_lights(&view, t);
+        self.world.draw_castle(&view, t, self.castle_open(), rf);
 
         // One back-to-front pass over everything that stands up off the
         // ground, keyed by where it touches the ground, so the player walks

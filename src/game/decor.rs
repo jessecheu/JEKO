@@ -8,6 +8,7 @@
 //! water by mistake or on the road.
 
 use super::gfx::{self, INK, LAB_GREEN, LANTERN, MOON};
+use super::regions;
 use super::world::{self, View, PATH_HALF_W, PX_PER_METER};
 use ::rand::rngs::StdRng;
 use ::rand::{Rng, SeedableRng};
@@ -126,6 +127,17 @@ pub enum Kind {
     Wagon,
     /// The sign at a safe stop (FR28): a lantern board reading "REST".
     RestSign,
+    /// The sign at the border of a region (FR27), naming it. `region` indexes
+    /// `regions::REGIONS`.
+    RegionSign {
+        region: u8,
+    },
+    /// A haystack on the fields outside the village (FR27).
+    Haystack {
+        flip: bool,
+    },
+    /// A stone well in the village (FR27).
+    Well,
 }
 
 pub struct Decoration {
@@ -484,6 +496,92 @@ fn in_stop_box(pos: Vec2, stop: &world::SafeStop) -> bool {
         && pos.x < c + PATH_HALF_W + world::STOP_EXTRA_W + 36.0
 }
 
+/// The region a point `y` on the road lies in.
+fn region_at_y(y: f32) -> &'static regions::Region {
+    regions::at((world::ROAD_START_Y - y) / PX_PER_METER)
+}
+
+/// Dresses chunk `k` for the region it lies in (FR27), after the forest's own
+/// scenery is down: thins what the region has less of, then adds what it has
+/// more of. The dark forest's knobs are all neutral, so it is left exactly as
+/// it was. Extras come from their own seeded stream, so they never move the
+/// forest's props.
+fn region_scenery(g: &mut Gen, k: i64, seed: u64) {
+    let mid = (g.north + g.south) * 0.5;
+    let here = region_at_y(mid).scenery;
+    let neutral = regions::REGIONS[0].scenery;
+
+    // Thin the pines and the graveyard's stones by where each one stands.
+    g.out.retain(|d| {
+        let share = match d.kind {
+            Kind::Pine { .. } => region_at_y(d.pos.y).scenery.pines,
+            Kind::Gravestone { .. } | Kind::Pillar | Kind::Scarecrow { .. } => {
+                region_at_y(d.pos.y).scenery.graves
+            }
+            _ => return true,
+        };
+        share >= 1.0
+            || gfx::hash01(((d.pos.x.to_bits() as u64) << 32) ^ d.pos.y.to_bits() as u64) < share
+    });
+    if here == neutral {
+        return;
+    }
+
+    g.rng = StdRng::seed_from_u64(seed ^ 0x2E61_0A7D ^ k as u64);
+    let c = here.cottages as f64;
+    for _ in 0..2 {
+        if g.chance(c * 0.6) {
+            let flip = g.chance(0.5);
+            // The verge is narrow, so a cottage goes there only when it fits;
+            // the woods always have room.
+            if g.add(Zone::Verge, 34.0, |_| Kind::Cottage { flip })
+                .is_none()
+            {
+                g.add(Zone::Woods, 44.0, |_| Kind::Cottage { flip });
+            }
+        }
+    }
+    if g.chance(c * 0.4) {
+        let flip = g.chance(0.5);
+        g.add(Zone::Lakeside, 30.0, |_| Kind::Cottage { flip });
+    }
+    if g.chance(here.hay as f64) {
+        let flip = g.chance(0.5);
+        let zone = if g.chance(0.5) {
+            Zone::Verge
+        } else {
+            Zone::Lakeside
+        };
+        g.add(zone, 26.0, |_| Kind::Haystack { flip });
+    }
+    if g.chance(here.wells as f64) {
+        let zone = if g.chance(0.5) {
+            Zone::Verge
+        } else {
+            Zone::Lakeside
+        };
+        g.add(zone, 26.0, |_| Kind::Well);
+    }
+    if g.chance(here.lamps as f64) {
+        let y = g.rng.gen_range(g.north + 20.0..g.south - 20.0);
+        let side = if g.chance(0.5) { -1.0 } else { 1.0 };
+        let lamp = vec2(world::path_center(y) + side * (PATH_HALF_W + 20.0), y);
+        if g.taken.iter().all(|&(q, r)| q.distance(lamp) > r + 14.0) {
+            g.taken.push((lamp, 14.0));
+            let phase = g.phase();
+            g.push(lamp, Kind::Lamppost { phase });
+        }
+    }
+    if g.chance(here.pillars as f64) {
+        let zone = if g.chance(0.5) {
+            Zone::Verge
+        } else {
+            Zone::Lakeside
+        };
+        g.add(zone, 26.0, |_| Kind::Pillar);
+    }
+}
+
 /// All scenery for chunk `k`. `spot` is where this chunk's flask sits (if
 /// it has one) so it can be framed by a pair of lampposts. `stop` is the safe
 /// stop (FR28) the chunk holds, if any: its clearing is kept free of random
@@ -587,7 +685,7 @@ pub fn generate_chunk(
     let mut m = first_m * 50;
     loop {
         let y = world::ROAD_START_Y - m as f32 * PX_PER_METER;
-        if y <= north {
+        if y <= north || m as f32 >= world::CASTLE_M {
             break;
         }
         if y < south {
@@ -596,6 +694,17 @@ pub fn generate_chunk(
             g.push(marker, Kind::Marker { meters: m });
         }
         m += 50;
+    }
+    // A sign where each region starts (FR27), on the woods side so it doesn't
+    // crowd the milestones.
+    for border in world::region_borders_in_chunk(k) {
+        g.taken.push((border.sign, 34.0));
+        g.push(
+            border.sign,
+            Kind::RegionSign {
+                region: border.index as u8,
+            },
+        );
     }
 
     // The lake.
@@ -713,6 +822,11 @@ pub fn generate_chunk(
         );
     }
 
+    region_scenery(&mut g, k, seed);
+
+    // The castle's wall (FR27) stands across the road's end: nothing grows past it.
+    g.out.retain(|d| d.pos.y > world::CASTLE_WALL_Y);
+
     if let Some(stop) = stop {
         g.out.retain(|d| !in_stop_box(d.pos, &stop));
         for (pos, _, kind) in stop_layout(&stop) {
@@ -774,7 +888,9 @@ impl Decoration {
                 }
             }
             Kind::Wagon => out.push((p + vec2(34.0, 4.0), 52.0, gfx::with_alpha(LANTERN, 0.20))),
-            Kind::RestSign => out.push((p, 50.0 * flicker(p.y), gfx::with_alpha(LANTERN, 0.20))),
+            Kind::RestSign | Kind::RegionSign { .. } => {
+                out.push((p, 50.0 * flicker(p.y), gfx::with_alpha(LANTERN, 0.20)))
+            }
             Kind::Mushroom { cap, .. } if cap == CAP_TEAL => {
                 out.push((p, 44.0, gfx::with_alpha(CAP_TEAL, 0.18)))
             }
@@ -837,6 +953,9 @@ impl Decoration {
             Kind::Campfire { phase } => draw_campfire(s, phase, t),
             Kind::Wagon => draw_wagon(s, t),
             Kind::RestSign => draw_rest_sign(s, t),
+            Kind::RegionSign { region } => draw_region_sign(s, region, t),
+            Kind::Haystack { flip } => draw_haystack(s, flip),
+            Kind::Well => draw_well(s),
         }
     }
 }
@@ -1890,6 +2009,112 @@ fn draw_rest_sign(s: Vec2, t: f32) {
     draw_rectangle_lines(lamp.x - 3.0, lamp.y - 4.0, 6.0, 7.0, 1.0, IRON);
 }
 
+/// The sign at a region's border (FR27): a board on two posts with the name
+/// under "ENTERING", and a lantern, so it reads from down the road.
+fn draw_region_sign(s: Vec2, region: u8, t: f32) {
+    let name = regions::REGIONS.get(region as usize).map_or("", |r| r.name);
+    let w = measure_text(name, None, 15, 1.0).width.max(70.0) + 18.0;
+    gfx::ground_shadow(s + vec2(5.0, 2.0), w * 0.5, 5.0);
+    for dx in [-w * 0.5 + 6.0, w * 0.5 - 6.0] {
+        draw_rectangle(s.x + dx - 2.5, s.y - 52.0, 5.0, 52.0, WOOD);
+        draw_rectangle_lines(s.x + dx - 2.5, s.y - 52.0, 5.0, 52.0, 1.0, INK);
+    }
+    wood_board(s.x - w * 0.5, s.y - 56.0, w, 34.0);
+    centered_text("ENTERING", s.x, s.y - 43.0, 12, CARVED);
+    centered_text(name, s.x, s.y - 28.0, 15, CARVED);
+    // A lantern swinging under the board.
+    let lamp = s + vec2(w * 0.5 - 8.0, -14.0 + 1.0 * (t * 1.7 + s.y).sin());
+    gfx::glow(lamp, 12.0, 12.0, gfx::with_alpha(LANTERN, 0.35));
+    draw_rectangle(lamp.x - 3.0, lamp.y - 4.0, 6.0, 7.0, LANTERN);
+    draw_rectangle_lines(lamp.x - 3.0, lamp.y - 4.0, 6.0, 7.0, 1.0, IRON);
+}
+
+/// A round haystack with a few loose straws.
+fn draw_haystack(s: Vec2, flip: bool) {
+    let straw = Color::new(0.78, 0.64, 0.30, 1.0);
+    let f = if flip { -1.0 } else { 1.0 };
+    gfx::ground_shadow(s + vec2(8.0, 2.0), 26.0, 6.0);
+    gfx::ellipse(s + vec2(0.0, -2.0), 22.0, 8.0, gfx::shade(straw, 0.8));
+    draw_rectangle(s.x - 20.0, s.y - 24.0, 40.0, 22.0, straw);
+    dome(vec2(s.x, s.y - 24.0), 20.0, 13.0, gfx::shade(straw, 1.08));
+    dome_outline(vec2(s.x, s.y - 24.0), 20.0, 13.0, 1.5, INK);
+    draw_rectangle_lines(s.x - 20.0, s.y - 24.0, 40.0, 22.0, 1.5, INK);
+    for i in 0..4 {
+        let x = s.x - 14.0 + i as f32 * 9.0;
+        gfx::line(
+            vec2(x, s.y - 20.0),
+            vec2(x + f * 2.0, s.y - 6.0),
+            1.0,
+            gfx::shade(straw, 0.7),
+        );
+    }
+    // A fork left standing in it.
+    gfx::line(
+        s + vec2(f * 14.0, -2.0),
+        s + vec2(f * 22.0, -34.0),
+        2.0,
+        WOOD,
+    );
+}
+
+/// A stone well with a little roof, a rope and a bucket.
+fn draw_well(s: Vec2) {
+    gfx::ground_shadow(s + vec2(6.0, 2.0), 24.0, 6.0);
+    // The round wall.
+    gfx::ellipse(
+        s + vec2(0.0, -2.0),
+        19.0,
+        8.0,
+        Color::new(0.50, 0.50, 0.55, 1.0),
+    );
+    draw_rectangle(
+        s.x - 19.0,
+        s.y - 18.0,
+        38.0,
+        16.0,
+        Color::new(0.58, 0.58, 0.62, 1.0),
+    );
+    gfx::ellipse(
+        s + vec2(0.0, -18.0),
+        19.0,
+        8.0,
+        Color::new(0.66, 0.66, 0.70, 1.0),
+    );
+    gfx::ellipse(
+        s + vec2(0.0, -18.0),
+        13.0,
+        5.0,
+        Color::new(0.02, 0.04, 0.08, 1.0),
+    );
+    for i in 0..3 {
+        let y = s.y - 14.0 + i as f32 * 5.0;
+        gfx::line(
+            vec2(s.x - 19.0, y),
+            vec2(s.x + 19.0, y),
+            1.0,
+            gfx::with_alpha(INK, 0.5),
+        );
+    }
+    draw_rectangle_lines(s.x - 19.0, s.y - 18.0, 38.0, 16.0, 1.5, INK);
+    // Two posts, a beam and a pitched roof.
+    for dx in [-17.0f32, 17.0] {
+        draw_rectangle(s.x + dx - 2.0, s.y - 52.0, 4.0, 36.0, WOOD);
+        draw_rectangle_lines(s.x + dx - 2.0, s.y - 52.0, 4.0, 36.0, 1.0, INK);
+    }
+    draw_triangle(
+        vec2(s.x - 25.0, s.y - 50.0),
+        vec2(s.x + 25.0, s.y - 50.0),
+        vec2(s.x, s.y - 68.0),
+        Color::new(0.34, 0.20, 0.18, 1.0),
+    );
+    draw_line(s.x - 25.0, s.y - 50.0, s.x, s.y - 68.0, 1.2, INK);
+    draw_line(s.x + 25.0, s.y - 50.0, s.x, s.y - 68.0, 1.2, INK);
+    // Rope and bucket.
+    gfx::line(vec2(s.x, s.y - 50.0), vec2(s.x, s.y - 34.0), 1.0, INK);
+    draw_rectangle(s.x - 4.0, s.y - 34.0, 8.0, 7.0, WOOD);
+    draw_rectangle_lines(s.x - 4.0, s.y - 34.0, 8.0, 7.0, 1.0, INK);
+}
+
 /// The hub's gate: two stone pillars with lanterns either side of the
 /// road's south end, an iron arch with a sign between them, and the gates
 /// swung open. The player walks under it.
@@ -2129,4 +2354,106 @@ fn draw_wagon(s: Vec2, t: f32) {
     wheel(s + vec2(22.0, -8.0), 10.0);
     // Shaft poking out the front.
     gfx::line(s + vec2(34.0, -16.0), s + vec2(54.0, -6.0), 2.4, WOOD);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn chunk(k: i64) -> Vec<Decoration> {
+        generate_chunk(k, None, world::safe_stop_for_chunk(k))
+    }
+
+    /// The chunks that lie wholly inside the region at `from_m..to_m`.
+    fn chunks_between(from_m: f32, to_m: f32) -> std::ops::Range<i64> {
+        let k = |m: f32| world::chunk_of(world::ROAD_START_Y - m * PX_PER_METER);
+        (k(from_m) + 1)..k(to_m)
+    }
+
+    fn count(chunks: std::ops::Range<i64>, pick: impl Fn(&Kind) -> bool) -> usize {
+        chunks.flat_map(chunk).filter(|d| pick(&d.kind)).count()
+    }
+
+    #[test]
+    fn nothing_stands_past_the_castles_wall() {
+        let castle = world::chunk_of(world::CASTLE_GATE_Y);
+        for k in castle - 2..castle + 4 {
+            for d in chunk(k) {
+                assert!(
+                    d.pos.y > world::CASTLE_WALL_Y,
+                    "chunk {k}: a prop at {} is behind the wall",
+                    d.pos.y
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn every_region_border_has_one_sign_naming_it() {
+        for (i, r) in regions::REGIONS.iter().enumerate().skip(1) {
+            let y = world::ROAD_START_Y - r.from_m as f32 * PX_PER_METER;
+            let signs: Vec<_> = chunk(world::chunk_of(y))
+                .into_iter()
+                .filter(|d| matches!(d.kind, Kind::RegionSign { region } if region as usize == i))
+                .collect();
+            assert_eq!(signs.len(), 1, "{}: {} signs", r.name, signs.len());
+            assert!(
+                (signs[0].pos.y - y).abs() < 1.0,
+                "{}: the sign is off its border",
+                r.name
+            );
+            assert!(
+                signs[0].pos.x > world::path_center(y) + PATH_HALF_W,
+                "{}: the sign is on the road",
+                r.name
+            );
+        }
+    }
+
+    #[test]
+    fn the_forest_has_no_signs_wells_or_hay() {
+        let forest = chunks_between(0.0, 880.0);
+        assert_eq!(
+            count(forest, |k| matches!(
+                k,
+                Kind::RegionSign { .. } | Kind::Well | Kind::Haystack { .. }
+            )),
+            0
+        );
+    }
+
+    #[test]
+    fn the_village_is_busier_with_houses_and_thinner_with_trees() {
+        let forest = chunks_between(100.0, 600.0);
+        let village = chunks_between(1100.0, 1400.0);
+        let (fk, vk) = (forest.end - forest.start, village.end - village.start);
+        let per = |n: usize, k: i64| n as f32 / k as f32;
+        let cottages = |k: &Kind| matches!(k, Kind::Cottage { .. });
+        let pines = |k: &Kind| matches!(k, Kind::Pine { .. });
+        assert!(
+            per(count(village.clone(), cottages), vk)
+                > 1.5 * per(count(forest.clone(), cottages), fk),
+            "the village has no more houses than the forest"
+        );
+        assert!(
+            per(count(village.clone(), pines), vk) < 0.6 * per(count(forest.clone(), pines), fk),
+            "the village is as wooded as the forest"
+        );
+        assert!(
+            count(village, |k| matches!(k, Kind::Well)) > 0,
+            "no well in the village"
+        );
+    }
+
+    #[test]
+    fn generation_is_deterministic_in_every_region() {
+        for m in [300.0, 1000.0, 1250.0, 1450.0] {
+            let k = world::chunk_of(world::ROAD_START_Y - m * PX_PER_METER);
+            let (a, b) = (chunk(k), chunk(k));
+            assert_eq!(a.len(), b.len(), "chunk {k}");
+            for (p, q) in a.iter().zip(&b) {
+                assert_eq!(p.pos, q.pos, "chunk {k}");
+            }
+        }
+    }
 }

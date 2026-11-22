@@ -1,6 +1,7 @@
-//! The forest world (FR24): an endless old cobbled road that winds north
-//! (up the screen) between a black lake on the left and the woods on the
-//! right, with the mad scientist's manor across the water.
+//! The forest world (FR24): an old cobbled road that winds north (up the
+//! screen) between a black lake on the left and the woods on the right, with
+//! the mad scientist's manor across the water. It runs through a few regions
+//! (`regions`) and ends at the castle's gate, `CASTLE_M` up the road (FR27).
 //!
 //! Coordinates are plain pixels in a 3/4 top-down view: +x is right, +y is
 //! *down* the screen, so walking "forward" means `y` decreasing without
@@ -14,10 +15,12 @@
 //! derived from the chunk index, so it's identical every run and costs
 //! nothing until the camera gets near it.
 
+use super::castle;
 use super::decor::{self, Decoration};
 use super::gfx::{self, INK, LAB_GREEN, LANTERN, MOON, SHADOW};
 use super::manor;
 use super::monster::{self, MonsterCanvas, MonsterKind, Pose, Species};
+use super::regions;
 use crate::content::MonsterSpec;
 use macroquad::prelude::*;
 use std::sync::Arc;
@@ -51,6 +54,25 @@ pub const PLAYER_START_Y: f32 = ROAD_SOUTH_END + 270.0;
 pub const SOUTH_LIMIT: f32 = HUB_SOUTH - 30.0;
 /// Conversion for the distance readout and the milestones.
 pub const PX_PER_METER: f32 = 24.0;
+/// How far up the road the castle stands (FR27, the owner's answer: 1,500 m).
+/// The road ends at its gate, so it is no longer endless.
+pub const CASTLE_M: f32 = 1500.0;
+/// World y of the castle gate: the northmost point the player can reach.
+pub const CASTLE_GATE_Y: f32 = ROAD_START_Y - CASTLE_M * PX_PER_METER;
+/// The player has arrived once they stand within this much of the gate line.
+const CASTLE_ARRIVE_PX: f32 = 8.0;
+/// The castle's curtain wall stands this far north of the gate line. Nothing
+/// is placed, and nothing drawn but the castle, north of it.
+pub const CASTLE_WALL_Y: f32 = CASTLE_GATE_Y - 40.0;
+const _: () = assert!(
+    CASTLE_WALL_Y < CASTLE_GATE_Y,
+    "the wall stands beyond the gate line"
+);
+/// The last stretch of road before the gate holds no flask, monster or gear:
+/// the player is nearly at the castle and nothing should be in the way.
+const FORECOURT_PX: f32 = 480.0;
+/// The doctor ducks into the castle once the player is this close to the gate.
+pub const CASTLE_NEAR_PX: f32 = 380.0;
 /// Height of one procedurally generated strip of scenery.
 pub const CHUNK_H: f32 = 320.0;
 
@@ -183,10 +205,27 @@ pub fn in_hub(y: f32) -> bool {
     y > ROAD_SOUTH_END
 }
 
+/// True once a player at `y` has reached the castle gate (FR27).
+pub fn at_the_gate(y: f32) -> bool {
+    y <= CASTLE_GATE_Y + CASTLE_ARRIVE_PX
+}
+
+/// True while a player at `y` is close enough to the castle for the doctor to
+/// have gone inside.
+pub fn near_the_castle(y: f32) -> bool {
+    y < CASTLE_GATE_Y + CASTLE_NEAR_PX
+}
+
+/// True in the last stretch before the gate, where nothing is placed.
+fn in_forecourt(y: f32) -> bool {
+    y < CASTLE_GATE_Y + FORECOURT_PX
+}
+
 /// Keeps a position walkable: on the road north of the gate, anywhere on
-/// the hub's ground south of it, never past the hub's south edge.
+/// the hub's ground south of it, never past the hub's south edge or the
+/// castle's gate (FR27).
 pub fn clamp_to_path(p: Vec2) -> Vec2 {
-    let y = p.y.min(SOUTH_LIMIT);
+    let y = p.y.clamp(CASTLE_GATE_Y, SOUTH_LIMIT);
     let (lo, hi) = walkable_x(y);
     vec2(p.x.clamp(lo, hi), y)
 }
@@ -244,7 +283,7 @@ pub fn safe_stop_for_chunk(k: i64) -> Option<SafeStop> {
     let n = (((d_south + STOP_BEFORE_M as f32) / STOP_EVERY_M as f32).ceil() as i64).max(1);
     let meters = STOP_EVERY_M as i64 * n - STOP_BEFORE_M as i64;
     let d = meters as f32;
-    (d > d_south && d <= d_north).then_some(SafeStop {
+    (d > d_south && d <= d_north && d + 20.0 < CASTLE_M).then_some(SafeStop {
         n: n as u32,
         y: north + CHUNK_H * 0.5,
         meters: meters as u32,
@@ -448,7 +487,9 @@ pub fn encounter_for_chunk(k: i64) -> Option<Encounter> {
     let milestone_px = BOSS_EVERY_M as f32 * PX_PER_METER;
     let lo_m = ((ROAD_START_Y - prev_south) / milestone_px).ceil().max(1.0) as i64;
     let at = ROAD_START_Y - lo_m as f32 * milestone_px;
-    if at <= prev_south && at > north {
+    // No Titan at (or past) the castle: its gate is the road's end.
+    let before_castle = (lo_m as f32 * BOSS_EVERY_M as f32) < CASTLE_M;
+    if at <= prev_south && at > north && before_castle {
         let y = (north + CHUNK_H * 0.5).min(at - 20.0).max(north + 40.0);
         return Some(Encounter {
             pos: vec2(path_center(y), y),
@@ -463,12 +504,47 @@ pub fn encounter_for_chunk(k: i64) -> Option<Encounter> {
         return None;
     }
     let y = north + 80.0 + h(4) * (CHUNK_H - 160.0);
+    if in_forecourt(y) {
+        return None;
+    }
     let meters = ((ROAD_START_Y - y) / PX_PER_METER).max(0.0) as u32;
     Some(Encounter {
         pos: vec2(path_center(y), y),
         kind: MonsterKind::pick(h(5), meters),
         blocks,
     })
+}
+
+/// Where a region starts on the road (FR27): its border sign.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct RegionBorder {
+    /// Index into `regions::REGIONS`.
+    pub index: usize,
+    pub from_m: u32,
+    /// World y of the border.
+    pub y: f32,
+    /// Where the sign stands: beside the road, on the woods side.
+    pub sign: Vec2,
+}
+
+/// The region borders that fall in chunk `k`: each region after the first
+/// starts at a fixed distance, so this is pure (invariant 3).
+pub fn region_borders_in_chunk(k: i64) -> Vec<RegionBorder> {
+    let (north, south) = chunk_span(k);
+    regions::REGIONS
+        .iter()
+        .enumerate()
+        .skip(1)
+        .filter_map(|(index, r)| {
+            let y = ROAD_START_Y - r.from_m as f32 * PX_PER_METER;
+            (y > north && y <= south).then(|| RegionBorder {
+                index,
+                from_m: r.from_m,
+                y,
+                sign: vec2(path_center(y) + PATH_HALF_W + 34.0, y),
+            })
+        })
+        .collect()
 }
 
 /// What the goalpost tracker (FR31) can point at.
@@ -486,6 +562,10 @@ pub enum GoalKind {
     Titan,
     /// A safe stop (FR28): somewhere to rest.
     Stop,
+    /// The border of a new region (FR27): a sign beside the road.
+    Region,
+    /// The castle gate, where the road ends (FR27).
+    Castle,
 }
 
 impl GoalKind {
@@ -493,9 +573,10 @@ impl GoalKind {
     /// the bigger event, so the tracker isn't always "flask in 12 m".
     fn rank(self) -> u8 {
         match self {
+            GoalKind::Castle => 6,
             GoalKind::Titan => 5,
             GoalKind::Blocker => 4,
-            GoalKind::Stop => 3,
+            GoalKind::Stop | GoalKind::Region => 3,
             GoalKind::Milestone => 2,
             GoalKind::Patch => 1,
             GoalKind::Flask => 0,
@@ -544,7 +625,7 @@ pub fn goalposts_in_chunk(k: i64) -> Vec<Goalpost> {
         * step;
     loop {
         let y = ROAD_START_Y - m as f32 * PX_PER_METER;
-        if y <= north {
+        if y <= north || m as f32 >= CASTLE_M {
             break;
         }
         if y < south {
@@ -556,6 +637,22 @@ pub fn goalposts_in_chunk(k: i64) -> Vec<Goalpost> {
             });
         }
         m += step;
+    }
+    for r in region_borders_in_chunk(k) {
+        out.push(Goalpost {
+            kind: GoalKind::Region,
+            y: r.y,
+            at: r.sign,
+            meters: r.from_m,
+        });
+    }
+    if chunk_of(CASTLE_GATE_Y) == k {
+        out.push(Goalpost {
+            kind: GoalKind::Castle,
+            y: CASTLE_GATE_Y + CASTLE_ARRIVE_PX,
+            at: vec2(path_center(CASTLE_GATE_Y), CASTLE_WALL_Y),
+            meters: CASTLE_M as u32,
+        });
     }
     if let Some(stop) = safe_stop_for_chunk(k) {
         // Arrived at the clearing's south edge, where the road has opened.
@@ -652,6 +749,7 @@ pub fn gears_for_chunk(k: i64) -> Vec<Vec2> {
             let y = y0 + i as f32 * GEAR_STEP;
             vec2(path_center(y) + lean + 10.0 * (i as f32 * 1.3).sin(), y)
         })
+        .filter(|g| !in_forecourt(g.y))
         .filter(|g| flask.is_none_or(|f| f.distance(*g) > GEAR_CLEAR))
         .filter(|g| zone.is_none_or(|e| (e.pos.y - g.y).abs() > ZONE_HALF_H + GEAR_CLEAR))
         .collect()
@@ -697,7 +795,9 @@ pub fn upcoming_in(y: f32, range_px: f32) -> Vec<Upcoming> {
                         None => continue,
                     }
                 }
-                GoalKind::Milestone | GoalKind::Stop => continue,
+                GoalKind::Milestone | GoalKind::Stop | GoalKind::Region | GoalKind::Castle => {
+                    continue
+                }
             };
             out.push(Upcoming {
                 kind: g.kind,
@@ -870,7 +970,7 @@ impl World {
     /// the monster. Milestones are never done; they're just passed.
     fn goal_done(&self, g: &Goalpost) -> bool {
         match g.kind {
-            GoalKind::Milestone | GoalKind::Stop => false,
+            GoalKind::Milestone | GoalKind::Stop | GoalKind::Region | GoalKind::Castle => false,
             GoalKind::Flask => self
                 .spots
                 .iter()
@@ -989,8 +1089,14 @@ impl World {
                     )
                 })
             })
+            // The fence ends at the castle's wall (FR27).
             .filter_map(|(base, next, lantern, gone, next_gone)| {
-                (!gone).then_some((base, next, lantern, !next_gone))
+                (!gone && base.y > CASTLE_WALL_Y).then_some((
+                    base,
+                    next,
+                    lantern,
+                    !next_gone && next.y > CASTLE_WALL_Y,
+                ))
             })
     }
 
@@ -1101,7 +1207,18 @@ impl World {
         let scale = (h / 600.0 * 0.72).clamp(0.6, 1.0);
         let x = (lake_right - 140.0 * scale).max(104.0 * scale);
         let y = h * 0.42 + 22.0 * (cam * 0.0009).sin();
-        manor::draw(vec2(x, y), scale, t, true, reduce_flashing);
+        // As the castle (the manor up close, FR27) rises over the top of the
+        // screen, the far one melts away.
+        let fade = smoothstep(CASTLE_WALL_Y - 120.0, CASTLE_WALL_Y + 520.0, cam);
+        manor::draw_fading(vec2(x, y), scale, t, true, reduce_flashing, fade);
+    }
+
+    /// The castle at the road's end (FR27): a wall across the screen with a
+    /// gate in the road's line, once the camera is near enough to see it.
+    /// `open` is how far the portcullis has risen (0 shut, 1 open). Painted
+    /// after the road and lights, before the depth-sorted pass.
+    pub fn draw_castle(&self, view: &View, t: f32, open: f32, reduce_flashing: bool) {
+        castle::draw(view, t, open, reduce_flashing);
     }
 
     /// The raised cobbled road plus what lies on it: the fern patches, the
@@ -1249,6 +1366,9 @@ fn spot_for_chunk(k: i64) -> Option<Vec2> {
     } else {
         (north + 60.0 + r1 * (CHUNK_H - 120.0), 1.0)
     };
+    if in_forecourt(y) {
+        return None;
+    }
     Some(vec2(path_center(y) + (r2 * 2.0 - 1.0) * reach * spread, y))
 }
 
@@ -1774,7 +1894,8 @@ fn draw_flask(view: &View, spot: &Spot, t: f32) {
 mod tests {
     use super::*;
 
-    const CHUNKS: std::ops::Range<i64> = FIRST_CHUNK..300;
+    /// Every chunk of the road, a little past the castle's.
+    const CHUNKS: std::ops::Range<i64> = FIRST_CHUNK..115;
 
     fn spec(id: &str, tier: u32) -> Arc<MonsterSpec> {
         Arc::new(
@@ -2076,7 +2197,7 @@ mod tests {
                 assert_eq!(clamp_to_path(p), p, "chunk {k}: zone off the road");
             }
         }
-        assert!(any > 50, "only {any} zones");
+        assert!(any > 30, "only {any} zones");
     }
 
     #[test]
@@ -2087,9 +2208,9 @@ mod tests {
             .inspect(|e| assert!(e.blocks, "the boss stands across the road"))
             .map(|e| ((ROAD_START_Y - e.pos.y) / PX_PER_METER) as u32)
             .collect();
-        // Chunks up to 300 cover ~4000 m: one boss per milestone, each just
-        // past its milestone.
-        assert!(bosses.len() >= 7, "{bosses:?}");
+        // One boss per milestone, each just past it, and none at the castle's
+        // gate (1,500 m), where the road ends.
+        assert_eq!(bosses.len(), 2, "{bosses:?}");
         for (i, m) in bosses.iter().enumerate() {
             let milestone = (i as u32 + 1) * BOSS_EVERY_M;
             assert!(*m >= milestone && *m < milestone + 30, "{bosses:?}");
@@ -2106,7 +2227,7 @@ mod tests {
                 assert!(m >= kind.info().min_m, "{kind:?} at {m} m");
                 if m < 300 {
                     near.push(kind.info().hits as f32);
-                } else if m > 1500 {
+                } else if m > 1000 {
                     far.push(kind.info().hits as f32);
                 }
             }
@@ -2126,7 +2247,7 @@ mod tests {
             .filter_map(|k| encounter_for_chunk(k).map(|e| (k, e)))
             .filter(|(_, e)| e.blocks)
             .collect();
-        assert!(blockers.len() > 40, "only {} blockers", blockers.len());
+        assert!(blockers.len() > 15, "only {} blockers", blockers.len());
         let mut last_m = 0.0;
         let mut last_k = 0;
         for (k, e) in &blockers {
@@ -2218,6 +2339,116 @@ mod tests {
         }
     }
 
+    // ---- the castle and the regions (FR27) ----
+
+    #[test]
+    fn the_road_ends_at_the_castle_gate() {
+        let x = path_center(CASTLE_GATE_Y);
+        // No walking past it, however far the push.
+        assert_eq!(
+            clamp_to_path(vec2(x, CASTLE_GATE_Y - 900.0)).y,
+            CASTLE_GATE_Y
+        );
+        assert_eq!(clamp_to_path(vec2(x, CASTLE_GATE_Y)).y, CASTLE_GATE_Y);
+        // Short of it the road is as it was.
+        let y = CASTLE_GATE_Y + 500.0;
+        assert_eq!(clamp_to_path(vec2(x, y)).y, y);
+        // The gate is 1,500 m up the road, and standing at it is arriving.
+        assert!(((ROAD_START_Y - CASTLE_GATE_Y) / PX_PER_METER - CASTLE_M).abs() < 1e-3);
+        assert!(at_the_gate(CASTLE_GATE_Y));
+        assert!(at_the_gate(clamp_to_path(vec2(x, CASTLE_GATE_Y - 50.0)).y));
+        assert!(!at_the_gate(CASTLE_GATE_Y + 100.0));
+    }
+
+    #[test]
+    fn nothing_is_placed_in_the_forecourt_or_past_the_gate() {
+        for k in CHUNKS {
+            if let Some(f) = spot_for_chunk(k) {
+                assert!(!in_forecourt(f.y), "chunk {k}: a flask at {}", f.y);
+            }
+            if let Some(e) = encounter_for_chunk(k) {
+                assert!(
+                    !in_forecourt(e.pos.y),
+                    "chunk {k}: a monster at {}",
+                    e.pos.y
+                );
+            }
+            for g in gears_for_chunk(k) {
+                assert!(!in_forecourt(g.y), "chunk {k}: a gear at {}", g.y);
+            }
+            if let Some(s) = safe_stop_for_chunk(k) {
+                assert!(
+                    (s.meters as f32) < CASTLE_M,
+                    "chunk {k}: a stop at {} m",
+                    s.meters
+                );
+            }
+        }
+        // The forecourt isn't the whole road: the stretch before it is as busy as ever.
+        assert!(in_forecourt(CASTLE_GATE_Y + 100.0));
+        assert!(!in_forecourt(CASTLE_GATE_Y + 3000.0));
+    }
+
+    #[test]
+    fn the_castle_gate_is_a_goalpost_that_outranks_the_rest() {
+        let k = chunk_of(CASTLE_GATE_Y);
+        let posts = goalposts_in_chunk(k);
+        let castle: Vec<_> = posts
+            .iter()
+            .filter(|g| g.kind == GoalKind::Castle)
+            .collect();
+        assert_eq!(castle.len(), 1, "{posts:?}");
+        // Counting down reaches 0 m exactly when the player has arrived.
+        assert!(at_the_gate(castle[0].y));
+        // No other chunk has one, and no milestone stone stands at the gate.
+        let all: Vec<_> = CHUNKS.flat_map(goalposts_in_chunk).collect();
+        assert_eq!(all.iter().filter(|g| g.kind == GoalKind::Castle).count(), 1);
+        assert!(all
+            .iter()
+            .filter(|g| g.kind == GoalKind::Milestone)
+            .all(|g| (g.meters as f32) < CASTLE_M));
+        assert!(GoalKind::Castle.rank() > GoalKind::Titan.rank());
+    }
+
+    #[test]
+    fn each_region_border_is_a_goalpost_once() {
+        let all: Vec<_> = CHUNKS.flat_map(goalposts_in_chunk).collect();
+        for r in regions::REGIONS.iter().skip(1) {
+            let n = all
+                .iter()
+                .filter(|g| g.kind == GoalKind::Region && g.meters == r.from_m)
+                .count();
+            assert_eq!(n, 1, "{} has {n} goalposts", r.name);
+        }
+        // The first region starts at the gate, which is no border.
+        assert!(all
+            .iter()
+            .all(|g| !(g.kind == GoalKind::Region && g.meters == 0)));
+    }
+
+    #[test]
+    fn region_borders_keep_clear_of_stops() {
+        for k in CHUNKS {
+            for b in region_borders_in_chunk(k) {
+                assert!(!near_a_stop(k), "{}: a stop beside the border", b.from_m);
+                assert!(b.y > chunk_span(k).0 && b.y <= chunk_span(k).1);
+                assert!(
+                    b.sign.x > path_center(b.y) + PATH_HALF_W,
+                    "the sign is on the road"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_doctor_goes_inside_as_the_castle_nears() {
+        assert!(!near_the_castle(ROAD_START_Y - 500.0 * PX_PER_METER));
+        assert!(near_the_castle(CASTLE_GATE_Y + 100.0));
+        // They're gone well before the gate, and not before the last safe stop.
+        let stop = safe_stop_for_chunk(chunk_of(ROAD_START_Y - 1460.0 * PX_PER_METER)).unwrap();
+        assert!(!near_the_castle(stop.y));
+    }
+
     // ---- safe stops (FR28) ----
 
     fn stops() -> Vec<(i64, SafeStop)> {
@@ -2229,7 +2460,8 @@ mod tests {
     #[test]
     fn stops_come_every_250_m_from_the_first_and_are_deterministic() {
         let all = stops();
-        assert!(all.len() > 10, "only {} stops", all.len());
+        // 210, 460, 710, 960, 1210 and 1460 m: none at or past the castle.
+        assert_eq!(all.len(), 6, "{all:?}");
         for (i, (k, s)) in all.iter().enumerate() {
             assert_eq!(safe_stop_for_chunk(*k), Some(*s));
             assert_eq!(s.n as usize, i + 1, "no stop skipped");
@@ -2271,7 +2503,7 @@ mod tests {
         let titans: Vec<i64> = CHUNKS
             .filter(|&k| encounter_for_chunk(k).is_some_and(|e| e.kind == MonsterKind::TideTitan))
             .collect();
-        assert!(titans.len() >= 4);
+        assert_eq!(titans.len(), 2, "the Titans at 500 and 1,000 m");
         for t in titans {
             let before = (t - 6..t)
                 .filter(|&k| safe_stop_for_chunk(k).is_some())
@@ -2401,7 +2633,7 @@ mod tests {
         let n = CHUNKS.count() as f32;
         let share = chunks_with as f32 / n;
         assert!((0.2..0.5).contains(&share), "{share} of chunks hold gears");
-        assert!(total > 100);
+        assert!(total > 60);
     }
 
     #[test]
@@ -2539,7 +2771,9 @@ mod tests {
         let mut y = 0.0;
         let mut seen: Vec<Vec2> = Vec::new();
         for _ in 0..40 {
-            let g = world.next_goalpost(y).expect("the road is endless");
+            let g = world
+                .next_goalpost(y)
+                .expect("a goalpost is always ahead on the road");
             assert!(g.y < y, "always north of the player: {g:?}");
             assert!(!seen.contains(&g.at), "{g:?} came back after it was done");
             seen.push(g.at);

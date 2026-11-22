@@ -18,8 +18,8 @@ timestamp: 2026-11-21
 > the frame they're needed. When there's no key or the call fails, a fallback
 > bank compiled into the binary steps in. The world isn't stored as a map. The path is a function of `y`, and each chunk's
 > scenery, potion flask and monster (hiding in ferns, or blocking the road) is a pure
-> function of the chunk index, so the road is endless, the same every run, and unit-testable. The setting is a dark forest
-> at night (FR24), with the mad scientist's manor drawn as a backdrop across the lake.
+> function of the chunk index, so the road is the same every run and unit-testable. It is 1,500 m long: it runs through a few regions (the dark forest, the fields and village of Tallybrook, the castle grounds) and ends at the castle's gate (FR27), where walking up to it wins the run. The setting is a dark forest
+> at night (FR24), with the mad scientist's manor drawn as a backdrop across the lake; the castle is that manor seen up close.
 > Besides the hand-drawn monsters, monsters can be defined as JSON specs in a content
 > dir (FR21). A watcher thread reloads them while the game runs, over the same kind
 > of polled channel, and a studio thread designs new ones with the model in the
@@ -135,14 +135,16 @@ The layering holds today, and new code should keep it:
 | `game/task_trigger.rs` | `TriggerState`, the question state machine (§4), `Arrival` (how a `Loading` request ended), and `pick_fallback`. |
 | `game/prefetch.rs` | `Prefetch`: the question buffer, the look-ahead requests in flight and their per-minute budget; `demand` (what the road ahead needs); `plan_lesson` (which pack the studio writes next); the soft deadlines; `Ask` (a question asked for and not yet shown). |
 | `game/field_guide.rs` | `FieldGuide` (the cards unlocked this session) and `GuideCard`. Pure data; `ui/field_guide_panel.rs` draws it. |
-| `game/world.rs` | Coordinates and camera (`View`), path geometry, chunking, potion flasks (`Spot`), encounter zones and road blockers (`EncounterZone`, `clamp_blocked`), safe stops (`SafeStop`, `safe_stop_for_chunk`, `stop_bulge`, `in_safe_stop`, `World::stop_in_reach`), gears (`Gear`, `gears_for_chunk`, `World::collect_gears`), the goalposts the tracker counts down to (`Goalpost`, `goalposts_in_chunk`, `pick_goalpost`, `World::next_goalpost`), what will need a question soon (`Upcoming`, `upcoming_in`, `World::upcoming`), the depth-sorted `Tall` items, and drawing the ground, the cobbled road, the light pools, the mist, the bats and fireflies, and where the manor sits on screen. |
-| `game/decor.rs` | Per-chunk forest scenery generation (`generate_chunk`), the hand-placed hub camp (`hub_layout`) and each safe stop's furnishings (`stop_layout`), how each prop draws, and which props cast light (`Decoration::lights`). |
-| `game/manor.rs` | The gothic manor backdrop (`draw`, with an optional lake reflection), its lightning timing (`lightning`), and the shared `bat` silhouette. |
+| `game/world.rs` | Coordinates and camera (`View`), path geometry, chunking, potion flasks (`Spot`), encounter zones and road blockers (`EncounterZone`, `clamp_blocked`), safe stops (`SafeStop`, `safe_stop_for_chunk`, `stop_bulge`, `in_safe_stop`, `World::stop_in_reach`), gears (`Gear`, `gears_for_chunk`, `World::collect_gears`), the castle's gate and wall (`CASTLE_M`, `CASTLE_GATE_Y`, `CASTLE_WALL_Y`, `at_the_gate`, `World::draw_castle`), the region borders (`RegionBorder`, `region_borders_in_chunk`), the goalposts the tracker counts down to (`Goalpost`, `goalposts_in_chunk`, `pick_goalpost`, `World::next_goalpost`), what will need a question soon (`Upcoming`, `upcoming_in`, `World::upcoming`), the depth-sorted `Tall` items, and drawing the ground, the cobbled road, the light pools, the mist, the bats and fireflies, and where the manor sits on screen. |
+| `game/decor.rs` | Per-chunk scenery generation (`generate_chunk`, dressed per region by `region_scenery`), the hand-placed hub camp (`hub_layout`) and each safe stop's furnishings (`stop_layout`), how each prop draws, and which props cast light (`Decoration::lights`). |
+| `game/manor.rs` | The gothic manor backdrop (`draw`, with an optional lake reflection; `draw_fading`, which melts it away as the castle nears), the castle's keep (`draw_keep`: the same building without its island), its lightning timing (`lightning`), and the shared `bat` silhouette. |
+| `game/castle.rs` | The castle at the road's end (FR27): `draw` paints the curtain wall across the screen, the two gatehouse towers, the arch with its portcullis (raised by `open`, 0 to 1), torches, banners and the keep behind. Scenery with one input; it changes no rule. |
+| `game/regions.rs` | The table of regions (FR27): `REGIONS` (name, `from_m`, map colour and a `Scenery` of knobs), `index_at` / `at` / `end_m` / `starting_at`. Adding a region is one entry. No macroquad or egui. |
 | `game/gfx.rs` | The shared drawing vocabulary: the `INK`, `SHADOW`, `MOON`, `LANTERN`, `LAB_GREEN` and `NIGHT` colours, shading, ellipses, ribbons, stars, gradient meshes (`gradient_ring`, `glow`, `vignette`), the potion flask, hearts, the key prompt, the speech bubble (`speech_bubble`, with `wrap_text`), the item-get burst and the sparkle it's made of (`sparkle_burst`, also used for a gear picked up), and `hash01`. |
 | `game/player.rs` | `Player`: movement, the `Action`s (jump, roll, shoot; only the roll moves the player), the arrows it has loosed, its `Skills`, stun, cheer, death, the stolen hat, and the sprite drawn through a render target. |
 | `game/skills.rs` | Movement skills (FR26): `RollCharges` (3 rolls, a trickle, a lockout) and `Stamina` (sprint drain, regen, winded), held together in `Skills`, and `draw_bar`, the skill bar at the bottom centre. |
 | `game/bow.rs` | The bow: the shot's timing (`aim`, `SHOOT_S`, `RELEASE_S`), drawing the bow slung and held and an arrow (`draw_arrow`), and `Arrow`, a cosmetic projectile that arcs, then sticks in the ground or splashes in the lake. |
-| `game/map.rs` | The discovery map (FR27): `Discovery` (the furthest `y` reached, kept on `Game`) and `snapshot`, which samples the world functions and the flasks and zones for the discovered stretch and returns a `MapView` (landmarks, the road's centreline, the player). No egui. |
+| `game/map.rs` | The discovery map (FR27): `Discovery` (the furthest `y` reached, kept on `Game`) and `snapshot`, which samples the world functions and the flasks and zones for the discovered stretch and returns a `MapView` (landmarks, the road's centreline, a `RegionBand` for each region entered, the castle and the distance to it, the player). No egui. |
 | `game/villain.rs` | The mad scientist (FR23, milestone A): `Villain` (where they stand, what they're doing, the bubble and the cue waiting to be said), `VillainAction`, `Mood` and `Pose` (the animation as pure numbers), `VillainCue` (what happened), `Snapshot` and `Villain::observe` (turns level, streak, distance and hearts into cues), `target_pos` (the pure rule for where they stand), and `load_bank` / `check_bank` for `assets/villain_lines.json`. Draws the doctor and their cart through a 2× canvas, and the bubble. No model call: everything it says is from the bank. |
 | `game/flicker.rs` | `Flicker` / `FlickerKind` (spawn ghost, damage blink). It turns elapsed time into a `Look` (tint and alpha) and honours reduce flashing. |
 | `game/goalpost.rs` | `Tracker` (FR31): which goalpost the top-centre badge shows, the metres left, and its pop, unroll, "Now!" and close animation. It produces a `TrackerView` and draws nothing. |
@@ -154,7 +156,7 @@ The layering holds today, and new code should keep it:
 | `game/battle.rs` | `Battle` and its `Phase`s, the iris transition, and the battle-view drawing. |
 | `game/dialogue.rs` | `Dialogue` (typewriter reveal), the `PEBBLE_TUTORIAL` lines, and `load_bank()` for `assets/dialogue.json`, and `check_bank`, the rule for that file. |
 | `progression/` | `Progression` (XP, level curve, streak multiplier, upgrade unlocks, and FR22's per-topic accuracy and the problems missed) and `upgrades.rs` (upgrade definitions). |
-| `ui/` | One egui function per panel (`hud`, `goalpost_panel`, `creation_bar`, `task_panel`, `token_panel`, `settings_panel`, `field_guide_panel`, `shop_panel`, `map_panel`, `minimap`, `dialogue_panel`, `game_over_panel`), plus `style::apply`. |
+| `ui/` | One egui function per panel (`hud`, `goalpost_panel`, `creation_bar`, `task_panel`, `token_panel`, `settings_panel`, `field_guide_panel`, `shop_panel`, `map_panel`, `minimap`, `dialogue_panel`, `game_over_panel`, `victory_panel`), plus `style::apply`. |
 
 ---
 
@@ -179,7 +181,7 @@ which is why network work goes to a thread (§4). Each iteration does this, in o
    panel are hidden during a battle, a dialogue or while the map is open. The goalpost badge (`goalpost_panel`, FR31) shows when
    `game.goalpost.view()` has something, and the toast steps down below it. The creation bar (`creation_bar`, FR33, `settings.show_creation_bar`) sits under the badge and pushes the toast down in turn; it hides in the hub, in a dialogue, on the map and at Game Over, and in a battle it holds only the battle's own question (`Game::creation_view`). It stays up while a flask problem is open, so the ready pop shows. The map panel (`map_panel::draw`) draws from `game.map_view()`. The shop (`shop_panel::draw`, FR17) shows while `game.shop_open` and returns the `Item` bought, which goes to `Game::buy`; the HUD shows the run's gears. The minimap (`minimap::draw`, top right, `settings.show_minimap`) draws the same `MapView` as a small window around the player, hidden in the same cases as the HUD, and returns its bottom edge so the HUD sits beneath it. The task panel returns
    `TaskPanelEvent::Submit`, which calls `game.submit_answer()`. The Game Over panel
-   returns `true`, which calls `game.reset()`.
+   returns `true`, which calls `game.reset()`, and so does the victory panel (`victory_panel`, shown once `game.victory_panel_up()`; the tracker and the creation bar are hidden after a win).
 8. `egui_macroquad::draw()`, then the `JEKO_SHOT` screenshot check, then `next_frame().await`.
 
 Two consequences of this order:
@@ -206,6 +208,7 @@ what the frame does:
 |---|---|---|---|
 | 0 | (every frame) | | `poll_content` drains the content watcher into `roster` (§8). It runs before everything else, so an edit shows while paused or after death. |
 | 1 | **Game over** | `game_over.is_some()` | Only the death animation advances. After `DEATH_ANIM_S` (1.2 s), E or Enter calls `reset()`. |
+| 1b | **Victory** | `victory.is_some()` | The player has reached the castle gate (FR27). Only `victory` and `time` advance, the player stands (`player.stop`), and the gate rises (`Game::castle_open`). After `VICTORY_PANEL_S` (2.6 s) the victory panel is up and E or Enter calls `reset()`. Nothing is judged, healed or hurt (`damage_player` ignores hits). |
 | 2 | Toggles | not `typing` | With the shop open (FR17), E or Esc closes it. With the map open, M or Esc closes it. Otherwise M opens it (`can_open_map`: on the road, no battle, dialogue, open question, settings, field guide or shop). O toggles `settings_open`, and Esc closes it. With settings closed, G toggles the field guide (`guide_open`, Esc closes it) and P toggles `paused`. |
 | 3 | **Paused** | `paused \|\| settings_open \|\| guide_open \|\| map_open \|\| shop_open` | Only `poll_questions(0.0)` runs (the shown question, the battle's next one and the look-ahead receivers), so a response that arrives isn't lost, and the studio's gate is set to busy. The clock doesn't advance, and neither does the soft deadline. |
 | 4 | (every unpaused frame) | | Advance `time`, shake, the toast, the explanation card and the item-get timers, then `tick_goalpost` (the tracker, §10), `watch_villain` (§9) and `tick_studio` (§8), the last two of which also run in battles and dialogues. |
@@ -224,7 +227,7 @@ The road frame, in order:
    the player, the frame ends here. Then `pick_up_gears` (a gear within `GEAR_PICKUP_R` of the player is taken, counted in `run.gears` and given a sparkle) and `watch_stop` (the welcome toast, once per stop on arrival). The curse is ticked only on this branch, so it
    holds still while a question is loading or open, in a battle, in a dialogue and
    while paused.
-3. `discovery.note(player.y)` records the furthest point reached (FR27). The camera eases toward the player (anchor 0.66 of screen height, rate `1 − e^(−6·dt)`).
+3. `discovery.note(player.y)` records the furthest point reached (FR27), `watch_region` shows each region's "Entering …" banner the first time the player steps into it (a toast; the table is `regions::REGIONS`), and standing at the castle gate (`world::at_the_gate`) calls `win()`, which starts the victory mode above and ends the frame. The camera eases toward the player (anchor 0.66 of screen height, rate `1 − e^(−6·dt)`).
    `world.ensure_generated` keeps one chunk past the top of the screen generated. Then `villain.update` moves the doctor and picks what they say next (§9). It runs only on this branch, so a battle, a dialogue and a pause leave them frozen.
 4. `poll_questions(dt)`, then `tick_prefetch` (§5).
 5. If not busy, stepping into an uncleared fern patch starts a battle.
@@ -240,7 +243,7 @@ to change each rule:
 
 - `Game::damage_player(halves, from)` is the only way HP goes down. It ignores hits
   while dead, while a flicker is active (the invulnerability window) and while the player is
-  inside a safe stop's span (`world::in_safe_stop`, FR28). It
+  inside a safe stop's span (`world::in_safe_stop`, FR28) and after the castle is reached. It
   starts the damage flicker (`HURT_INVULN_S` = 1 s), knocks the player back 22 px away
   from `from` (clamped to the path and short of any road blocker), shakes the screen unless reduce flashing is on,
   and calls `die()` at 0 HP.
@@ -400,7 +403,7 @@ woods. Height is a straight upward lift in screen pixels.
 **The setting** (FR24). The road is an old raised cobbled causeway with iron fences
 and lanterns. A black lake lies to the left (west) and the woods to the right
 (east), with open forest floor between each and the road: the *lakeside* (graves,
-pumpkins, giant toadstools) and the *verge*. The question pickups are potion flasks
+pumpkins, giant toadstools) and the *verge*. The further up the road, the more the forest gives way to farmland, a village and the castle grounds (*Regions and the castle*, below). The question pickups are potion flasks
 hovering over rune stones. Most monsters hide in patches of ferns; now and then one
 stands in the open on the road and blocks it (FR2).
 
@@ -412,7 +415,7 @@ stands in the open on the road and blocks it (FR2).
   start) follow the path with their own wobble, so the ground never pinches shut.
 - `walkable_x(y)` is the road's width (`PATH_HALF_W − WALK_MARGIN`) north of the
   gate. South of it, the width eases out over a 150 px funnel into the hub's open ground.
-- `clamp_to_path(p)` keeps the player on the walkable ground. With
+- `clamp_to_path(p)` keeps the player on the walkable ground, and short of the castle gate (`CASTLE_GATE_Y`: the road ends there). With
   `World::clamp_blocked` after it, it's passed into `Player::update` as a closure and
   also used for knockback.
 - `World::clamp_blocked(p)` stops the player `BLOCK_GAP` (44 px) south of every
@@ -422,7 +425,8 @@ stands in the open on the road and blocks it (FR2).
 **Landmarks** (all on the y axis):
 
 ```
-  y → −∞   … the road, endless …            distance_m = (ROAD_START_Y − y) / 24
+  y = −35,850  CASTLE_GATE_Y: the road's end, 1,500 m up (the wall stands 40 px beyond it)
+           … the road, 1,500 m of it …          distance_m = (ROAD_START_Y − y) / 24
   y = 150  ROAD_SOUTH_END = ROAD_START_Y: the iron gate, signed "THE ROAD"
   y = 300  funnel ends
   y = 365  Professor Pebble (pebble_pos)
@@ -443,14 +447,40 @@ gets:
 
 | What | Where decided | Rule |
 |---|---|---|
-| Scenery | `decor::generate_chunk(k, spot, stop)` | `StdRng` seeded from `k`. Props go in zones relative to the path and the bank (lake, shallows, bank, lakeside, verge, woods, plus `Far*` zones only a wide window shows), and never on the road or around the flask. A pair of lampposts frames each flask, and a stone milestone stands every 50 m. |
+| Scenery | `decor::generate_chunk(k, spot, stop)` | `StdRng` seeded from `k`; dressed for its region afterwards (`region_scenery`), and nothing north of the castle's wall.  Props go in zones relative to the path and the bank (lake, shallows, bank, lakeside, verge, woods, plus `Far*` zones only a wide window shows), and never on the road or around the flask. A pair of lampposts frames each flask, and a stone milestone stands every 50 m. |
 | A potion flask (`Spot`) | `world::spot_for_chunk(k)` | Even chunks with `k ≥ 0`, positioned with `gfx::hash01`. Chunk 0's flask is fixed just past the gate, near the middle of the road. Its potion colour (`flask_color`) is a hash of its position. |
-| An encounter (`Encounter`) | `world::encounter_for_chunk(k)` | Odd chunks with `k ≥ 1`, in the middle of the road. Never in or beside a safe stop's chunk. A Tide Titan always guards the first odd chunk at or past each 500 m mark, as a road blocker. Every sixth chunk from chunk 3 (`k % 6 == 3`, about every 80 m, the first at ~48 m) always has a monster, and it blocks the road. Otherwise there's a 70% chance of a fern patch. The monster comes from `MonsterKind::pick(roll, meters)`. |
+| An encounter (`Encounter`) | `world::encounter_for_chunk(k)` | Odd chunks with `k ≥ 1`, in the middle of the road. Never in or beside a safe stop's chunk. A Tide Titan always guards the first odd chunk at or past each 500 m mark short of the castle (so at 500 and 1,000 m), as a road blocker. Every sixth chunk from chunk 3 (`k % 6 == 3`, about every 80 m, the first at ~48 m) always has a monster, and it blocks the road. Otherwise there's a 70% chance of a fern patch. The monster comes from `MonsterKind::pick(roll, meters)`. |
 | A safe stop (`SafeStop`) | `world::safe_stop_for_chunk(k)` | Stop `n` (from 1) is at `250·n − 40` m, in the chunk that holds that mark, centred in it: 210, 460, 710 m and on. The ones at 460, 960… sit three chunks (40 m) before the 500 m Titan. Its chunk has no flask, and it and the chunks either side have no encounter (`near_a_stop`, checked in `encounter_for_chunk`). `decor::generate_chunk(k, spot, stop)` clears the clearing's box of random scenery and lays `stop_layout`. |
 | Gears (`Gear`) | `world::gears_for_chunk(k)` | Chunks `k ≥ 1` without a stop try a trail with 75% (`GEAR_CHUNK_CHANCE`): 3 to 5 gears 30 px apart along the road, kept 50 px inside the chunk and on whichever side of the chunk's flask or zone has room (else no trail), so about a third of chunks end up with one. |
 
 Because flasks take even chunks and monsters take odd ones, they never crowd each
-other.
+other. The last 20 m before the castle gate (`FORECOURT_PX`, 480 px) hold no flask, monster or
+gear (`in_forecourt`, checked in `spot_for_chunk`, `encounter_for_chunk` and `gears_for_chunk`),
+and no safe stop falls at or past the castle.
+
+**Regions and the castle** (FR27). The road is `CASTLE_M` = 1,500 m long, the owner's answer. `game/regions.rs`
+holds `REGIONS`, the one table of what lies where: The Dark Forest (from 0 m), Tallybrook Fields
+(900), Tallybrook Village (1,100) and The Castle Grounds (1,400). Each entry has a name, a map colour
+and a `Scenery`: shares of what the forest has, for pines and graves (thinned), and chances per chunk
+of extra cottages, haystacks, wells, lampposts and stone columns. `decor::generate_chunk` calls
+`region_scenery` after the forest's own scenery is down: it thins by each prop's own `y`, then adds
+extras from a separate seeded stream, so the forest (all neutral) is exactly what it always was and
+no extra moves a forest prop. Each region after the first starts at a fixed distance
+(`region_borders_in_chunk`, pure), marked by a `Kind::RegionSign` on the woods side, which is also a
+`GoalKind::Region` goalpost. Adding a region is one entry in the table; a look that needs a new prop
+adds a `Kind` and a knob. Walking into a region shows its name as a toast, once per run
+(`Game::watch_region`); the map labels each region entered and keeps the names of those ahead in the fog.
+
+The castle stands at the road's end. `CASTLE_GATE_Y` is the northmost `y` the player can reach
+(`clamp_to_path`), and arriving (`at_the_gate`, within 8 px of it) wins the run (§4). The curtain
+wall's foot is `CASTLE_WALL_Y`, 40 px north; `generate_chunk` drops every prop north of it and
+`World::posts` ends the fence there, so the wall is the last thing on the road. `castle::draw` paints
+the wall, the gatehouse and, behind it, the manor's keep (`manor::draw_keep`): the manor across the lake and
+the castle are one building (the owner's answer), and as the wall rises over the top of the screen the
+backdrop manor fades out (`draw_manor` passes `manor::draw_fading` a `fade`). The doctor ducks inside as the
+player nears (`near_the_castle`, within 380 px, 16 m): `Villain::update` treats that like the hub. There is no
+Tide Titan at the gate. `GoalKind::Castle` is the tracker's top-ranked goalpost, and the 100 m stone at
+1,500 m isn't placed.
 
 **Safe stops** (FR28). A stop is a pocket the road opens onto, on the woods side. `stop_bulge(y)`
 is 0 on the plain road, 1 across the clearing's flat part (`STOP_FLAT_HALF`, 80 px either
@@ -489,12 +519,12 @@ the pool and the zones that hold it).
 **Goalposts** (FR31). `goalposts_in_chunk(k)` lists what the tracker can point at in chunk `k`,
 from the same pure functions that place the things: a milestone stone every
 `GOAL_MILESTONE_EVERY_M` (100 m; the road has a stone every 50 m, too often for a goal), the
-flask, a safe stop's clearing as a `Stop` (arrived at its south edge, never "done"; it outranks a milestone but not a blocker or the Titan), and the encounter as a `Patch`, a `Blocker` or the `Titan`. Each has `y`, the
+flask, a safe stop's clearing as a `Stop` (arrived at its south edge, never "done"; it outranks a milestone but not a blocker or the Titan), a region's border as a `Region` (the same rank as a stop, arrived at the border), the castle gate as the `Castle` (the top rank, arrived at `at_the_gate`), and the encounter as a `Patch`, a `Blocker` or the `Titan`. Each has `y`, the
 world y at which the player has *arrived* (a blocker's is its `BLOCK_GAP` line, so the
 count reaches 0 m where the road stops them), and `at`, where the thing stands.
 `World::next_goalpost(y)` scans the next `GOAL_SCAN_CHUNKS` chunks north, drops flasks that
 are no longer `Fresh` and zones that are `cleared`, and `pick_goalpost` chooses: the nearest
-north of the player, unless a higher-ranked kind (Titan, blocker, milestone, patch, flask) is
+north of the player, unless a higher-ranked kind (castle, Titan, blocker, stop or region, milestone, patch, flask) is
 within `GOAL_RANK_SLACK_M` (25 m) of being as near. A new placed thing adds a `GoalKind`.
 
 **Road blockers** (FR2). An `EncounterZone` with `blocks` set is a monster standing on
@@ -518,7 +548,7 @@ The night (FR24) comes from a dark palette, pools of light, and a vignette.
 1. `world.draw_ground`: the lake, the muddy bank, the forest floor, the woods' darker
    ground, then flat decor (speckles, leaves, paw prints, toadstools, lily pads, water
    ripples, will-o'-wisps).
-2. `world.draw_manor`: the manor backdrop (`manor::draw` with its reflection). It is
+2. `world.draw_manor`: the manor backdrop (`manor::draw_fading` with its reflection, fading out over the last stretch before the castle). It is
    **pinned to the screen**, not placed in the world: its x follows the path's slow
    meander so it stays over the lake, and its y drifts with the camera, so it's
    always ahead. Lightning flashes behind it every ~9 s (`manor::lightning`, timed by
@@ -529,6 +559,10 @@ The night (FR24) comes from a dark palette, pools of light, and a vignette.
 4. `world.draw_lights`: soft light pools (`gfx::glow`) on the ground under lampposts,
    fence lanterns, lit pumpkins, the campfire, cottage windows, cauldrons and the
    waiting flasks. Props say what light they cast in `Decoration::lights`.
+   Then `world.draw_castle` (FR27): once the camera's top passes the castle's wall it
+   paints a night backdrop, the keep, the wall, the gatehouse and the portcullis over everything
+   north of the wall's foot, in screen space across the whole width. Nothing is placed
+   north of it, so nothing needs sorting against it.
 5. **The depth-sorted pass.** `world.tall_items(&view)` returns every `Tall` item on
    screen: `Decor` (pines, dead trees, gravestones, cottages, …), fence `Post`s with
    their rails (every third pair with a lantern), `Flask`s, and undefeated road
@@ -855,8 +889,9 @@ values passed to it as `&mut`.
 | `settings_panel::draw` | modal | | `Settings`, `settings_open`, `guide_open` |
 | `field_guide_panel::draw` | modal | the guide's cards | `guide_open` |
 | `shop_panel::draw` | modal | the run's gears, `Health`, `game.shop_note` | `shop_open`; returns the `Item` to buy |
-| `map_panel::draw` | modal | `MapView` from `Game::map_view` (`Discovery` + the world) | none; M or Esc is handled in `Game::update` |
+| `map_panel::draw` | modal | `MapView` from `Game::map_view` (`Discovery` + the world): the discovered road, a band and name for each region entered, landmarks, the fog, and the castle in its own band at the top (in the fog or not, with the metres to go) | none; M or Esc is handled in `Game::update` |
 | `game_over_panel::draw` | modal | `Game` (run stats incl. gears unspent, best distance) | returns `true` to restart |
+| `victory_panel::draw` | modal | `Game` (run stats), once `victory_panel_up()` | returns `true` to walk the road again |
 
 **The shop** (FR17, FR28). At a safe stop, E at the cottage door opens a modal (`Game.shop_open`) that
 freezes the world like the map does. It sells two things for the run's gears, priced in `game/shop.rs`:
@@ -947,7 +982,7 @@ driving the window:
   `Game::debug_summary()` (a `STATE …` line) to stderr, and exits.
 - `JEKO_DEV=name@frame,…` fires scripted events: damage (`hurt`, `kill`), moves
   (`jump`, `roll`, `shoot`, `stun`, `cheer`), `spent` (empty the roll charges and
-  stamina, to show the skill bar recovering), `restart`, `pause`, `settings`, `map` (open the map), `far` (teleport 120 m up the road and discover it), battles
+  stamina, to show the skill bar recovering), `restart`, `pause`, `settings`, `map` (open the map), `far` (teleport 120 m up the road and discover it), the castle and regions (FR27: `tocastle` 12 m short of the gate, `atcastle` onto the gate line to win the run, `region:<n>[:<m>]` to `m` metres (default 12) past the start of the n-th region in `REGIONS`, negative to see its sign), battles
   (`pinch`, `jelly`, `puff`, `coco`, `gull`, `wyrm`, `titan`, and `battle:<id>` for a
   spec monster from the content dir), answers through the
   real submit path (`right`, `wrong`), `e` (press E), teleports (`toflask`,
@@ -1004,7 +1039,10 @@ driving the window:
 | `game/shop.rs` (3) | Soup mends two hearts for its price; a refused purchase (too poor, hearts full, at the cap) changes nothing; heart charms grow the maximum up to 8 hearts. |
 | `game/curse.rs` (10) | Nothing happens in the hub before the road. It starts the first time the player is past the gate. Standing still fills it, then drains on the interval. Walking north holds it back, even at the far end of the ramp. Old ground gives no relief. The hub lifts it, and so does a safe stop, while the road just past it doesn't; a full curse can't drain someone resting at a stop. Stage toasts replay only after it clears. Cleanse and speed clamp. |
 | `game/skills.rs` (5) | Three rolls then a lockout that refills all; a spent charge trickles back; sprinting drains and running dry winds; stamina waits, then recovers, and winded ends at the threshold; a short break doesn't refill. |
-| `game/map.rs` (6) | Discovery starts at the gate and only moves north. The range has a floor and grows with progress. Landmarks never sit in the fog, while flasks further up exist but stay hidden. Milestones every 50 m. The same walk gives the same map. Solved flasks show as solved. |
+| `game/map.rs` (11) | Discovery starts at the gate and only moves north. The range has a floor and grows with progress. Landmarks (but the castle) never sit in the fog, while flasks further up exist but stay hidden. Milestones every 50 m. The same walk gives the same map. Solved flasks show as solved. The castle is on the map from the first step and the distance to it counts down; only the regions entered have a band, and at the gate the bands cover the road with no gap. |
+| `game/regions.rs` (6) | The table is ordered, starts at 0 and stays short of the castle; a distance falls in exactly one region; regions end where the next begins; the forest's knobs are neutral and every knob is a share; names fit a banner. |
+| `game/decor.rs` (5) | Nothing stands past the castle's wall; each region border has exactly one sign naming it, beside the road; the forest has no signs, wells or hay; the village has more houses and fewer pines than the forest, and a well; generation is deterministic in every region. |
+| `game/world.rs` (castle, FR27) | The road ends at the gate (clamp, arrival); no flask, monster, gear or stop in the forecourt or past the castle; one Castle goalpost that outranks a Titan and no milestone at the gate; each region border is one goalpost; borders keep clear of stops; the doctor leaves as the castle nears. The placement tests cover the whole 1,500 m. |
 | `game/dialogue.rs` (4) | The shipped bank passes `check_bank`; `check_bank` rejects hostile banks (not a list, no Pebble, too few or too many lines, an empty or over-long line, a blocked word, a missing name, a duplicate); the typewriter reveals, then advances, then closes. |
 | `content/vet.rs` (1) | The blocklist matches whole words only (`Shellfish` and `Bloodroot` pass, `Mario` doesn't). |
 | `ui/token_panel.rs` (1) | Token counts read `1,284` below 10,000, then `12.9K` / `4.2M`. |
@@ -1036,7 +1074,7 @@ the owner, and update this section if it goes ahead.
    run is reproducible given the content dir). Generation uses only
    seeded `StdRng` or `gfx::hash01`, never `thread_rng`, so it's the same every run and
    the placement tests stay meaningful. Where things are never depends on the content dir. New placed things (like the road blockers,
-   the safe stops and the gears, and the planned cages) should follow `spot_for_chunk` / `encounter_for_chunk` and get a
+   the safe stops, the gears, the region borders and the castle, and the planned cages) should follow `spot_for_chunk` / `encounter_for_chunk` and get a
    determinism test.
 4. **The hub, and a safe stop, are safe zones.** Nothing hostile spawns south of `ROAD_SOUTH_END`
    (chunk `k < 1`), the curse doesn't start until the player first leaves it, and it
@@ -1048,7 +1086,7 @@ the owner, and update this section if it goes ahead.
 6. **One door per rule.** HP changes go through `damage_player`, `Health::heal`,
    `Health::refill` and `Health::add_heart` (the shop, through `Game::buy`, the one way gears are spent). Questions start through `request_task`. Answers are judged in
    `submit_answer`.
-7. **Cosmetic means cosmetic.** The jump and shoot `Action`s, the bow's arrows, the mad scientist (FR23), the planned pet cat (FR34)
+7. **Cosmetic means cosmetic.** The jump and shoot `Action`s, the bow's arrows, the mad scientist (FR23), the castle's drawing and the region banners (FR27), the planned pet cat (FR34)
    and visual effects never change XP, speed, answers or battle results. The one
    exception is the roll, which moves the player along its heading (the owner's call,
    2026-11-21); it still changes no XP, answers or battle results.
@@ -1101,6 +1139,11 @@ still to make:
   FR23's milestone A is in; the live Cerebras lines (B) and schemes (C) are not. The name,
   look and lore are the owner's call (FR23's open questions), the speech bubble shows whatever
   the HUD setting is, and there is no "Villain chatter" switch. There's no showdown yet.
+- **The castle is a gate that opens onto nothing.** Reaching it wins the run and the victory panel says
+  "to be continued": there is no showdown with the doctor yet (FR23 would build it), no more road, and
+  nothing is kept between runs, so a win is only a screen. The doctor ducks inside as you near the
+  gate, so FR23's "never reached" idea is untouched. The castle's distance (1,500 m), the region names
+  and borders (900, 1,100 and 1,400 m) and the plaque "THE CASTLE" are provisional (FR16).
 - **Safe stops are bare-bones.** They have no keeper to talk to and no checkpoint: dying still
   restarts at the hub, and gears are lost with the run (the owner's answers, FR17 and FR28). How
   often they come (every 250 m, the first at 210 m) and what resting gives are provisional (FR16).
