@@ -10,6 +10,13 @@ JEKO is a kids' math exploration game. Its NPCs (Professor Pebble, Wanderer Finc
 Old Lantern) say one-sentence lines from `assets/dialogue.json`. You refresh that
 file. You don't edit it by hand, you don't commit, and you never push.
 
+## Act, don't ask
+
+Start with step 1 straight away using your `exec` tool. Do not ask the owner for an
+API key or for permission first: the checkout's `.env` holds the key, and `make
+gen-content` reads it. Ask only after `make gen-content` itself prints
+`set CEREBRAS_API_KEY`. A reply with no command run is wrong.
+
 ## Where the repo is
 
 This skill lives at `openclaw/skills/jeko-dialogue/` inside the JEKO checkout, so the
