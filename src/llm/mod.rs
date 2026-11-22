@@ -4,6 +4,7 @@ pub mod cerebras_client;
 pub mod expr;
 pub mod task_gen;
 pub mod usage;
+pub mod villain_gen;
 
 use serde::Deserialize;
 

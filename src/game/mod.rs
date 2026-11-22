@@ -28,6 +28,7 @@ use crate::llm::activity::{BarView, GenActivity, JobState, Stock};
 use crate::llm::buffer::{Source, WaitStats};
 use crate::llm::cerebras_client::CerebrasClient;
 use crate::llm::usage::RequestKind;
+use crate::llm::villain_gen::{BeatContext, RawBeat};
 use crate::llm::MathTask;
 use crate::progression::Progression;
 use battle::{Battle, Phase};
@@ -269,6 +270,12 @@ pub struct Game {
     tips_asked: std::collections::HashSet<String>,
     /// Tips waiting for Pebble to say them, oldest first (FR22).
     pebble_tips: std::collections::VecDeque<String>,
+    /// Whether the doctor's lines are asked of the model (FR23 B).
+    villain_cfg: villain::LiveConfig,
+    /// The live line in flight: its cue, the reply and its creation-bar job.
+    villain_ask: Option<(VillainCue, Receiver<anyhow::Result<RawBeat>>, u32)>,
+    /// When each live line was asked for (game clock), for `JEKO_VILLAIN_RPM`.
+    villain_calls: std::collections::VecDeque<f32>,
 }
 
 /// A worked explanation of a problem the player got wrong (FR22): shown beside
@@ -354,6 +361,9 @@ impl Game {
             waits: WaitStats::default(),
             activity: GenActivity::new(),
             villain: Villain::new(),
+            villain_cfg: villain::LiveConfig::from_env(),
+            villain_ask: None,
+            villain_calls: Default::default(),
             asking: None,
             next_question: None,
             studio: None,
@@ -565,6 +575,7 @@ impl Game {
             // Keep polling so a Cerebras response that lands mid-pause is
             // stored, not lost; nothing else advances.
             self.poll_questions(0.0);
+            self.poll_villain_line();
             self.set_studio_gate();
             return;
         }
@@ -656,6 +667,7 @@ impl Game {
         self.world.ensure_generated(self.cam_y - world::CHUNK_H);
         self.villain
             .update(dt, self.cam_y, screen_height(), self.player.pos);
+        self.tick_villain_lines();
 
         self.poll_questions(dt);
         self.tick_prefetch();
@@ -1243,8 +1255,10 @@ impl Game {
             ),
             if self.villain.is_here() {
                 format!(
-                    "{:?} saying={:?}",
+                    "{:?} live={} bank={} saying={:?}",
                     self.villain.action(),
+                    self.villain.live_said,
+                    self.villain.bank_said,
                     self.villain.saying().unwrap_or_default()
                 )
             } else {
@@ -1834,12 +1848,87 @@ impl Game {
         let Some(studio) = &self.studio else {
             return;
         };
+        studio.set_live_busy(self.questions_busy());
+    }
+
+    /// Something that outranks the background lanes is using the model (FR32):
+    /// the game is paused, a question is loading (the shown one or a battle's
+    /// next), or a look-ahead is in flight.
+    fn questions_busy(&self) -> bool {
         let loading = |s: &TriggerState| matches!(s, TriggerState::Loading(_));
-        let busy = self.is_paused()
+        self.is_paused()
             || loading(&self.trigger_state)
             || self.next_question.as_ref().is_some_and(|(s, _)| loading(s))
-            || self.prefetch.in_flight() > 0;
-        studio.set_live_busy(busy);
+            || self.prefetch.in_flight() > 0
+    }
+
+    /// The doctor's live lines (FR23 B), the lane after the questions and
+    /// before the studio. Runs on the road frame, after `villain.update`: polls
+    /// the line in flight, then asks for the waiting cue's line when the lane is
+    /// free, at most one at a time and `JEKO_VILLAIN_RPM` a minute. With no key
+    /// or `JEKO_VILLAIN=off`, live lines stay off and the bank says everything.
+    fn tick_villain_lines(&mut self) {
+        let live = self.villain_cfg.enabled && self.client.has_api_key();
+        self.villain.set_live(live);
+        self.poll_villain_line();
+        if !live || self.villain_ask.is_some() || self.questions_busy() {
+            return;
+        }
+        let Some(cue) = self.villain.wants_line() else {
+            return;
+        };
+        while self
+            .villain_calls
+            .front()
+            .is_some_and(|t| self.time - t > 60.0)
+        {
+            self.villain_calls.pop_front();
+        }
+        if self.villain_calls.len() >= self.villain_cfg.rpm {
+            return;
+        }
+        self.villain_calls.push_back(self.time);
+        let ctx = BeatContext {
+            cue: cue.key().to_string(),
+            number: cue.number(),
+            meters: self.distance_m(),
+            level: self.progression.level,
+            streak: self.progression.streak,
+            hearts: self.health.current,
+            recent: self.villain.recent_lines(),
+        };
+        let rx = self.client.request_line_async(ctx, villain::MAX_LINE_CHARS);
+        let job = self.activity.start(RequestKind::Line, "Dr. Nullwell");
+        self.villain.mark_asked(cue);
+        self.villain_ask = Some((cue, rx, job));
+    }
+
+    /// Hands the doctor a live line that has arrived, or tells them it won't.
+    /// Also runs while paused, so a reply isn't lost.
+    fn poll_villain_line(&mut self) {
+        let Some((cue, rx, job)) = &self.villain_ask else {
+            return;
+        };
+        let (cue, job) = (*cue, *job);
+        let line = match rx.try_recv() {
+            Ok(Ok(beat)) => villain::beat_line(&beat, cue),
+            Ok(Err(e)) => {
+                eprintln!("villain line failed: {e}");
+                None
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => return,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => None,
+        };
+        self.activity.finish(
+            job,
+            if line.is_some() {
+                JobState::Ready
+            } else {
+                JobState::Fallback
+            },
+        );
+        self.villain.supply(cue, line);
+        self.villain_ask = None;
     }
 
     /// Asks the studio for a monster of `tier`, on a maths topic that fits

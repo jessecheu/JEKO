@@ -30,8 +30,9 @@ timestamp: 2026-11-21
 > linger, which is what keeps them moving. Every 250 m a safe stop (FR28) opens the road onto a
 > lantern-lit clearing with a cottage: nothing hostile is placed there, the curse lifts, hearts mend
 > faster, and a shop sells hearts for the gears (FR17) that lie in trails along the road. A mad scientist potters about at the top of the
-> road, always out of reach, and remarks on what the player does in a speech bubble (FR23). Their lines are canned today and
-> they are purely cosmetic.
+> road, always out of reach, and remarks on what the player does in a speech bubble (FR23). With a key, Cerebras writes each line
+> live from the run, in the lane after the questions, and a reviewed bank covers anything late or
+> refused. They are purely cosmetic.
 
 This doc is **descriptive**. It says what the code is today, checked against the source
 on the date in the frontmatter. It isn't a roadmap: planned and open work lives in
@@ -128,7 +129,8 @@ The layering holds today, and new code should keep it:
 | `llm/expr.rs` | `eval` (a tiny arithmetic evaluator) and `verify` (a generated problem passes only if its `answer` equals its `expression`; FR22). |
 | `llm/activity.rs` | `GenActivity` (FR33): the jobs the creation bar shows, one per model call being written, each `Writing`, then `Ready` or `Fallback`, plus the `Stock` ready ahead of need (look-ahead questions, unseen generated monsters). `view()` gives the bar's circles (oldest three, and the count of the rest) and the stock; `view_where` leaves jobs out (a battle). A read-only mirror: nothing reads it to decide anything. |
 | `llm/buffer.rs` | `QuestionBuffer` (ready questions per difficulty, with an optional strict topic), `plan_prefetch` (the pure look-ahead policy and its `PrefetchCaps`), and `WaitStats` (where each shown question came from and how long the player waited). |
-| `llm/cerebras_client.rs` | `CerebrasClient`: the async wrappers (live and look-ahead), the blocking chat-completions call with its `RequestKind` tag, the shared token stats, and the `fakemodel` stand-in. |
+| `llm/cerebras_client.rs` | `CerebrasClient`: the async wrappers (live, look-ahead, and `request_line_async` for the doctor), the blocking chat-completions call with its `RequestKind` tag, the shared token stats, and the `fakemodel` stand-in. |
+| `llm/villain_gen.rs` | The doctor's live lines (FR23 B): `BeatContext` (the cue and the run: metres, level, streak, hearts, recent lines; nothing about the person playing), `build_prompt` (the character sheet and rules, JSON only) and `parse_reply`, the first pass over a reply (pulls the JSON out, tidies and cuts the line at a word boundary, normalises the mood and action names). |
 | `llm/task_gen.rs` | The prompt templates (`build_prompt(difficulty, topic)` for a live question, `build_pack_prompt` for a lesson pack) and lenient JSON extraction (`extract_json_object` / `_array`). |
 | `llm/usage.rs` | `RequestKind` (question, prefetch, monster, lesson, line), `RequestUsage` (one call's tokens, generation speed and finish time), `CallRecord` / `InFlight` (a finished or still-out call) and `TokenStats` (session totals, per-kind totals, the last 24 requests, a timeline of the last 128 calls, the calls in flight, and the time-windowed `window` / `bins` / `idle_for` queries). |
 | `game/mod.rs` | `Game`: run state, the per-frame update and draw, the mode precedence, the damage, answer and reset entry points, and the dev events. |
@@ -145,7 +147,7 @@ The layering holds today, and new code should keep it:
 | `game/skills.rs` | Movement skills (FR26): `RollCharges` (3 rolls, a trickle, a lockout) and `Stamina` (sprint drain, regen, winded), held together in `Skills`, and `draw_bar`, the skill bar at the bottom centre. |
 | `game/bow.rs` | The bow: the shot's timing (`aim`, `SHOOT_S`, `RELEASE_S`), drawing the bow slung and held and an arrow (`draw_arrow`), and `Arrow`, a cosmetic projectile that arcs, then sticks in the ground or splashes in the lake. |
 | `game/map.rs` | The discovery map (FR27): `Discovery` (the furthest `y` reached, kept on `Game`) and `snapshot`, which samples the world functions and the flasks and zones for the discovered stretch and returns a `MapView` (landmarks, the road's centreline, a `RegionBand` for each region entered, the castle and the distance to it, the player). No egui. |
-| `game/villain.rs` | The mad scientist (FR23, milestone A): `Villain` (where they stand, what they're doing, the bubble and the cue waiting to be said), `VillainAction`, `Mood` and `Pose` (the animation as pure numbers), `VillainCue` (what happened), `Snapshot` and `Villain::observe` (turns level, streak, distance and hearts into cues), `target_pos` (the pure rule for where they stand), and `load_bank` / `check_bank` for `assets/villain_lines.json`. Draws the doctor and their cart through a 2× canvas, and the bubble. No model call: everything it says is from the bank. |
+| `game/villain.rs` | The mad scientist (FR23, milestones A and B): `Villain` (where they stand, what they're doing, the bubble and the cue waiting to be said), `VillainAction`, `Mood` and `Pose` (the animation as pure numbers), `VillainCue` (what happened), `Snapshot` and `Villain::observe` (turns level, streak, distance and hearts into cues), `target_pos` (the pure rule for where they stand), and `load_bank` / `check_bank` for `assets/villain_lines.json`. Live lines (B): `LiveConfig` (`JEKO_VILLAIN`, `JEKO_VILLAIN_RPM`), `beat_line` (the game's pure check of a live beat: maps mood and action onto the enums with defaults, refuses blocked words and leftover placeholders), and `wants_line` / `mark_asked` / `supply`, through which `Game` hands lines in. Draws the doctor and their cart through a 2× canvas, and the bubble. It never calls the model itself. |
 | `game/flicker.rs` | `Flicker` / `FlickerKind` (spawn ghost, damage blink). It turns elapsed time into a `Look` (tint and alpha) and honours reduce flashing. |
 | `game/goalpost.rs` | `Tracker` (FR31): which goalpost the top-centre badge shows, the metres left, and its pop, unroll, "Now!" and close animation. It produces a `TrackerView` and draws nothing. |
 | `game/health.rs` | `Health`, counted in half-hearts: damage, heal, refill, `add_heart` (up to `MAX_HEARTS`, 8), clamped, and slow regeneration (`tick`, or `tick_rate` at a safe stop) with its HUD bar. |
@@ -228,7 +230,7 @@ The road frame, in order:
    holds still while a question is loading or open, in a battle, in a dialogue and
    while paused.
 3. `discovery.note(player.y)` records the furthest point reached (FR27), `watch_region` shows each region's "Entering …" banner the first time the player steps into it (a toast; the table is `regions::REGIONS`), and standing at the castle gate (`world::at_the_gate`) calls `win()`, which starts the victory mode above and ends the frame. The camera eases toward the player (anchor 0.66 of screen height, rate `1 − e^(−6·dt)`).
-   `world.ensure_generated` keeps one chunk past the top of the screen generated. Then `villain.update` moves the doctor and picks what they say next (§9). It runs only on this branch, so a battle, a dialogue and a pause leave them frozen.
+   `world.ensure_generated` keeps one chunk past the top of the screen generated. Then `villain.update` moves the doctor and picks what they say next, and `tick_villain_lines` polls the live line in flight and asks for the next one (§9). It runs only on this branch, so a battle, a dialogue and a pause leave them frozen.
 4. `poll_questions(dt)`, then `tick_prefetch` (§5).
 5. If not busy, stepping into an uncleared fern patch starts a battle.
 6. Interaction targets: the nearest fresh flask in reach (`interact_target`), or else
@@ -856,7 +858,24 @@ unless `JEKO_STUDIO=off`, `main` starts one long-lived thread that designs monst
   bubble opens at most every 8 s, and a small cue that has waited 6 s lapses rather than being said late.
   Nothing said for 25 s becomes an `Idle` mutter. A line comes from `assets/villain_lines.json`
   (`Bank`, rotating through the cue's lines) with its mood and action, which they act out for
-  a few seconds. The bubble is drawn in `game` (`gfx::speech_bubble`, typed out at the dialogue's pace)
+  a few seconds.
+- **Live lines** (FR23 milestone B). With a key (or `JEKO_DEV=fakemodel`) and unless
+  `JEKO_VILLAIN=off`, each waiting cue's line is asked of the model. `Game::tick_villain_lines`
+  runs after `villain.update` on the road frame and is the lane after the questions and before
+  the studio: it starts nothing while `questions_busy()` (paused, a question loading, a
+  look-ahead in flight; the same test that gates the studio), keeps one request in flight and
+  stays under `JEKO_VILLAIN_RPM` (6 a minute, on the game clock). The request
+  (`CerebrasClient::request_line_async`, tagged `RequestKind::Line`) sends a `BeatContext`
+  and opens a "Dr. Nullwell" circle on the creation bar. The reply goes through
+  `villain_gen::parse_reply`, then `villain::beat_line`, then `Villain::supply`.
+  `poll_villain_line` also runs while paused, so a reply isn't lost. The doctor holds a cue
+  that's ready to say for up to `LIVE_WAIT_S` (1.5 s) while its line is out, then says the
+  bank's line instead; a refused or failed line closes the circle as `Fallback` and the bank
+  speaks at once, and a line that arrives after its cue was said or replaced is dropped. With
+  live lines on, `Idle` is queued like any cue so it can be asked for. Each line is said as
+  it comes: the bank's `{m}` / `{n}` / `{level}` placeholders don't apply, the model is given
+  the number instead. The last 4 lines go in the prompt so it doesn't repeat itself. The
+  `STATE` line shows `live=` and `bank=` counts. The bubble is drawn in `game` (`gfx::speech_bubble`, typed out at the dialogue's pace)
   and they're drawn through a 2× canvas so a soot puff can fade them as one piece. **Cosmetic by
   design** (invariant 7): they never call `damage_player` or `request_task` and read nothing a rule uses.
   Under reduce flashing the coil's sparks give way to a steady glow and the goggles stop pulsing. Their position comes only from the
@@ -927,8 +946,8 @@ gears reset with the run (the owner's answers for FR17, 2026-11-21).
 - *Stock.* `sync_creation_bar` also sets `Stock`: the buffer's size and the unseen generated
   monsters for the tier ahead (`unseen_generated`, the same count the studio tops up). The bar
   prints it under the circles as "ready: 9 questions · 2 monsters".
-- *Lines.* `RequestKind::Line` has its icon and `gen:line`, but nothing opens it: the villain's
-  lines are canned until FR23 B.
+- *Lines.* Each live villain line (§9) opens a `RequestKind::Line` circle named "Dr. Nullwell",
+  `Ready` when the line is used and `Fallback` when it's refused or fails.
 
 The ring is a stage ring, not a percentage: an arc turns while the job is `Writing`, closes when
 it ends, the icon pops with a spark (no spark and a slower arc with reduce flashing), and the time
@@ -976,7 +995,8 @@ environment, a `.env` file, or secretspec (`secretspec.toml`). See the README.
 `JEKO_CONTENT_DIR` points the content watcher at another folder (§8).
 `JEKO_PREFETCH=off` turns the question look-ahead off, and `JEKO_PREFETCH_RPM` (default 20)
 caps its requests per minute (§5). `JEKO_STUDIO=off` turns the monster studio off, and
-`JEKO_STUDIO_RPM` (6) and `JEKO_STUDIO_TOKENS` (60,000) bound it (§8).
+`JEKO_STUDIO_RPM` (6) and `JEKO_STUDIO_TOKENS` (60,000) bound it (§8). `JEKO_VILLAIN=off`
+keeps the doctor on the line bank, and `JEKO_VILLAIN_RPM` (6) caps their live lines (§9).
 `JEKO_INSTANCE` names the checkout for the window title (`JEKO — Math Quest [name]`)
 and the startup stderr line. It defaults to the build folder's name, so two clones
 run side by side can be told apart. Nothing else is shared between clones: each has
@@ -1032,7 +1052,8 @@ driving the window:
 | `game/monster_rig.rs` (2) | The palette check's `INK_RGB` matches `gfx::INK`; parts spread evenly. |
 | `game/world.rs` (40) | Scenery never lands on the road. Every flask is reachable and on the road. Generation is deterministic. Interact reaches only nearby fresh flasks. The clamp keeps the player on the road. Encounters are on the road and deterministic. A Titan guards every 500 m, blocking the road. Monsters block the road regularly (no gap over 100 m, the first under 70 m) and deterministically. A blocker shuts the road, can be challenged but doesn't ambush, and opens once beaten. Tougher monsters appear further up. The hub is wide, dry and bounded. The walkable width is continuous through the gate. Safe stops are every 250 m from 210 m and deterministic, never share a chunk with a flask or a zone (or sit next to one, or a gear), leave room before each Titan, open the road continuously onto the clearing on the woods side only, put the cottage door inside the walkable clearing and open the shop only from near it, and are goalposts that are never done. Gears are deterministic, on the road, clear of flasks and monsters and in a plausible share of chunks; one is picked up once, from close by, and a new world has them all again. Goalposts are deterministic and stand in their chunk, nothing hostile is one in the hub, the pick is always north of the player, nearest first and the bigger event first within 25 m, a solved flask or beaten monster is never offered again, and a blocker counts down to its line. `upcoming_in` is nearest first and in range, matches where the world places things, shows no monster in the hub, takes a monster's hits and bias from its stats, and `World::upcoming` leaves out what's been dealt with. About 40% of zones get a spec monster and never a boss, one far enough up the road; an empty pool changes nothing; the same pool gives the same zones and the layout never depends on it; rebinding a built world matches building it with the pool; an edited spec shows in its zones; `upcoming` uses a held spec's tier. |
 | `game/goalpost.rs` (7) | A new goalpost pops in as a circle and then unrolls. The metres go down as the player walks, rounded up, and the ring fills. It pulses under 10 m and says "Now!" on arrival. It closes before the next one appears, hides while a battle or problem is open and comes back, and shows nothing with nothing ahead. Labels. |
-| `game/villain.rs` (15) | The shipped line bank passes its own check and a bad one (unknown cue, missing cue, too long once a number is filled in, a blocked word, a placeholder on the wrong cue, `vanish`, an unknown mood, too few lines) is rejected. The doctor's target is always at least 150 px north of the player and near the road, a player sprinting for 40 s never reaches them, and one who gains on them makes them scurry. They arrive at the gate, are away in the hub (cues dropped) and don't greet twice in a run. The biggest waiting cue is the one said, bubbles keep 8 s apart, a stale small cue lapses and a big one waits. Lines rotate and fill in numbers. A level, a streak of 5, each 100 m and low hearts each become one cue. The same run plays the same every time. A reset goes back to before the first sighting. Every pose stays in bounds for every action. |
+| `game/villain.rs` (18) | The shipped line bank passes its own check and a bad one (unknown cue, missing cue, too long once a number is filled in, a blocked word, a placeholder on the wrong cue, `vanish`, an unknown mood, too few lines) is rejected. The doctor's target is always at least 150 px north of the player and near the road, a player sprinting for 40 s never reaches them, and one who gains on them makes them scurry. They arrive at the gate, are away in the hub (cues dropped) and don't greet twice in a run. The biggest waiting cue is the one said, bubbles keep 8 s apart, a stale small cue lapses and a big one waits. Lines rotate and fill in numbers. A level, a streak of 5, each 100 m and low hearts each become one cue. The same run plays the same every time. A reset goes back to before the first sighting. Every pose stays in bounds for every action. A live beat's mood and action are mapped or defaulted (never `appear` / `vanish`) and a blocked, placeholder, empty or over-long line is refused; a ready cue waits for its live line, says it when it arrives, falls back to the bank after `LIVE_WAIT_S`, and drops a late line; the env switches parse. |
+| `llm/villain_gen.rs` (3) | The prompt carries the cue, the run, the choices and the recent lines; a chatty reply is cleaned up; replies with no JSON, no line, an empty line or a non-string are refused, and a long line is cut to the cap. |
 | `game/gfx.rs` (2) | `wrap_text` breaks at spaces, loses nothing and gives a long word its own line. |
 | `game/manor.rs` (1) | Lightning strikes now and then (under 12% of frames), stays in 0..1, and is the same every run. |
 | `llm/activity.rs` (13) | A job writes, then is ready and remembers how long it took; a failure shows as fallback; ending twice keeps the first ending; a finished job leaves after lingering; one nobody ended goes stale; cancel; the bar shows three circles and counts the rest; the pop and fade; an instant job; a scripted job ends by itself; a job is renamed once made; the view can leave jobs out and counts only the rest; the view carries the stock. |
@@ -1143,8 +1164,12 @@ still to make:
   down) is unmeasured. The live question prompt now also asks for an expression, and a reply
   without a checkable one falls back to the bank, so a model that ignores it would make every
   question a bank question. `make gen-monsters N=8` is the way to look at monsters.
-- **The mad scientist only says canned lines, and their look and tone are provisional.**
-  FR23's milestone A is in; the live Cerebras lines (B) and schemes (C) are not. The name,
+- **The mad scientist's look and tone are provisional, and schemes aren't built.**
+  FR23's milestones A and B are in (live lines, with the bank as the fallback); schemes (C)
+  and the prefetch of right/wrong reactions are not, so a reaction can come up to
+  `LIVE_WAIT_S` late or from the bank. Live lines are checked by a blocklist and the prompt,
+  not by a person (FR23's moderation question). The token panel counts them as `line` but
+  doesn't graph them apart. The name,
   look and lore are the owner's call (FR23's open questions), the speech bubble shows whatever
   the HUD setting is, and there is no "Villain chatter" switch. There's no showdown yet.
 - **The castle is a gate that opens onto nothing.** Reaching it wins the run and the victory panel says

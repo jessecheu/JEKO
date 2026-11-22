@@ -1,7 +1,10 @@
 //! The mad scientist (FR23, milestone A): Dr. Nix Nullwell potters around at the
 //! top of the road, always a little out of reach, and reacts to what the player
-//! does with a speech bubble and an animation. Their lines come from
-//! `assets/villain_lines.json`; nothing here calls the model.
+//! does with a speech bubble and an animation. With live lines on (milestone B),
+//! `Game` asks Cerebras for each line (`llm::villain_gen`) and hands it in with
+//! [`Villain::supply`]; the doctor waits up to `LIVE_WAIT_S` for it and otherwise,
+//! and always with no key, says a line from `assets/villain_lines.json`. Nothing
+//! here calls the model.
 //!
 //! They are **cosmetic** (invariant 7): they never touch XP, speed, answers, HP
 //! or a battle. They are **not a placed thing** (invariant 3): their position is
@@ -13,10 +16,11 @@
 use super::dialogue::TYPE_RATE;
 use super::gfx::{self, INK};
 use super::world::{self, View};
+use crate::llm::villain_gen::RawBeat;
 use macroquad::prelude::*;
 use serde::Deserialize;
 use std::cell::OnceCell;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 use std::f32::consts::{PI, TAU};
 
 /// How far below the top of the screen the doctor's feet are: a band near the
@@ -52,6 +56,11 @@ const HOLD_S: f32 = 2.4;
 const FADE_S: f32 = 0.4;
 /// Seconds an action from a spoken line lasts.
 const REACT_S: f32 = 2.8;
+/// How long a cue that's ready to be said waits for its live line before the
+/// bank's line is said instead (FR23 B). Cerebras usually answers well inside it.
+pub const LIVE_WAIT_S: f32 = 1.5;
+/// How many recent lines go in the prompt, so the model doesn't repeat itself.
+const RECENT: usize = 4;
 
 /// What the doctor is doing. A closed set: the line bank names one for each
 /// line, and idle time picks among the first six.
@@ -108,6 +117,16 @@ pub enum Mood {
 }
 
 impl Mood {
+    /// What the doctor does with a line in this mood when the model didn't say.
+    fn usual_action(self) -> VillainAction {
+        match self {
+            Mood::Smug => VillainAction::Gloat,
+            Mood::Gleeful => VillainAction::Cackle,
+            Mood::Flustered | Mood::FuriousButFunny => VillainAction::Fluster,
+            Mood::Scheming => VillainAction::Tinker,
+        }
+    }
+
     /// The colour of the brew in the flask for this mood.
     fn brew(self) -> Color {
         match self {
@@ -188,6 +207,27 @@ impl VillainCue {
         }
     }
 
+    /// The mood a live line for this cue gets when the model didn't say.
+    fn usual_mood(self) -> Mood {
+        match self {
+            VillainCue::FlaskRight
+            | VillainCue::BattleWon
+            | VillainCue::Streak { .. }
+            | VillainCue::LevelUp { .. }
+            | VillainCue::Milestone { .. } => Mood::Flustered,
+            VillainCue::FirstSighting | VillainCue::FlaskWrong | VillainCue::PlayerHurt => {
+                Mood::Gleeful
+            }
+            VillainCue::BattleStart => Mood::Scheming,
+            VillainCue::LowHealth | VillainCue::Idle => Mood::Smug,
+        }
+    }
+
+    /// The number this cue is about, for the live prompt.
+    pub fn number(self) -> Option<u32> {
+        self.placeholder().map(|(_, n)| n)
+    }
+
     /// The placeholder a line may use for this cue, and what it stands for.
     fn placeholder(self) -> Option<(&'static str, u32)> {
         match self {
@@ -258,6 +298,68 @@ pub const MAX_LINE_CHARS: usize = 90;
 pub fn load_bank() -> Bank {
     check_bank(include_str!("../../assets/villain_lines.json"))
         .expect("assets/villain_lines.json must pass villain::check_bank")
+}
+
+/// Live calls a minute unless `JEKO_VILLAIN_RPM` says otherwise.
+pub const DEFAULT_RPM: usize = 6;
+
+/// Whether the doctor's lines are asked of the model (FR23 B), from the env.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LiveConfig {
+    /// `JEKO_VILLAIN=off` keeps every line in the bank.
+    pub enabled: bool,
+    pub rpm: usize,
+}
+
+impl LiveConfig {
+    pub fn from_env() -> Self {
+        let var = |k| std::env::var(k).ok();
+        Self::parse(
+            var("JEKO_VILLAIN").as_deref(),
+            var("JEKO_VILLAIN_RPM").as_deref(),
+        )
+    }
+
+    fn parse(switch: Option<&str>, rpm: Option<&str>) -> Self {
+        Self {
+            enabled: !matches!(
+                switch.map(|s| s.trim().to_ascii_lowercase()).as_deref(),
+                Some("off" | "0" | "false" | "no")
+            ),
+            rpm: rpm
+                .and_then(|r| r.trim().parse().ok())
+                .unwrap_or(DEFAULT_RPM),
+        }
+    }
+}
+
+/// The game's half of checking a live beat (FR23 B): `llm::villain_gen::parse_reply`
+/// has already trimmed and cut it. Refused (`None`, so the bank's line is said)
+/// when the line hits the blocklist or still has a `{placeholder}`. An unknown
+/// mood becomes the cue's usual one, and an unknown action (or `appear` /
+/// `vanish`, which only the game picks) becomes the mood's usual one. Pure.
+pub fn beat_line(beat: &RawBeat, cue: VillainCue) -> Option<Line> {
+    let line = beat.line.trim();
+    if line.is_empty()
+        || line.contains(['{', '}'])
+        || line.chars().count() > MAX_LINE_CHARS
+        || crate::content::vet::vet_text(line).is_err()
+    {
+        return None;
+    }
+    let named = |s: &Option<String>| s.as_ref().map(|s| serde_json::Value::String(s.clone()));
+    let mood = named(&beat.mood)
+        .and_then(|v| serde_json::from_value::<Mood>(v).ok())
+        .unwrap_or_else(|| cue.usual_mood());
+    let action = named(&beat.action)
+        .and_then(|v| serde_json::from_value::<VillainAction>(v).ok())
+        .filter(|a| !matches!(a, VillainAction::Appear | VillainAction::Vanish))
+        .unwrap_or_else(|| mood.usual_action());
+    Some(Line {
+        line: line.to_string(),
+        mood,
+        action,
+    })
 }
 
 /// Parses and checks a bank of lines: an object with one array per cue key
@@ -399,6 +501,18 @@ pub struct Villain {
     /// The wrong sum on the chalkboard, and which one.
     sum: usize,
     prev: Snapshot,
+    /// Live lines are on (FR23 B): a ready cue waits briefly for one.
+    live: bool,
+    /// The waiting cue a live line has been asked for, and the line once it's in.
+    asked: Option<VillainCue>,
+    ready: Option<Line>,
+    /// How long the waiting cue has been ready to say while its line is out.
+    held: f32,
+    /// The last few lines said, for the prompt.
+    recent: VecDeque<String>,
+    /// Lines said this run that came from the model, and from the bank.
+    pub live_said: u32,
+    pub bank_said: u32,
     canvas: OnceCell<RenderTarget>,
 }
 
@@ -434,6 +548,13 @@ impl Villain {
             travel: 0.0,
             sum: 0,
             prev: Snapshot::default(),
+            live: false,
+            asked: None,
+            ready: None,
+            held: 0.0,
+            recent: VecDeque::new(),
+            live_said: 0,
+            bank_said: 0,
             canvas: OnceCell::new(),
         }
     }
@@ -443,10 +564,53 @@ impl Villain {
     pub fn reset(&mut self) {
         let bank = std::mem::replace(&mut self.bank, Bank(BTreeMap::new()));
         let canvas = std::mem::take(&mut self.canvas);
+        let live = self.live;
         *self = Self {
             canvas,
+            live,
             ..Self::with_bank(bank)
         };
+    }
+
+    /// Turns live lines on or off (FR23 B). Off, every line is the bank's.
+    pub fn set_live(&mut self, on: bool) {
+        self.live = on;
+        if !on {
+            self.asked = None;
+            self.ready = None;
+        }
+    }
+
+    /// The waiting cue to ask the model about, if live lines are on, the doctor
+    /// is out and it hasn't been asked for yet.
+    pub fn wants_line(&self) -> Option<VillainCue> {
+        let (cue, _) = self.pending?;
+        (self.live && self.here && self.asked != Some(cue)).then_some(cue)
+    }
+
+    /// `Game` has asked the model for `cue`'s line.
+    pub fn mark_asked(&mut self, cue: VillainCue) {
+        self.asked = Some(cue);
+        self.ready = None;
+        self.held = 0.0;
+    }
+
+    /// A live line for `cue` has arrived (`None`: the call failed or the line was
+    /// refused, so the bank's is said without waiting any longer). A line for a
+    /// cue that's no longer waiting is dropped.
+    pub fn supply(&mut self, cue: VillainCue, line: Option<Line>) {
+        if self.asked != Some(cue) {
+            return;
+        }
+        match line {
+            Some(l) => self.ready = Some(l),
+            None => self.asked = None,
+        }
+    }
+
+    /// The last few lines said, oldest first, for the live prompt.
+    pub fn recent_lines(&self) -> Vec<String> {
+        self.recent.iter().cloned().collect()
     }
 
     /// Whether any of them is on screen to draw.
@@ -582,11 +746,31 @@ impl Villain {
         } else if let Some((cue, _)) = self.pending {
             let free = self.since_bubble >= MIN_GAP_S || cue.priority() >= 9;
             if free && !appearing {
-                self.pending = None;
-                self.speak(cue);
+                // A live line that's on its way gets a moment to arrive.
+                let waiting = self.live
+                    && self.asked == Some(cue)
+                    && self.ready.is_none()
+                    && self.held < LIVE_WAIT_S;
+                if waiting {
+                    self.held += dt;
+                } else {
+                    self.pending = None;
+                    let line = if self.asked == Some(cue) {
+                        self.ready.take()
+                    } else {
+                        None
+                    };
+                    self.asked = None;
+                    self.speak_line(cue, line);
+                }
             }
         } else if self.since_bubble >= IDLE_S && !appearing {
-            self.speak(VillainCue::Idle);
+            if self.live {
+                // Queued like any cue, so its live line can be asked for.
+                self.pending = Some((VillainCue::Idle, 0.0));
+            } else {
+                self.speak(VillainCue::Idle);
+            }
         }
         if self.action_t >= self.action_len {
             self.next_action();
@@ -632,21 +816,39 @@ impl Villain {
         self.set_action(VillainAction::IDLE[i], len);
     }
 
-    /// Opens a bubble for `cue` and acts out its line.
+    /// Opens a bubble for `cue` with a line from the bank and acts it out.
     fn speak(&mut self, cue: VillainCue) {
-        let lines = self.bank.lines(cue.key());
-        if lines.is_empty() {
-            return;
+        self.speak_line(cue, None);
+    }
+
+    /// Opens a bubble for `cue` and acts out `live`, or a line from the bank.
+    fn speak_line(&mut self, cue: VillainCue, live: Option<Line>) {
+        let (text, mood, action) = match live {
+            Some(l) => {
+                self.live_said += 1;
+                (l.line, l.mood, l.action)
+            }
+            None => {
+                let lines = self.bank.lines(cue.key());
+                if lines.is_empty() {
+                    return;
+                }
+                let k = cue.index();
+                let start = (gfx::hash01(k as u64 + 5) * lines.len() as f32) as usize;
+                let pick = &lines[(start + self.said[k] as usize) % lines.len()];
+                self.said[k] += 1;
+                self.bank_said += 1;
+                let mut text = pick.line.clone();
+                if let Some((p, n)) = cue.placeholder() {
+                    text = text.replace(p, &n.to_string());
+                }
+                (text, pick.mood, pick.action)
+            }
+        };
+        self.recent.push_back(text.clone());
+        if self.recent.len() > RECENT {
+            self.recent.pop_front();
         }
-        let k = cue.index();
-        let start = (gfx::hash01(k as u64 + 5) * lines.len() as f32) as usize;
-        let pick = &lines[(start + self.said[k] as usize) % lines.len()];
-        self.said[k] += 1;
-        let mut text = pick.line.clone();
-        if let Some((p, n)) = cue.placeholder() {
-            text = text.replace(p, &n.to_string());
-        }
-        let (mood, action) = (pick.mood, pick.action);
         self.mood = mood;
         self.bubble = Some(Bubble {
             chars: text.chars().count(),
@@ -1670,6 +1872,110 @@ mod tests {
                 }
             }
         }
+    }
+
+    fn beat(line: &str, mood: Option<&str>, action: Option<&str>) -> RawBeat {
+        RawBeat {
+            line: line.into(),
+            mood: mood.map(str::to_string),
+            action: action.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn a_live_beat_is_mapped_defaulted_or_refused() {
+        let l = beat_line(
+            &beat("Curses!", Some("scheming"), Some("brew")),
+            VillainCue::Idle,
+        )
+        .unwrap();
+        assert_eq!((l.mood, l.action), (Mood::Scheming, VillainAction::Brew));
+        // Unknown names fall back to the cue's mood and that mood's action.
+        let l = beat_line(
+            &beat("Hmm!", Some("sad"), Some("explode")),
+            VillainCue::FlaskRight,
+        )
+        .unwrap();
+        assert_eq!(
+            (l.mood, l.action),
+            (Mood::Flustered, VillainAction::Fluster)
+        );
+        // Only the game makes them appear or vanish.
+        let l = beat_line(
+            &beat("Poof!", Some("smug"), Some("vanish")),
+            VillainCue::Idle,
+        )
+        .unwrap();
+        assert_eq!(l.action, VillainAction::Gloat);
+        // Blocked words, leftover placeholders, empty or over-long lines: the bank's.
+        assert!(beat_line(&beat("I will kill the sums", None, None), VillainCue::Idle).is_none());
+        assert!(beat_line(&beat("{m} metres!", None, None), VillainCue::Idle).is_none());
+        assert!(beat_line(&beat("  ", None, None), VillainCue::Idle).is_none());
+        assert!(beat_line(&beat(&"a".repeat(91), None, None), VillainCue::Idle).is_none());
+    }
+
+    #[test]
+    fn a_live_line_is_said_when_it_arrives_and_the_bank_covers_a_late_one() {
+        let (mut v, player, cam) = out_on_road();
+        v.set_live(true);
+        let step = |v: &mut Villain, secs: f32| {
+            for _ in 0..(secs * 60.0) as usize {
+                v.update(1.0 / 60.0, cam, VH, player);
+            }
+        };
+        step(&mut v, 10.0);
+        v.cue(VillainCue::BattleWon);
+        assert_eq!(v.wants_line(), Some(VillainCue::BattleWon));
+        v.mark_asked(VillainCue::BattleWon);
+        assert_eq!(v.wants_line(), None);
+        // Held while the line is out, then said once it's in.
+        step(&mut v, 0.5);
+        assert_eq!(v.saying(), None);
+        let line = beat_line(
+            &beat("My monster! My beautiful monster!", None, None),
+            VillainCue::BattleWon,
+        );
+        v.supply(VillainCue::BattleWon, line);
+        step(&mut v, 0.1);
+        assert_eq!(
+            v.saying().as_deref(),
+            Some("My monster! My beautiful monster!")
+        );
+        assert_eq!((v.live_said, !v.recent_lines().is_empty()), (1, true));
+
+        // A line that never comes: the bank speaks after LIVE_WAIT_S.
+        step(&mut v, 10.0);
+        v.cue(VillainCue::BattleWon);
+        v.mark_asked(VillainCue::BattleWon);
+        step(&mut v, LIVE_WAIT_S + 0.2);
+        assert!(v.saying().is_some());
+        assert_eq!(v.live_said, 1);
+        // And a late line for a cue already said is dropped.
+        v.supply(VillainCue::BattleWon, line_of("late"));
+        assert_eq!(v.ready.as_ref().map(|l| l.line.as_str()), None);
+    }
+
+    fn line_of(s: &str) -> Option<Line> {
+        beat_line(&beat(s, None, None), VillainCue::Idle)
+    }
+
+    #[test]
+    fn live_switches_parse_from_the_env() {
+        assert_eq!(
+            LiveConfig::parse(None, None),
+            LiveConfig {
+                enabled: true,
+                rpm: DEFAULT_RPM
+            }
+        );
+        assert_eq!(
+            LiveConfig::parse(Some("off"), Some("3")),
+            LiveConfig {
+                enabled: false,
+                rpm: 3
+            }
+        );
+        assert_eq!(LiveConfig::parse(Some("on"), Some("x")).rpm, DEFAULT_RPM);
     }
 
     #[test]

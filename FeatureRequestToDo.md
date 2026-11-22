@@ -2,7 +2,7 @@
 type: Feature Request
 title: JEKO — Feature Requests
 description: Concrete, actionable feature requests for JEKO (Math Quest) — work that is scoped and wanted but not yet built. Each entry states the motivation, a proposed approach, and what "done" looks like. Maintained as the shared agent todo list.
-tags: [feature-request, backlog, creation-bar, progress-circle, gameplay, urgency, curse, sickness, monsters, battle, education, minigames, pets, cat, controls, pause, settings, health, death, art-direction, spawn, tooling, ci-cd, dagger, content-generation, hot-reload, live-content, villain, story, live-dialogue, setting, forest, manor, map, exploration, regions, village, castle, rest-stops, road, obstacles, agents, openclaw, hud, goalposts]
+tags: [feature-request, backlog, creation-bar, progress-circle, gameplay, urgency, curse, sickness, monsters, battle, education, minigames, pets, cat, controls, pause, settings, health, death, art-direction, spawn, tooling, ci-cd, dagger, content-generation, hot-reload, live-content, villain, story, live-dialogue, generated-looks, npcs, setting, forest, manor, map, exploration, regions, village, castle, rest-stops, road, obstacles, agents, openclaw, hud, goalposts]
 timestamp: 2026-11-21
 ---
 
@@ -36,7 +36,7 @@ Entries are grouped by area. Numbering is stable; don't renumber when one is rem
 
 ## Numbering
 
-**The next free number is FR35**; bump it when you file one. Numbers are never
+**The next free number is FR36**; bump it when you file one. Numbers are never
 reused or renumbered when an entry is removed. Take the next number, not the first gap.
 
 ---
@@ -637,7 +637,19 @@ in the moment.
 
 ## FR23. The ultimate villain: a mad scientist who's always up the road, live-scripted by Cerebras
 
-**Status.** **Milestone A built (2026-11-21); B and C not started.** Done: `game/villain.rs`
+**Status.** **Milestones A and B built (2026-11-21); C not started.** *B:* `llm/villain_gen.rs`
+(the prompt, `BeatContext`, `parse_reply`), `CerebrasClient::request_line_async`, `villain::beat_line`
+(the game's check), `Villain::wants_line` / `mark_asked` / `supply` and the `LIVE_WAIT_S` (1.5 s) hold,
+`Game::tick_villain_lines` / `poll_villain_line` (lane after the questions, one in flight,
+`JEKO_VILLAIN_RPM`), `JEKO_VILLAIN=off`, a "Dr. Nullwell" circle on the creation bar, `live=`/`bank=` on
+the `STATE` line. 195 library tests pass. Checked with `JEKO_DEV=fakemodel:300,tovillain@30` and a
+screenshot: the stand-in's line is in the bubble and the token panel counts `line 1`. **Not checked:**
+a real key (tone, length and latency of real replies). **Deviations from the plan below:** the check is
+split, the shaping in `llm::villain_gen` and the enum mapping and blocklist in `game::villain::beat_line`,
+because `llm` can't depend on `content::vet`; a blocked line falls back to the bank's line for the cue,
+not a random one. **Left for later in B:** prefetching right/wrong reactions when a question opens (so
+a reaction is never late), and splitting `line` out in the token panel's graph (it's counted by kind
+already). *A:* done: `game/villain.rs`
 (the doctor and their cart, drawn through a 2× canvas; all the behaviours; the pure `target_pos` that keeps them in a
 band near the top of the screen and at least 150 px north of the player; `Scurry`; the soot
 `Appear` / `Vanish`; the cue queue with priorities, an 8 s gap, stale-cue lapse and an idle mutter;
@@ -870,26 +882,27 @@ decided.
   are hidden in the hub, battles and dialogue.
 - [x] They react to game events (flask right or wrong, battle won, streak, level-up,
   milestones) with a speech bubble and a matching animation.
-- [ ] With an API key, the lines are generated live by Cerebras from the run's
+- [x] With an API key, the lines are generated live by Cerebras from the run's
   context. The frame never blocks (invariant 1), and no villain request delays or
-  overlaps a live question.
-- [ ] With no key, no network, a bad payload, rate limiting or `JEKO_VILLAIN=off`,
+  overlaps a live question. *(Built; only checked with the stand-in model.)*
+- [x] With no key, no network, a bad payload, rate limiting or `JEKO_VILLAIN=off`,
   lines come from `assets/villain_lines.json` and the game plays as before.
-- [ ] Beat validation is a pure, unit-tested function. Hostile input (unknown enums,
+- [x] Beat validation is a pure, unit-tested function. Hostile input (unknown enums,
   over-long lines, blocklisted words, missing fields) is clamped, defaulted or
   replaced.
 - [x] The villain changes no XP, speed, answer, HP or battle outcome (invariant 7),
   and every glow, spark and puff honours reduce flashing (invariant 9).
 - [ ] The token panel shows villain calls separately from question calls.
-- [ ] New dev events let it be checked without the window: e.g. `villain:<cue>`
+- [x] New dev events let it be checked without the window: e.g. `villain:<cue>`
   (fire a cue), `tovillain` (snap the camera so the doctor is on screen), plus the
-  `JEKO_VILLAIN` / `JEKO_VILLAIN_RPM` env vars. *(`villain:<cue>` and `tovillain` are
-  built; the env vars come with B.)*
+  `JEKO_VILLAIN` / `JEKO_VILLAIN_RPM` env vars. *(`villain:<cue>` always uses the bank;
+  live lines are checked through `fakemodel` and a natural cue.)*
 - [ ] `docs/ARCHITECTURE.md` (new `game/villain.rs` and `llm/villain_gen.rs`, the
   villain poll in the frame, `Layer::Villain` in the draw order, the new asset, env
   vars, dev events and tests) and the README layout are updated. *(Done for A: the
   module, the frame hooks, the draw order, the asset, the dev events, the tests, the
-  invariant and the known limit; `villain_gen.rs` and the env vars come with B.)*
+  invariant and the known limit. Done for B: `villain_gen.rs`, the live-lines lane, the env
+  vars, the creation bar, the tests and the known limit.)*
 
 ---
 
@@ -901,6 +914,81 @@ still dress for the beach: the hero (`Player::draw`, "chibi beachgoer: straw sun
 Hawaiian shirt, swim shorts") and the monster roster in `src/game/monster.rs`
 (Pinchling the hermit crab, Jellyglow, Puffspike the pufferfish, Coco Knight,
 Gull Bandit, Dune Wyrm, Tide Titan).
+
+## FR35. Looks written live by Cerebras: characters, NPCs and obstacles
+
+**Status.** **Not started: design discussion.** Requested by the owner (2026-11-21): "the UI of
+characters, NPCs and obstacles generated by the Cerebras live API". The approach is suggested only.
+
+**Depends on:** [] _(builds on FR21's spec-and-rig pattern and the studio lane; obstacles pair with
+FR29, which doesn't exist yet; characters overlap FR25's restyle; FR23 B shows the live-text half)_
+
+**Motivation.** Monsters already look like whatever the model designs (FR21), and the doctor's lines
+are live (FR23 B). Everyone else is hand-drawn Rust: the hero, Professor Pebble, the doctor, and every
+prop and blocker. Making their *look* come from the model makes each session's road feel new, and puts
+the speed of Cerebras on screen, not only in the text.
+
+### The constraint that shapes everything
+
+The model can't draw, and the game must never run code or pixels it was sent. So "generated look"
+means what it means for monsters today: **the model writes a small JSON spec in a closed vocabulary,
+and a fixed renderer (a rig) in `game` draws it** with the shared `gfx` primitives, `INK` outlines and
+the 2× canvas. The model picks shapes, sizes, colours and named parts; the rig owns proportions,
+animation, collision and the art style. Everything is parsed, clamped and vetted before use, like
+`monster_spec::parse`. Bad output means the hand-drawn default, never a broken frame.
+
+### Proposed approach *(suggested, not decided)*
+
+1. **NPC looks (`content/npc_spec.rs`, `game/npc_rig.rs`).** One humanoid rig with slots: body build,
+   head shape, hair (enum), hat (enum), outfit top/bottom (enum + colour), accessory (lantern, satchel,
+   staff…), palette, and an idle animation. Spec text: name, one-line role. Where they appear: the rest
+   stops (FR28), the village (FR27), and new wandering NPCs in the hub. Professor Pebble keeps their
+   hand-drawn look unless the owner says otherwise.
+2. **Character variants.** The hero and Dr. Nullwell stay hand-drawn (they're the game's identity), but
+   expose *cosmetic slots* the model can fill: the doctor's coat patches, flask colour, cart gadget
+   (ties into FR23 C's schemes); the hero's hat or scarf as an unlock. Small, safe and visible.
+3. **Obstacle looks (`content/obstacle_spec.rs`).** Collision stays the game's: a fixed set of
+   obstacle *kinds* (log, boulder, puddle, gate, bramble) with their hitboxes in code. The model
+   writes only the dressing: which kind, size class, palette, decorations (moss, mushrooms, runes,
+   glow), a name and a flavour line. Needs FR29's obstacles, or the existing road blockers, to hang on.
+4. **When it's generated ("live").** In the studio's lane (FR21), below questions and the villain's
+   lines, with the existing per-minute cap and token budget: a `Job::Npc` / `Job::Obstacle`, written
+   to `content/npcs/` and `content/obstacles/` and hot-reloaded by the watcher. Like monsters, a new
+   look joins where it can't change a run that's in progress (the next rest stop, the next chunk
+   generated, or the next run), so invariant 3 (the world is a pure function of the chunk index)
+   holds within a run. A live look for an NPC the player is about to meet can be asked for ahead,
+   the way FR32 prefetches questions.
+5. **Offline.** Shipped hand-written specs for each, so no key still plays with variety, and
+   `validate_content` / `make validate` check the new folders.
+
+### Open questions *(the owner's)*
+
+- **What "UI" means here.** The sprites in the world (proposed above), or also the egui panels
+  around them, such as dialogue box frames and nameplates themed per character? The panels are
+  safer to leave fixed.
+- **How live.** Is "designed in the background and seen on the next stop, chunk or run" enough, or
+  must a look be generated at the moment the player meets the character (with a placeholder while it
+  loads)? The second needs a placeholder look and breaks run determinism unless it's cosmetic only.
+- **The hero and the doctor.** Keep their identity hand-drawn with model-filled slots (proposed), or
+  fully generated?
+- **Obstacles before FR29.** Restyle today's road blockers' surroundings first, or wait for FR29?
+- **Persistence.** Generated looks kept in the content dir between sessions (like `gen-*.json`), or
+  fresh every session?
+- **Moderation.** The same blocklist and closed enums as monsters, or also a person's review before
+  a generated NPC can speak?
+
+### Acceptance criteria *(draft)*
+
+- [ ] NPC, character-slot and obstacle specs parse with clamping and rejection like `monster_spec`,
+  unit-tested with hostile input, and draw through fixed rigs in the existing style.
+- [ ] The studio designs them in its lane, never in a question's or a villain line's way, inside its
+  caps and budget, and the watcher hot-reloads them.
+- [ ] No key, a bad reply or `JEKO_STUDIO=off`: hand-written specs, and the game plays as before.
+- [ ] Collision and placement stay the game's; a look never changes a hitbox, a rule or a run in
+  progress (invariants 3 and 7).
+- [ ] `docs/ARCHITECTURE.md` and the README layout are updated.
+
+---
 
 ## FR25. Restyle the hero and the monsters for the dark forest
 

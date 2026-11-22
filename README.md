@@ -47,6 +47,7 @@ src/
     expr.rs               a tiny arithmetic evaluator that checks a generated problem's answer against its own sum
     cerebras_client.rs    OpenAI-compatible chat-completions call to Cerebras, async wrapper
     task_gen.rs           prompt templates + JSON extraction helpers
+    villain_gen.rs        the mad scientist's live lines: prompt and first check of the reply (FR23)
     usage.rs              per-call tokens, speed + timing, calls in flight, windowed usage rate (feeds the token panel)
   game/
     world.rs              the cobbled road to the castle gate (1,500 m), camera view, chunked scenery, potion-flask triggers, encounter zones and road-blocking monsters, region borders, lake/ground/road drawing, light pools, mist, bats and fireflies
@@ -55,7 +56,7 @@ src/
     regions.rs            the table of regions along the road (forest, fields, village, castle grounds): names, map colours, scenery knobs (FR27)
     castle.rs             the castle at the road's end: curtain wall, gatehouse towers, portcullis, with the manor's keep behind it (FR27)
     manor.rs              the gothic manor backdrop across the lake (and on the battle horizon), its lightning, bats
-    villain.rs            the mad scientist at the top of the road: movement, animation, cues and a speech bubble, with lines from assets/villain_lines.json (FR23)
+    villain.rs            the mad scientist at the top of the road: movement, animation, cues and a speech bubble, lines asked of Cerebras live, with assets/villain_lines.json as the fallback (FR23)
     gfx.rs                shared drawing helpers (night palette, ink outline, shadows, ribbons, stars, glows, vignette, potion flask, speech bubble)
     player.rs             WASD/arrow movement along the path, speed multiplier from upgrades and Shift sprint, player sprite, jump/roll/shoot
     skills.rs             roll charges and sprint stamina, and the skill bar at the bottom centre
@@ -257,7 +258,8 @@ without re-checking this.
 - **The mad scientist** — past the gate, Dr. Nullwell potters around at the top
   of the road, always just out of reach, and reacts to what you do with a speech
   bubble: a right answer flusters them, a level-up or a streak makes their frizz
-  stand on end (`game/villain.rs`). They only talk; nothing they do changes the
+  stand on end (`game/villain.rs`). With a key, Cerebras writes each line live from
+  the run; offline they use a reviewed line bank. They only talk; nothing they do changes the
   game.
 - **Creation bar** — circles at the top centre show the model writing as it
   happens: live questions, look-ahead questions, and the studio's monsters,

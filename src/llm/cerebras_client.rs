@@ -1,5 +1,6 @@
 use crate::config::Config;
 use crate::llm::usage::{RequestKind, RequestUsage, TokenStats};
+use crate::llm::villain_gen::{self, BeatContext, RawBeat};
 use crate::llm::{expr, fallback_bank, task_gen, MathTask};
 use rand::seq::SliceRandom;
 use serde_json::{json, Value};
@@ -92,6 +93,40 @@ impl CerebrasClient {
     /// so the token panel can tell it from a question the player waits on.
     pub fn prefetch_task_async(&self, difficulty: u32) -> Receiver<anyhow::Result<MathTask>> {
         self.request_task_as(difficulty, None, RequestKind::Prefetch)
+    }
+
+    /// Asks for one of the villain's lines on a background thread (FR23,
+    /// milestone B), tagged `RequestKind::Line`. The reply has had
+    /// `villain_gen::parse_reply`'s first pass; `game::villain::beat_line`
+    /// does the rest. The stand-in model answers with a canned beat.
+    pub fn request_line_async(
+        &self,
+        ctx: BeatContext,
+        max_chars: usize,
+    ) -> Receiver<anyhow::Result<RawBeat>> {
+        let (tx, rx) = mpsc::channel();
+        let client = self.clone();
+        std::thread::spawn(move || {
+            let result = (|| {
+                let raw = match client.fake_delay {
+                    Some(delay) => {
+                        client.fake_call(RequestKind::Line, 220, 30, delay);
+                        format!(
+                            "{{\"line\": \"(live) {} already? My zero-ray needs more coffee!\", \"mood\": \"flustered\", \"action\": \"fluster\"}}",
+                            ctx.cue.replace('_', " ")
+                        )
+                    }
+                    None => {
+                        let (system, user) = villain_gen::build_prompt(&ctx, max_chars);
+                        client.request_tagged_blocking(RequestKind::Line, &system, &user)?
+                    }
+                };
+                villain_gen::parse_reply(&raw, max_chars)
+                    .ok_or_else(|| anyhow::anyhow!("no usable villain line in: {raw}"))
+            })();
+            let _ = tx.send(result);
+        });
+        rx
     }
 
     fn request_task_as(
