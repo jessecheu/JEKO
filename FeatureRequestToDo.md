@@ -2,7 +2,7 @@
 type: Feature Request
 title: JEKO — Feature Requests
 description: Concrete, actionable feature requests for JEKO (Math Quest) — work that is scoped and wanted but not yet built. Each entry states the motivation, a proposed approach, and what "done" looks like. Maintained as the shared agent todo list.
-tags: [feature-request, backlog, creation-bar, progress-circle, gameplay, urgency, curse, sickness, monsters, battle, education, minigames, pets, cat, controls, pause, settings, health, death, art-direction, spawn, tooling, ci-cd, dagger, content-generation, hot-reload, live-content, villain, story, live-dialogue, setting, forest, manor, map, exploration, regions, village, castle, rest-stops, road, obstacles, agents, openclaw, hud, goalposts]
+tags: [feature-request, backlog, creation-bar, progress-circle, gameplay, urgency, curse, sickness, monsters, battle, education, minigames, pets, cat, controls, pause, settings, health, death, art-direction, spawn, tooling, ci-cd, dagger, content-generation, hot-reload, live-content, villain, story, live-dialogue, setting, forest, manor, map, exploration, regions, village, castle, rest-stops, road, obstacles, agents, openclaw, hud, goalposts, rate-limits, scheduler, streaming, stretch-packs, landmarks, npcs, narration, lighting, weather]
 timestamp: 2026-11-21
 ---
 
@@ -36,7 +36,7 @@ Entries are grouped by area. Numbering is stable; don't renumber when one is rem
 
 ## Numbering
 
-**The next free number is FR36**; bump it when you file one. Numbers are never
+**The next free number is FR42**; bump it when you file one. Numbers are never
 reused or renumbered when an entry is removed. Take the next number, not the first gap.
 
 ---
@@ -380,7 +380,8 @@ with `fakemodel:700`: scripted runs step game time at 1/60 s per frame while fra
 faster, so the 0.8 s attack covers less than 0.8 s of wall-clock and the stand-in model
 looks slow. (2) Optional: live and look-ahead questions still spawn a thread each; one
 shared worker with a priority queue would replace the `live_busy` flag. Nothing needs it
-yet, and villain lines (FR23) would be its first user.
+yet, and villain lines (FR23) would be its first user. *(Now filed as FR36, with a
+shared rate budget.)*
 
 Provisional choices for the owner (change freely):
 
@@ -524,6 +525,183 @@ gets there. The waits come from the timing, not from the model being slow.
 
 ---
 
+# Live content — spending the token budget
+
+**Goal:** keep Cerebras busy writing things the player sees, all along the road, and
+let the player *watch* it write. Today the game makes many small calls (a question, a
+doctor's line or a tip is about 100–300 output tokens, written in a fraction of a
+second), so it runs into the per-minute *request* cap long before the *token* cap:
+the lane caps add up to more than 32 requests a minute (prefetch 20, villain 6, studio
+6, plus live questions), and on the trial tier most calls come back 429 and fall to the
+bank (*Known limits* in `docs/ARCHITECTURE.md`). Nothing streams, so a reply appears
+all at once and the token panel only knows the speed after the call is over. The way to
+use the budget is fewer, bigger calls under one shared rate budget (FR36), streamed so
+the writing shows (FR37), filling the road with content a stretch at a time (FR38), with
+scenery (FR39) and voices (FR40) built on the same machinery.
+
+## FR36. One scheduler and one rate budget for every model call
+
+**Status.** **Not started.** Filed 2026-11-21 at the owner's request; the approach is
+suggested only. Takes over FR32's optional refactor (one shared worker) and the fix
+named under *Known limits* ("one long-lived worker with a priority queue").
+
+**Depends on:** [] _(the base for FR37 and FR38; replaces the `live_busy` flag between
+the question lanes, the villain's `Voice` and the studio)_
+
+**Motivation.** Every lane keeps its own per-minute cap (`JEKO_PREFETCH_RPM`,
+`JEKO_VILLAIN_RPM`, `JEKO_STUDIO_RPM`) and spawns its own thread, and nothing knows what
+Cerebras will actually allow. The caps add up to more than the trial tier takes, so calls
+fail with 429, while the tokens per minute go mostly unused. One scheduler that knows the
+real limits can send exactly as much as fits, most important first, and stop before a 429
+instead of after.
+
+**Proposed approach.** *(suggested, not decided)*
+
+- **One worker, one queue.** A long-lived thread in `llm` (no macroquad, invariant 10)
+  takes `Job`s with a priority: live question > battle's next question > look-ahead >
+  villain line > stretch pack (FR38) > studio. Each job still answers over its own
+  `mpsc` channel, so `TriggerState`, `Prefetch`, `Voice` and the studio poll exactly as
+  today (invariant 1). A few calls may be out at once (a small pool, say 3), and a live
+  question never waits behind a slow pack: it takes the next free slot, and if every slot
+  is busy the soft deadline and the bank cover it as today (invariant 2).
+- **A budget from the real limits.** Read Cerebras' `x-ratelimit-*` response headers
+  (requests and tokens remaining, and when they reset; check the exact names against a
+  real reply) into a `RateBudget` beside `TokenStats`. Before a call, estimate its tokens
+  (prompt length plus `max_tokens`) and send it only if the budget has room; low-priority
+  jobs leave headroom for live questions (say they may use only 70% of what's left). With
+  no headers yet, start from conservative defaults (env: `JEKO_RPM`, `JEKO_TPM`).
+- **429s back off.** A 429 marks the budget empty until its reset time and puts the job
+  back in the queue (live questions go straight to the bank instead, as today).
+- **Bigger calls.** Set `max_tokens` per kind and use JSON mode (`response_format`) where
+  the model supports it, so large structured replies parse first time.
+- **The old caps become shares.** The per-lane env vars stay as upper bounds per lane, so a
+  player can still turn a lane down or off (`JEKO_VILLAIN=off` and friends keep working).
+- **The token panel shows the budget:** requests and tokens left this minute, the queue by
+  kind, and how much of the minute's token allowance was used.
+
+**Open questions.**
+
+- Which Cerebras plan is this for, and what are its request, token-per-minute and
+  token-per-day limits? Should a session have a hard token cap of its own (like
+  `JEKO_STUDIO_TOKENS`, but for everything)?
+- How much headroom should background work leave for live questions?
+
+**Acceptance criteria.**
+
+- [ ] Every model call in the game (questions, look-ahead, villain, studio, packs) goes
+  through the one scheduler; no lane spawns its own thread per call.
+- [ ] Under the trial tier's limits, a 20-minute run with a key gets (close to) no 429s,
+  and the token panel shows the share of the minute's tokens used.
+- [ ] A live question is never delayed by background work beyond today's soft deadline,
+  and with no key or network the game plays as it does today.
+- [ ] The priority order, the budget and the back-off are unit-tested without a network
+  (a fake clock and fake headers).
+- [ ] `docs/ARCHITECTURE.md` (§1, §2, §5, §11 env vars, §13) and the README are updated.
+
+## FR37. Stream replies and show the writing
+
+**Status.** **Not started.** Filed 2026-11-21 at the owner's request; the approach is
+suggested only.
+
+**Depends on:** [36] _(streaming is a property of the shared worker; FR38–FR40 are what
+it shows)_
+
+**Motivation.** Cerebras writes at hundreds to thousands of tokens a second, and that
+speed is the point of the project, but the player never sees it: `post_chat` waits for
+the whole reply, and the dialogue box's typewriter (`Dialogue`) reveals text at a fixed
+speed. Streaming lets long text appear at the model's own rate, and lets the token panel
+and the creation bar show the speed *during* the call.
+
+**Proposed approach.** *(suggested, not decided)*
+
+- **Stream on the worker.** Send `stream: true` (and ask for usage in the last chunk if
+  the API offers it, so `RequestUsage` still has real token counts) and read the
+  server-sent events on the worker thread. Partial text goes down the job's channel as
+  `Partial(String)` events, then `Done(reply)` or `Failed`.
+- **Checked before shown, still.** Text a child reads must pass `content::vet` first, so
+  only *prose* streams to the screen, a sentence (or clause) at a time: each finished
+  sentence is vetted and cut to length on the worker, then sent. A sentence that fails
+  ends the stream there and the rest comes from the bank. Questions do **not** stream
+  visibly: their answer is verified against `expression` (FR22) before the problem is
+  shown, as today.
+- **Pulling prose out of JSON.** Replies are JSON, so add a small incremental reader that
+  yields the growing value of named string fields (`"line"`, `"text"`, `"steps"`) while
+  the rest of the object is still arriving.
+- **On screen.** The dialogue box, signposts and notes (FR38), diary pages and battle
+  narration (FR40) take streamed text instead of a fixed typewriter. The token panel
+  shows live tokens per second while a stream is open, and a creation-bar circle can show
+  the characters written so far.
+
+**Open questions.**
+
+- Is showing text a sentence at a time (after vetting) fast enough to feel live, or should
+  shorter clauses be vetted and shown?
+- Should the player be able to tap to skip a stream, as they can skip the typewriter?
+
+**Acceptance criteria.**
+
+- [ ] With a key, a long piece of prose (a Pebble line, a signpost) visibly writes itself
+  at the model's speed, and the token panel shows the live rate while it does.
+- [ ] Nothing reaches the screen before `content::vet` has passed it, and a blocked
+  sentence ends the stream and falls back to the bank (unit-tested with a scripted stream).
+- [ ] The incremental JSON reader is pure and unit-tested on replies cut at every byte.
+- [ ] `fakemodel` streams too, so the whole path can be seen offline.
+- [ ] `docs/ARCHITECTURE.md` (§1, §5, §7 if a panel changes, §9, §11) is updated.
+
+## FR38. Stretch packs: the road written ahead, 100 m at a time
+
+**Status.** **Not started.** Filed 2026-11-21 at the owner's request; the approach is
+suggested only.
+
+**Depends on:** [36] _(FR37 makes the text appear live; without it a pack's text just
+appears whole. Reuses FR32's look-ahead and FR22's checks)_
+
+**Motivation.** Most of the road is trees, fence posts and flasks, and the only words on it
+are the questions and the doctor's bubble. One call that writes everything for the next
+stretch of road (about 100 m, 7–8 chunks of 320 px) fills the map with things to read and
+spends the token budget in a few large calls instead of many small ones.
+
+**Proposed approach.** *(suggested, not decided)*
+
+- **Slots, placed by the world.** Invariant 3 holds: *where* things are stays a pure
+  function of the chunk index. The world places empty slots — a signpost, a note pinned to
+  a tree, a carved stone, a traveller resting by the road — with a `slot_for_chunk` rule
+  beside `spot_for_chunk`, kept clear of flasks, zones, gears and stops, with a determinism
+  test. The model only fills in what a slot *says*.
+- **One pack per stretch.** As the player nears a stretch (look-ahead, as FR32 does for
+  questions), the scheduler asks for a `StretchPack`: the region and what has happened this
+  run go in; out comes JSON with the text for each slot, 6–8 region-flavoured questions
+  (each verified against its `expression`, FR22, then added to the question buffer), and
+  flavour lines for the monsters in that stretch. A pack is 3–5k tokens.
+- **A small quest per stretch** (if the owner allows it, see below): a traveller asks for
+  help ("the miller needs ¾ of 24 sacks carried up to the mill"), and the stretch's next
+  three flasks ask questions in that story, the way a scheme steers topics (invariant 7).
+  Finishing it gets a cosmetic thank-you and a line in the map.
+- **Offline and on failure,** each slot kind has a reviewed bank (`assets/stretch_bank.json`,
+  checked like `villain_lines.json` with a `check_bank` and `make validate`), so the road
+  reads the same with no key.
+- **Checked.** Text through `content::vet` and length caps, questions through `llm::expr::verify`;
+  a pack that fails its checks is dropped whole, never half-shown.
+
+**Open questions.**
+
+- May a stretch's quest steer the *text* of its flask questions (a story around the same maths)
+  the way a scheme steers their topic? It changes no difficulty, judging, XP or HP.
+- How long is a stretch: 100 m, a region, or between safe stops (250 m)?
+- Should packs be saved to the content dir (like lesson packs) so a stretch written once is
+  reused next run, or written fresh every run?
+
+**Acceptance criteria.**
+
+- [ ] Every stretch of road has readable slots (signposts, notes, travellers) whose text,
+  with a key, comes from that stretch's pack, and from the bank without one.
+- [ ] Slots are placed by a pure chunk rule, never on a flask, zone, gear or stop, with a
+  determinism test.
+- [ ] A pack's questions are verified before they enter the buffer, and its text is vetted.
+- [ ] Over a run with a key, packs account for most of the session's tokens, and calls per
+  minute stay under the plan's cap (the token panel shows it).
+- [ ] `docs/ARCHITECTURE.md` (§5, §6, §11, §12 if an invariant changes) and the README are updated.
+
 ---
 
 # World — the map and the destination
@@ -647,7 +825,8 @@ and gives the player something to steer around.
 
 **Goal:** give the endless road a face and a reason. FR23 (built) put a mad
 scientist just up the road who reacts to what the player does, with lines and
-schemes Cerebras writes in the moment. What's left is an ending: FR35.
+schemes Cerebras writes in the moment. What's left is an ending (FR35) and more live
+voices along the road than the doctor's (FR40).
 
 ## FR35. A showdown with the doctor at the castle
 
@@ -683,6 +862,54 @@ ran this run, each asking about that scheme's topic through `request_task`, with
 
 ---
 
+## FR40. Live voices along the road: villagers, the doctor's diary, battle narration, explanations
+
+**Status.** **Not started.** Filed 2026-11-21 at the owner's request; the approach is
+suggested only. Can be built in parts, one voice at a time.
+
+**Depends on:** [36, 37] _(streams through FR37; the diary and villagers can share FR38's
+slots and packs)_
+
+**Motivation.** The doctor (FR23) is the only character who speaks live. Tallybrook has houses
+but nobody to talk to, Professor Pebble's lines are a fixed bank plus tips, battles are silent
+between questions, and a wrong answer's explanation is the problem's canned steps. Each of these
+is a place where live, streamed text makes the world feel written for this run.
+
+**Proposed approach.** *(suggested, not decided)*
+
+- **Villagers you can talk to.** A few villagers stand in Tallybrook Fields and Village (slots
+  from a pure chunk rule, invariant 3). E opens the dialogue box; the villager's line streams in,
+  written from their role and what has happened this run, and may end with a small word problem
+  that goes through `request_task` and `submit_answer` like a flask (invariant 6). The bank
+  (`assets/dialogue.json`, checked by `dialogue::check_bank`) is the offline voice.
+- **The doctor's diary.** Pages dropped along the road (a slot kind from FR38) that the doctor
+  "wrote" about this run: the schemes they ran, the monsters the player beat, a hint of what waits
+  at the castle (sets up FR35). Read with E, streamed.
+- **Battle narration.** One call at the start of a battle writes the monster's taunt and a line for
+  each round (`hits` of them), streamed into the battle view between phases, never delaying a
+  question. A bank line per monster offline.
+- **Explanations for this mistake.** A wrong answer streams a short explanation of where *this*
+  answer went wrong (the given answer and the expression go in), checked by the vet and length
+  caps; the problem's own steps stay as the fallback.
+- **Every line checked** before it's shown (FR37's sentence vetting), and every voice off with one
+  setting, like `villain_chatter`.
+
+**Open questions.**
+
+- Which voices first? (Suggested: explanations, then villagers, then the diary, then battles.)
+- May a villager's word problem reward anything (gears, XP), or is it cosmetic like the cat (FR34)?
+- Should a personal explanation ever name the child's wrong answer, or only explain the right way?
+
+**Acceptance criteria.**
+
+- [ ] With a key, villagers, diary pages, battle narration and wrong-answer explanations stream
+  live text that fits the run; with no key each falls back to a reviewed bank.
+- [ ] No battle question and no flask question waits on narration or a villager's line.
+- [ ] Every new bank has a `check_bank` run by a test and by `make validate`.
+- [ ] `docs/ARCHITECTURE.md` (§5, §8, §9, §10 panels, §11) is updated.
+
+---
+
 # Art direction — setting
 
 **Goal:** make the game look like one place. FR24 turned the world into a dark
@@ -690,7 +917,9 @@ forest at night with the mad scientist's manor across a black lake. The characte
 still dress for the beach: the hero (`Player::draw`, "chibi beachgoer: straw sun hat,
 Hawaiian shirt, swim shorts") and the monster roster in `src/game/monster.rs`
 (Pinchling the hermit crab, Jellyglow, Puffspike the pufferfish, Coco Knight,
-Gull Bandit, Dune Wyrm, Tide Titan).
+Gull Bandit, Dune Wyrm, Tide Titan). Restyling them is FR25. Beyond the characters,
+FR39 lets the model design one-off landmarks for the road, and FR41 adds light, weather
+and depth that change with the region.
 
 ## FR25. Restyle the hero and the monsters for the dark forest
 
@@ -728,6 +957,93 @@ follow the renames.
 - [ ] Every monster keeps its stats and special (stun, growing, hat theft, boss), and
   the existing tests pass unchanged.
 - [ ] Monster names in the battle view, toasts, FR16 and `docs/ARCHITECTURE.md` match.
+
+---
+
+## FR39. Landmark specs: scenery the model designs, drawn by a rig
+
+**Status.** **Not started.** Filed 2026-11-21 at the owner's request; the approach is
+suggested only.
+
+**Depends on:** [] _(copies FR21's monster pipeline — studio, spec, vetting, watcher, hot
+reload — for scenery; pairs with FR38, whose packs could name the landmark ahead, and with
+FR25 and FR29)_
+
+**Motivation.** The road's props are a fixed set (`decor::Kind`), so every stretch of a
+region looks alike. Monsters already show how tokens become graphics: the model writes a
+`MonsterSpec` in a closed vocabulary and `monster_rig::draw_spec` draws it. The same for
+scenery would give each stretch a one-off landmark — a crooked shrine, a broken windmill,
+a lab ruin leaking green light — and spend tokens on something the player sees.
+
+**Proposed approach.** *(suggested, not decided)*
+
+- **`LandmarkSpec`** in `content/` (plain Rust): a base shape (tower, hut, arch, ruin,
+  statue, well, mill), parts with positions, sizes and colours from a closed set, roof and
+  window styles, what lights it casts (feeding `Decoration::lights`), an optional idle
+  motion (sails turning, smoke, flicker), a name and a one-line plaque. `parse` clamps and
+  validates it, as `monster_spec::parse` does, including the palette check against `INK`.
+- **`landmark_rig::draw_spec`** in `game/` draws it with the `gfx` vocabulary, depth-sorted
+  as a `Tall` item.
+- **The studio designs them** (`Job::Landmark`, lowest priority, through FR36's scheduler when
+  that lands) into `<content dir>/landmarks/`, and the watcher loads them.
+- **Placement stays pure.** A landmark slot every so often (say one per 100 m, beside the road)
+  comes from the chunk index; which spec stands in it comes from the run's frozen pool, as spec
+  monsters do (invariant 3). An empty pool shows a hand-written landmark.
+
+**Open questions.**
+
+- How often should a landmark appear, and only beside the road or sometimes across it (an arch)?
+- Can a landmark be visited (its plaque read with E), or is it scenery only?
+
+**Acceptance criteria.**
+
+- [ ] Hand-written landmark specs ship in `content/landmarks/` and load, reload and draw.
+- [ ] With a key, the studio writes new ones that pass `make validate`, and they appear on the
+  road on the next run.
+- [ ] `parse` rejects or clamps bad specs (tests as for `MonsterSpec`), and placement is
+  deterministic with a test.
+- [ ] `docs/ARCHITECTURE.md` (§2, §6, §7, §8, §11) and the README layout are updated.
+
+## FR41. Lighting, weather and depth that change with the region
+
+**Status.** **Not started.** Filed 2026-11-21 at the owner's request; the approach is
+suggested only.
+
+**Depends on:** [] _(pairs with FR25 and FR29; uses `regions::Scenery` for the per-region knobs)_
+
+**Motivation.** The night is drawn with flat colours, soft light pools and one vignette,
+and the four regions differ mostly in which props they place. Light that falls on things,
+weather and some depth behind the road would make each region feel like its own place.
+
+**Proposed approach.** *(suggested, not decided)*
+
+- **A lighting pass.** Draw the world into a render target, then composite it through a
+  macroquad `Material` (a small fragment shader) with a light map built from
+  `Decoration::lights`, the flasks and the player's lantern: warm falloff, a little bloom on
+  `LANTERN` and `LAB_GREEN` things, and the night darkness from the light map instead of the
+  fixed vignette. A fallback to today's drawing if the shader fails to compile.
+- **Weather per region,** as `Scenery` knobs: drizzle and puddle ripples in the forest, drifting
+  seed fluff over the fields, chimney smoke in the village, low fog in the castle grounds. All
+  on the game clock (invariant 8); flashes such as lightning honour reduce flashing (invariant 9).
+- **Depth.** One or two parallax treeline layers at the screen's edges, and lake water that
+  moves (ripple bands and a moving moon reflection).
+
+**Open questions.**
+
+- Is a shader acceptable on every machine the game targets (WSL, older GPUs), or should all
+  of this stay in plain primitives?
+- Which regions get which weather, and does weather ever change gameplay? (Suggested: never;
+  it's cosmetic under invariant 7.)
+
+**Acceptance criteria.**
+
+- [ ] Light from lampposts, windows, flasks and the player visibly falls on the ground and
+  props, and the game still draws correctly without the shader.
+- [ ] Each region has its own weather or atmosphere, shown in `JEKO_SHOT` screenshots per region
+  (`region:<n>`).
+- [ ] Reduce flashing turns off every new flash, and pausing freezes the weather.
+- [ ] Frame time on the default window stays within today's budget.
+- [ ] `docs/ARCHITECTURE.md` §7 (draw order, render targets, the `gfx` vocabulary) is updated.
 
 ---
 

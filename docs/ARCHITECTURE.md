@@ -11,9 +11,10 @@ timestamp: 2026-11-21
 > **Bottom line.** JEKO is one Rust crate: a library plus three binaries. A single
 > macroquad loop in `src/main.rs` drives one owner of all run state, `game::Game`,
 > which updates and paints the world each frame. egui panels are drawn on top as
-> thin views of that state. Only one thing is slow: asking Cerebras for a math problem.
-> That call runs on a throwaway OS thread and its result comes back over an `mpsc` channel
-> that `TriggerState` polls each frame. The game asks ahead, too: it looks up the road for flasks
+> thin views of that state. Only one thing is slow: a call to Cerebras (a math problem,
+> the doctor's next line, or a studio job). Each runs on a background OS thread and its
+> result comes back over an `mpsc` channel the game polls each frame (`TriggerState` for
+> the question on screen). The game asks ahead, too: it looks up the road for flasks
 > and monsters and keeps their questions ready in a buffer (FR32), so most questions are on screen
 > the frame they're needed. When there's no key or the call fails, a fallback
 > bank compiled into the binary steps in. The world isn't stored as a map. The path is a function of `y`, and each chunk's
@@ -54,9 +55,9 @@ src/main.rs: one macroquad loop, one iteration per frame
   ├─ Game::draw_pause_overlay()    ├───▶  player · world · battle · dialogue · health
   └─ egui pass: ui::* panels ──────┘      progression · settings · trigger_state
         read Game, hand events                  │
-        back (Submit, restart)                  │ Game::request_task(bias)
+        back (Submit, restart)                  │ Game::request_task(bias, deadline, topic)
                                                 ▼
-                              llm::CerebrasClient::request_task_async(difficulty)
+                              llm::CerebrasClient::request_task_async(difficulty, topic)
                                 spawns a std::thread ──▶ POST {CEREBRAS_BASE_URL}/chat/completions
                                 returns an mpsc::Receiver        (blocking reqwest, 8 s timeout)
                                                 │
@@ -92,9 +93,9 @@ One Cargo package, `jeko` (`Cargo.toml`, edition 2021):
 
 | Target | Source | Role |
 |---|---|---|
-| library `jeko` | `src/lib.rs` | `config`, `content`, `llm`, `game`, `progression`, `ui`. It exists so both binaries share `CerebrasClient`. |
+| library `jeko` | `src/lib.rs` | `config`, `content`, `llm`, `game`, `progression`, `ui`. It exists so the game and the two offline tools share one `CerebrasClient` and one set of content rules. |
 | binary `jeko` (default-run) | `src/main.rs` | The game: window config, the frame loop, the dev hooks (§11). |
-| binary `gen_content` | `src/bin/gen_content.rs` | Offline tool. Asks the model for NPC lines and writes `assets/dialogue.json` once `dialogue::check_bank` accepts the whole bank, and designs monsters into the content dir. The game never runs it. |
+| binary `gen_content` | `src/bin/gen_content.rs` | Offline tool. Asks the model for NPC lines and writes `assets/dialogue.json` once `dialogue::check_bank` accepts the whole bank, and designs monsters into the content dir (`--monsters N`). It retries a 429, a 5xx or a timeout up to 8 times, waiting 5 s and doubling up to 60 s, since Cerebras' trial models often answer "queue exceeded". The game never runs it. |
 | binary `validate_content` | `src/bin/validate_content.rs` | Offline checker, no key and no writes. Runs `dialogue::check_bank` on the dialogue bank, `villain::check_bank` on the mad scientist's lines, the watcher's own scan (monsters, lesson packs, tips) on the content dir, and `content::vet` on each loaded monster's text; prints each rejection and exits non-zero if there is one (`make validate`). It is how a person or an OpenClaw agent tests what it wrote before the game sees it. |
 
 Which module uses which (arrows mean "uses"):
@@ -103,7 +104,7 @@ Which module uses which (arrows mean "uses"):
 main.rs ──▶ ui ──▶ game ──▶ llm ──▶ config
   │         │        ├────▶ progression
   │         │        └────▶ content
-  │         └──────────────▶ progression, llm   (read-only, for the HUD and token panel)
+  │         └──────────────▶ progression, llm, content::studio   (read-only, for the HUD and token panel)
   └──▶ content   (starts the watcher and the studio)
 gen_content.rs ──▶ llm, config, content, game::dialogue (check_bank)
 validate_content.rs ──▶ content, game::dialogue (check_bank), game::villain (check_bank)
@@ -141,7 +142,7 @@ The layering holds today, and new code should keep it:
 | `llm/task_gen.rs` | The prompt templates (`build_prompt(difficulty, topic)` for a live question, `build_pack_prompt` for a lesson pack) and lenient JSON extraction (`extract_json_object` / `_array`). |
 | `llm/usage.rs` | `RequestKind` (question, prefetch, monster, lesson, line), `RequestUsage` (one call's tokens, generation speed and finish time), `CallRecord` / `InFlight` (a finished or still-out call) and `TokenStats` (session totals, per-kind totals, the last 24 requests, a timeline of the last 128 calls, the calls in flight, and the time-windowed `window` / `bins` / `idle_for` queries). |
 | `game/mod.rs` | `Game`: run state, the per-frame update and draw, the mode precedence, the damage, answer and reset entry points, and the dev events. |
-| `game/task_trigger.rs` | `TriggerState`, the question state machine (§4), `Arrival` (how a `Loading` request ended), and `pick_fallback`. |
+| `game/task_trigger.rs` | `TriggerState`, the question state machine (§5), `Arrival` (how a `Loading` request ended), and `pick_fallback_for` / `pick_fallback` (a bank question, on a topic when it can). |
 | `game/prefetch.rs` | `Prefetch`: the question buffer, the look-ahead requests in flight and their per-minute budget, and the themed requests for a scheme's flasks (`themed_count`); `demand` (what the road ahead needs); `plan_lesson` (which pack the studio writes next); the soft deadlines; `Ask` (a question asked for and not yet shown). |
 | `game/field_guide.rs` | `FieldGuide` (the cards unlocked this session) and `GuideCard`. Pure data; `ui/field_guide_panel.rs` draws it. |
 | `game/world.rs` | Coordinates and camera (`View`), path geometry, chunking, potion flasks (`Spot`), encounter zones and road blockers (`EncounterZone`, `clamp_blocked`), safe stops (`SafeStop`, `safe_stop_for_chunk`, `stop_bulge`, `in_safe_stop`, `World::stop_in_reach`), gears (`Gear`, `gears_for_chunk`, `World::collect_gears`), the castle's gate and wall (`CASTLE_M`, `CASTLE_GATE_Y`, `CASTLE_WALL_Y`, `at_the_gate`, `World::draw_castle`), the region borders (`RegionBorder`, `region_borders_in_chunk`), the goalposts the tracker counts down to (`Goalpost`, `goalposts_in_chunk`, `pick_goalpost`, `World::next_goalpost`), what will need a question soon (`Upcoming`, `upcoming_in`, `World::upcoming`), the depth-sorted `Tall` items, and drawing the ground, the cobbled road, the light pools, the mist, the bats and fireflies, and where the manor sits on screen. |
@@ -216,12 +217,12 @@ what the frame does:
 
 | # | Mode | Condition | What the frame does |
 |---|---|---|---|
-| 0 | (every frame) | | `poll_content` drains the content watcher into `roster` (§8). It runs before everything else, so an edit shows while paused or after death. |
+| 0 | (every frame) | | `poll_content` drains the content watcher into `roster` (§8), then `activity.tick` and `sync_creation_bar` keep the creation bar current (§10). They run before everything else, so an edit shows while paused or after death. |
 | 1 | **Game over** | `game_over.is_some()` | Only the death animation advances. After `DEATH_ANIM_S` (1.2 s), E or Enter calls `reset()`. |
 | 1b | **Victory** | `victory.is_some()` | The player has reached the castle gate (FR27). Only `victory` and `time` advance, the player stands (`player.stop`), and the gate rises (`Game::castle_open`). After `VICTORY_PANEL_S` (2.6 s) the victory panel is up and E or Enter calls `reset()`. Nothing is judged, healed or hurt (`damage_player` ignores hits). |
 | 2 | Toggles | not `typing` | With the shop open (FR17), E or Esc closes it. With the map open, M or Esc closes it. Otherwise M opens it (`can_open_map`: on the road, no battle, dialogue, open question, settings, field guide or shop). O toggles `settings_open`, and Esc closes it. With settings closed, G toggles the field guide (`guide_open`, Esc closes it) and P toggles `paused`. |
 | 3 | **Paused** | `paused \|\| settings_open \|\| guide_open \|\| map_open \|\| shop_open` | Only `poll_questions(0.0)` runs (the shown question, the battle's next one and the look-ahead receivers), and `Voice::poll` (the doctor's line), so a response that arrives isn't lost, and the studio's gate is set to busy. The clock doesn't advance, and neither does the soft deadline. |
-| 4 | (every unpaused frame) | | Advance `time`, shake, the toast, the explanation card and the item-get timers, then `tick_goalpost` (the tracker, §10), `watch_villain`, `tick_voice` (§9) and `tick_studio` (§8), the last three of which also run in battles and dialogues (`tick_voice` only polls there). |
+| 4 | (every unpaused frame) | | Advance `time`, shake, the toast, the explanation card, the item-get timer and the gear sparkles, then `tick_goalpost` (the tracker, §10), `watch_villain`, `tick_voice` (§9) and `tick_studio` (§8), the last three of which also run in battles and dialogues (`tick_voice` only polls there). |
 | 5 | **Battle** | `battle.is_some()` | `update_battle`: the player is held, phases advance (§8), and each question is asked for early and shown when the phase reaches `Question` (§5). |
 | 6 | **Dialogue** | `dialogue.is_some()` | The player is held. E reveals the line, then advances, then closes. |
 | 7 | **Road** | otherwise | See below. |
@@ -281,12 +282,12 @@ the player is still moving. Potion flasks and battles share one path:
 ```
    open_spot / battle start / battle answer wants a question
                               │
-                Game::request_task(bias, deadline_s)
+                Game::request_task(bias, deadline_s, topic)
                 difficulty = min(level + bias, 5)
         ┌─────────────────────┼──────────────────────┐
   buffer has one         API key set             no API key
   (this level, else           │                       │
-   one below)       Loading(request_task_async)  Active(pick_fallback)
+   one below)       Loading(request_task_async)  Active(pick_fallback_for)
         │                     │
   Active(task)                │ poll() each frame; past the soft deadline: Active(pick_fallback),
                               │ and the late answer goes into the buffer
@@ -353,13 +354,16 @@ the game asks before the player needs the answer:
 - `request_task_async` clones the client, spawns a `std::thread`, and returns the
   `Receiver`. The thread runs `request_task_blocking`. There's no pool and no
   cancellation. A dropped receiver just makes the thread's `send` fail quietly.
-- `request_raw_blocking(system, user)` is shared with `gen_content`. It builds a new
+- `request_tagged_blocking(kind, system, user)` makes every call; `request_raw_blocking`
+  is the same, tagged `Question`, and is what `gen_content` uses. It builds a new
   `reqwest::blocking::Client` with an 8 s timeout and POSTs
   `{model, messages: [system, user], temperature: 0.7}` with bearer auth to
   `{base_url}/chat/completions`. It returns `choices[0].message.content`.
-- **The prompt** (`task_gen::build_prompt`) asks for *only* one JSON object of the
-  form `{topic, problem, answer: number, hint, difficulty}`, with a single numeric
-  answer. Difficulty 1 means single-digit addition and 5 means multi-step word problems.
+- **The prompt** (`task_gen::build_prompt(difficulty, topic)`) asks for *only* one JSON
+  object of the form `{topic, problem, answer: number, expression, hint, explanation,
+  difficulty}`, with a single numeric answer (the last checks are below). Difficulty 1
+  means single-digit addition and 5 means multi-step word problems. A topic, when given,
+  is required of the problem and forced onto the task.
   `extract_json_object` slices from the first `{` to the last `}`, so stray prose or
   code fences around the object don't matter. serde then parses it into `MathTask`.
 - **Usage accounting.** Every clone shares one `Arc<Mutex<TokenStats>>`. A call is
@@ -380,9 +384,9 @@ the game asks before the player needs the answer:
 
 **The fallback bank.** `assets/tasks_fallback.json` is compiled in with
 `include_str!` (`llm::fallback_bank`) and parsed at startup, where a malformed file panics.
-`pick_fallback` panics if the bank is empty.
-`pick_fallback` takes a random entry (`rand::thread_rng`, the only non-deterministic
-randomness in the game). The game must stay fully playable with no key and no network.
+`pick_fallback_for(bank, topic)` takes a random entry on the topic if the bank has one, else
+any (`pick_fallback`, which panics if the bank is empty). It uses `rand::thread_rng`, the
+only non-deterministic randomness in the game apart from the stand-in model's. The game must stay fully playable with no key and no network.
 
 **Checked before a child sees it** (FR22). The live prompt also asks for the sum behind the
 answer (`expression`, numbers and `+ - * /` only) and 2 to 4 `explanation` steps.
@@ -612,8 +616,8 @@ The night (FR24) comes from a dark palette, pools of light, and a vignette.
    edges with the curse level, which pulses at full unless reduce flashing is on.
 8. `world.draw_overhead`: bats crossing the screen and fireflies over the ground,
    on top of the darkness.
-9. Key prompts (E) over the flask, road blocker or NPC in reach, drawn last so
-   they're never hidden, then the mad scientist's speech bubble (`Villain::draw_bubble`),
+9. Key prompts (E) over the flask, road blocker, safe stop's cottage door or NPC in
+   reach, and the sparkle of a gear just picked up, drawn last so they're never hidden, then the mad scientist's speech bubble (`Villain::draw_bubble`),
    in screen space so the night never dims it. The `villain_chatter` setting hides it.
 10. The item-get burst and banner, then the hearts and, once the curse has started,
    the curse meter under them (`curse::draw_meter`, with a tick where the fever starts).
@@ -764,8 +768,10 @@ every spec in the roster (its blurb and `fact`), and a card that isn't unlocked 
 collection lasts for the session, survives `reset()` and isn't saved to disk.
 
 **The studio** (FR21, `content/studio.rs`). With a key (or `JEKO_DEV=fakemodel`) and
-unless `JEKO_STUDIO=off`, `main` starts one long-lived thread that designs monsters.
-`Game::tick_studio` runs on the road frame:
+unless `JEKO_STUDIO=off`, `main` starts one long-lived thread that designs monsters and
+writes lesson packs and tips (§5). `Game::tick_studio` runs on every unpaused frame,
+battles and dialogues included (§4), and queues one job at a time, in this order: a lesson
+pack (`plan_lesson`), Pebble's tips for a weak topic (once per topic), then a monster:
 
 - **Lowest lane.** It sets the studio's `live_busy` flag while the game is paused, a
   question is loading (the shown one or a battle's next) or a look-ahead is in flight
@@ -776,7 +782,8 @@ unless `JEKO_STUDIO=off`, `main` starts one long-lived thread that designs monst
   (`monster_spec::tier_for_meters(distance + 100 m)`) and, if fewer than 3 generated
   monsters of that tier haven't been fought yet, queues a `Job::Monster` for it, one job
   at a time, waiting about 1.5 s after a finished job for the watcher to load its file
-  before counting the stock again. The job carries a maths topic that fits the tier and
+  before counting the stock again, and `STUDIO_BACKOFF_S` (20 s) after a turned-down or
+  failed one, so a model that keeps answering badly doesn't burn the budget in a loop. The job carries a maths topic that fits the tier and
   the names already taken. The dev event `genmonster` queues one for tier 2.
 - **What the model returns is data, and the game keeps the rules.** `finish_monster`
   forces the requested tier, limits `special` to `none` or `grows` (`stun` and
@@ -842,7 +849,7 @@ unless `JEKO_STUDIO=off`, `main` starts one long-lived thread that designs monst
   dormant until the first frame the player is north of the gate
   (`!world::in_hub(y)`), when it starts at 0 with a toast. From then, while `Game`
   ticks it (see §4), on the road it rises `1/FULL_AFTER_S` (45 s) per second, ramped
-  up to ×1.5 (`RAMP_MAX`) by 2,000 m, and each metre of new ground (north of the
+  up to ×1.5 (`RAMP_MAX`) by `RAMP_M` (2,000 m; the road ends at 1,500 m, where it's ×1.375), and each metre of new ground (north of the
   furthest point this run) takes off `RELIEF_PER_M` (0.006), so walking at base speed
   holds it level or better. In the hub, and inside a safe stop's span (`world::in_safe_stop`, FR28), it lifts by `HUB_LIFT_PER_S` (0.05/s), so a full curse clears in about 20 s there and a stop is the one place up the road where standing still doesn't bring the fever on. A correct
   flask cleanses `FLASK_CLEANSE` (0.25). Stages: *Cursed* from 0.2, *Fever* from
@@ -852,7 +859,7 @@ unless `JEKO_STUDIO=off`, `main` starts one long-lived thread that designs monst
   once it has lifted back to clear.
 - **Health** (`game/health.rs`). 5 hearts, stored as 10 half-hearts and clamped at both
   ends. Heals: ½ heart for a correct flask, a full refill on a level-up, and regeneration.
-  `Health::tick` (called from `Game::update` on the free-roam frame, beside `tick_curse`,
+  `Health::tick_rate` (called from `Game::update` on the free-roam frame, beside `tick_curse`,
   so it freezes in a battle, a question, a dialogue and a pause) waits `REGEN_DELAY_S`
   (4 s) after the last hit, then restores ½ heart every `REGEN_EVERY_S` (8 s) through
   `Health::heal`. Inside a safe stop it runs `REST_REGEN_RATE` (4×) faster (`tick_rate`: the delay and the wait both shrink), so ½ heart comes back every 2 s. The shop's heart charm adds a heart (`Health::add_heart`, up to `MAX_HEARTS`, 8) and its hot soup heals 2 hearts, both from `Game::buy` (§10). A hit empties the progress. It holds, keeping its progress, while the
@@ -940,7 +947,8 @@ values passed to it as `&mut`.
 
 | Panel | Anchor | Reads | Writes / returns |
 |---|---|---|---|
-| `hud::draw` | top right | `Progression`, `distance_m`, the run's gears | none |
+| `minimap::draw` | top right | `MapView` from `Game::map_view`, a small window around the player | none; returns its bottom edge |
+| `hud::draw` | top right, under the minimap | `Progression`, `distance_m`, the run's gears, a top offset | none |
 | `hud::draw_toast` | top centre (below the badge while it's up) | `game.toast`, a top offset | none |
 | `goalpost_panel::draw` | top centre | `game.goalpost.view()` (`TrackerView`) | none |
 | `creation_bar::draw` | top centre, under the badge | `game.creation_view()` (`BarView`), reduce flashing | none; returns its height |
@@ -1003,7 +1011,7 @@ game clock, so a pause freezes it, and it never changes XP, speed or answers (in
 `ui::style::apply` sets the theme every frame: pale parchment panels (kept light so
 text reads against the dark world), thick dark-wood borders, hard offset shadows, a
 lantern-amber hover and a moss-green accent. `gfx::key_prompt` copies the palette, so world
-prompts match the panels. `Settings` (`show_hud`, `show_token_panel`,
+prompts match the panels. `Settings` (`show_hud`, `show_minimap`, `show_token_panel`,
 `show_creation_bar`, `villain_chatter`, `reduce_flashing`) lives on `Game` and isn't saved between launches.
 
 ---
@@ -1020,11 +1028,12 @@ rebuild. The exception is the content dir, which is read at runtime and hot-relo
 | `assets/villain_lines.json` | `villain::load_bank` | The mad scientist's lines: an array per cue (`first_sighting`, `milestone`, `flask_right`, `flask_wrong`, `battle_start`, `battle_won`, `player_hurt`, `streak`, `level_up`, `low_health`, `idle`, `scheme`, `scheme_foiled`, `creation`), each line with a mood and an action. `{m}`, `{n}` and `{level}` fill in a number, `{scheme}` the scheme's name and `{name}` a new creature's, on the cue that has it. It's what the doctor says whenever no live line comes (§9). `villain::check_bank` is the rule for it (every cue present, 2 to 8 lines each, at most 90 characters with a placeholder at its widest, the word blocklist, no `appear` or `vanish`): a test runs it on the shipped file and `make validate` runs it too, because `load_bank` panics at startup on a bad one. |
 | `assets/dialogue.json` | `dialogue::load_bank` | NPC lines. Professor Pebble says the hub tutorial and then rotates through their bank lines. Regenerate it with `make gen-content`. `dialogue::check_bank` is the rule for it (3 to 12 lines per NPC, at most 140 characters, the word blocklist, unique names, Professor Pebble present): `gen_content` runs it before writing, `make validate` runs it on the file, and a test runs it on the shipped file, because `load_bank` panics at startup on a bad one. |
 
-**OpenClaw (FR30, optional).** `openclaw/` holds skills for the OpenClaw agent gateway, one per job: `jeko-dialogue` (runs `make gen-content` then `make validate`), `jeko-monsters` (writes `content/monsters/<id>.json`, atomically, and runs `make validate`) and `jeko-playtest` (runs `JEKO_SHOT` / `JEKO_DEV` scenarios and reads the screenshots). Nothing in `src/` calls OpenClaw and the game doesn't know it exists: agents only use the repo's own tools and the content dir's file contract, and leave the result in the working tree for review. Setup, the agents' tool limits and the safety notes are in `openclaw/README.md`.
+**OpenClaw (FR30, optional).** `openclaw/` holds skills for the OpenClaw agent gateway, one per job: `jeko-dialogue` (runs `make gen-content` then `make validate`), `jeko-monsters` (writes `content/monsters/<id>.json`, atomically, and runs `make validate`) and `jeko-playtest` (runs `JEKO_SHOT` / `JEKO_DEV` scenarios and reads the screenshots). Nothing in `src/` calls OpenClaw and the game doesn't know it exists: agents only use the repo's own tools and the content dir's file contract, and leave the result in the working tree for review. `openclaw/agentctl.sh` runs agents as detached jobs through a background OpenClaw Gateway (`up`, `run`, `jobs`, `logs`, `down`), each in a fresh session, logging to the git-ignored `.agent-runs/`. Setup, the agents' tool limits, the Cerebras rate limits met while testing and the safety notes are in `openclaw/README.md`.
 
 
 **Configuration.** `CEREBRAS_API_KEY` is optional; without it the game runs offline.
-`CEREBRAS_MODEL` defaults to `kimi-k3.1`, a placeholder slug.
+`CEREBRAS_MODEL` defaults to `kimi-k3.1`, a placeholder slug; the one this project has
+run against is `moonshotai-kimi-k3.1-pro-trial`, and `GET {base}/models` lists what a key can use.
 `CEREBRAS_BASE_URL` defaults to `https://api.cerebras.ai/v1`. Values come from the
 environment, a `.env` file, or secretspec (`secretspec.toml`). See the README.
 `JEKO_CONTENT_DIR` points the content watcher at another folder (§8).
@@ -1088,7 +1097,7 @@ driving the window:
 | `content/prompts.rs` (5) | The shipped example is valid, every value the prompt lists is accepted by the parser, the prompt carries the tier, topic and names to avoid, and every level has topics that fit a theme. |
 | `content/mod.rs` (1) | A rejected file keeps the last good version in the roster; a delete removes it. |
 | `game/monster_rig.rs` (2) | The palette check's `INK_RGB` matches `gfx::INK`; parts spread evenly. |
-| `game/world.rs` (40) | Scenery never lands on the road. Every flask is reachable and on the road. Generation is deterministic. Interact reaches only nearby fresh flasks. The clamp keeps the player on the road. Encounters are on the road and deterministic. A Titan guards every 500 m, blocking the road. Monsters block the road regularly (no gap over 100 m, the first under 70 m) and deterministically. A blocker shuts the road, can be challenged but doesn't ambush, and opens once beaten. Tougher monsters appear further up. The hub is wide, dry and bounded. The walkable width is continuous through the gate. Safe stops are every 250 m from 210 m and deterministic, never share a chunk with a flask or a zone (or sit next to one, or a gear), leave room before each Titan, open the road continuously onto the clearing on the woods side only, put the cottage door inside the walkable clearing and open the shop only from near it, and are goalposts that are never done. Gears are deterministic, on the road, clear of flasks and monsters and in a plausible share of chunks; one is picked up once, from close by, and a new world has them all again. Goalposts are deterministic and stand in their chunk, nothing hostile is one in the hub, the pick is always north of the player, nearest first and the bigger event first within 25 m, a solved flask or beaten monster is never offered again, and a blocker counts down to its line. `upcoming_in` is nearest first and in range, matches where the world places things, shows no monster in the hub, takes a monster's hits and bias from its stats, and `World::upcoming` leaves out what's been dealt with. About 40% of zones get a spec monster and never a boss, one far enough up the road; an empty pool changes nothing; the same pool gives the same zones and the layout never depends on it; rebinding a built world matches building it with the pool; an edited spec shows in its zones; `upcoming` uses a held spec's tier. |
+| `game/world.rs` (46) | Scenery never lands on the road. Every flask is reachable and on the road. Generation is deterministic. Interact reaches only nearby fresh flasks. The clamp keeps the player on the road. Encounters are on the road and deterministic. A Titan guards every 500 m, blocking the road. Monsters block the road regularly (no gap over 100 m, the first under 70 m) and deterministically. A blocker shuts the road, can be challenged but doesn't ambush, and opens once beaten. Tougher monsters appear further up. The hub is wide, dry and bounded. The walkable width is continuous through the gate. Safe stops are every 250 m from 210 m and deterministic, never share a chunk with a flask or a zone (or sit next to one, or a gear), leave room before each Titan, open the road continuously onto the clearing on the woods side only, put the cottage door inside the walkable clearing and open the shop only from near it, and are goalposts that are never done. Gears are deterministic, on the road, clear of flasks and monsters and in a plausible share of chunks; one is picked up once, from close by, and a new world has them all again. Goalposts are deterministic and stand in their chunk, nothing hostile is one in the hub, the pick is always north of the player, nearest first and the bigger event first within 25 m, a solved flask or beaten monster is never offered again, and a blocker counts down to its line. `upcoming_in` is nearest first and in range, matches where the world places things, shows no monster in the hub, takes a monster's hits and bias from its stats, and `World::upcoming` leaves out what's been dealt with. About 40% of zones get a spec monster and never a boss, one far enough up the road; an empty pool changes nothing; the same pool gives the same zones and the layout never depends on it; rebinding a built world matches building it with the pool; an edited spec shows in its zones; `upcoming` uses a held spec's tier. |
 | `game/goalpost.rs` (7) | A new goalpost pops in as a circle and then unrolls. The metres go down as the player walks, rounded up, and the ring fills. It pulses under 10 m and says "Now!" on arrival. It closes before the next one appears, hides while a battle or problem is open and comes back, and shows nothing with nothing ahead. Labels. |
 | `llm/villain_gen.rs` (8) | A beat parses out of a chatty reply; unknown moods and actions become defaults and `appear` / `vanish` are never taken; over-long lines are cut at a word under the cap, markup, braces and quotes go, and blocked words, links, empty and wordless lines and non-JSON are turned down; a pair needs both halves; a scheme's topic must be one offered, an unknown gadget is defaulted, a long or blocked name is refused; the prompt carries the rules, the cue and the run; the stand-in's replies pass; every topic has a fallback scheme that fits the sign. |
 | `game/villain_voice.rs` (7) | The env switches parse; the minute cap; a ready pair gives the matching half once; a live line reaches the cue it was asked for and closes its circle; a pair still in flight goes to the answer; a late reply for a replaced cue is dropped; a failed call sends the cue to the bank and shows `bank`. |
@@ -1110,7 +1119,7 @@ driving the window:
 | `game/map.rs` (11) | Discovery starts at the gate and only moves north. The range has a floor and grows with progress. Landmarks (but the castle) never sit in the fog, while flasks further up exist but stay hidden. Milestones every 50 m. The same walk gives the same map. Solved flasks show as solved. The castle is on the map from the first step and the distance to it counts down; only the regions entered have a band, and at the gate the bands cover the road with no gap. |
 | `game/regions.rs` (6) | The table is ordered, starts at 0 and stays short of the castle; a distance falls in exactly one region; regions end where the next begins; the forest's knobs are neutral and every knob is a share; names fit a banner. |
 | `game/decor.rs` (5) | Nothing stands past the castle's wall; each region border has exactly one sign naming it, beside the road; the forest has no signs, wells or hay; the village has more houses and fewer pines than the forest, and a well; generation is deterministic in every region. |
-| `game/world.rs` (castle, FR27) | The road ends at the gate (clamp, arrival); no flask, monster, gear or stop in the forecourt or past the castle; one Castle goalpost that outranks a Titan and no milestone at the gate; each region border is one goalpost; borders keep clear of stops; the doctor leaves as the castle nears. The placement tests cover the whole 1,500 m. |
+| `game/world.rs`, continued (castle, FR27) | The road ends at the gate (clamp, arrival); no flask, monster, gear or stop in the forecourt or past the castle; one Castle goalpost that outranks a Titan and no milestone at the gate; each region border is one goalpost; borders keep clear of stops; the doctor leaves as the castle nears. The placement tests cover the whole 1,500 m. |
 | `game/dialogue.rs` (4) | The shipped bank passes `check_bank`; `check_bank` rejects hostile banks (not a list, no Pebble, too few or too many lines, an empty or over-long line, a blocked word, a missing name, a duplicate); the typewriter reveals, then advances, then closes. |
 | `content/vet.rs` (1) | The blocklist matches whole words only (`Shellfish` and `Bloodroot` pass, `Mario` doesn't). |
 | `ui/token_panel.rs` (2) | Token counts read `1,284` below 10,000, then `12.9K` / `4.2M`; durations read `42 s` / `3 min` / `1 h 5 min` and `850 ms` / `1.2 s`. |
@@ -1178,13 +1187,16 @@ still to make:
 - **Answers are numeric only.** `MathTask.answer` is an `f64` with an exact-match
   check. Non-math subjects or multiple choice (an FR3 question, open in FR16) would need a
   new answer type through the prompt, the parser, `task_panel` and `submit_answer`.
-- **One thread and one HTTP client per request**, with no cancellation or retry. Look-ahead
+- **One thread and one HTTP client per request**, with no cancellation or retry in the game
+  (only the offline `gen_content` retries a 429). Look-ahead
   now overlaps requests (at most two prefetches, a live one and a villain line), which is still fine.
   A villain call never starts while a question is loading, but one already out can overlap a question
   asked after it (separate HTTP calls, so it doesn't delay it). The
   fix, one long-lived worker with a priority queue, is half there: the studio is a long-lived
-  thread, but live and look-ahead questions still spawn a thread each, and the studio's
-  lane is kept by a flag (`live_busy`), not by a shared queue.
+  thread, but live and look-ahead questions and the doctor's lines still spawn a thread each,
+  the studio's lane is kept by a flag (`live_busy`), not by a shared queue, and each lane has
+  its own per-minute cap, which together can ask for more than a trial key allows. FR36 files
+  the fix; replies aren't streamed either (FR37).
 - **Look-ahead can waste calls.** It asks for questions the player may never reach (they die
   first, or skip a flask), so it costs up to about 1.5 times the calls. `JEKO_PREFETCH_RPM`
   bounds it.
@@ -1201,10 +1213,10 @@ still to make:
 - **The studio's monsters wait for the next run.** The zone pool is the roster frozen at
   the start of a run, so a monster written mid-run first appears on the road after a
   restart (§6). On a fresh checkout the first run has only the hand-written specs.
-- **The studio's prompts haven't been checked against the real model.** The monster, lesson
-  and tips paths run end to end with the stand-in model and are covered by tests, but the sandbox
-  they were built in had no network, so a real reply's quality (and how often a reply is turned
-  down) is unmeasured. The live question prompt now also asks for an expression, and a reply
+- **The studio's prompts are barely measured against the real model.** The monster, lesson
+  and tips paths run end to end with the stand-in model and are covered by tests, and they have
+  run with a real key (studio-made monsters and a tips file have been written that way), but a
+  real reply's quality, and how often one is turned down, haven't been measured. The live question prompt now also asks for an expression, and a reply
   without a checkable one falls back to the bank, so a model that ignores it would make every
   question a bank question. `make gen-monsters N=8` is the way to look at monsters.
 - **The mad scientist's look, tone and numbers are provisional.** The name, look and lore, the gloat
@@ -1222,6 +1234,6 @@ still to make:
 - **Safe stops are bare-bones.** They have no keeper to talk to and no checkpoint: dying still
   restarts at the hub, and gears are lost with the run (the owner's answers, FR17 and FR28). How
   often they come (every 250 m, the first at 210 m) and what resting gives are provisional (FR16).
-- **The settled-for-now defaults** from FR1–FR3, FR5–FR15, FR17, FR20, FR23, FR24, FR26, FR28 and FR31 are listed for the owner in FR16.
+- **The settled-for-now defaults** from FR1–FR3, FR5–FR15, FR17, FR20–FR24, FR26, FR27, FR28, FR31, FR32 and FR33 are listed for the owner in FR16.
 
 See [FeatureRequestToDo.md](../FeatureRequestToDo.md) for the backlog.
