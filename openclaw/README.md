@@ -117,6 +117,34 @@ game from the worktree. To run the playtest after your own changes, point its wo
 at the checkout you changed, since it needs your code, and it writes only to a scratch
 folder.
 
+## Running agents as background jobs
+
+`openclaw agent --local` runs the agent inside your terminal's process and takes an
+exclusive lock on OpenClaw's state database, so only one run can go at a time. The
+Gateway has no such limit (`agents.defaults.maxConcurrent`, 80 by default), so for
+overlapping or long runs start it and drop `--local`. `agentctl.sh` wraps that:
+
+```bash
+openclaw/agentctl.sh up                                   # Gateway in the background
+openclaw/agentctl.sh run jeko-monsters "Design two new monsters."
+openclaw/agentctl.sh run jeko-playtest "Playtest the game and report."
+openclaw/agentctl.sh jobs                                 # running / done
+openclaw/agentctl.sh logs jeko-monsters                   # follow a log
+openclaw/agentctl.sh down                                 # stop the Gateway
+```
+
+Each `run` returns at once and writes to `.agent-runs/<agent>-<time>.log` (git-ignored).
+Stop any `--local` run first: it holds the lock the Gateway needs.
+
+- **Keys.** The Gateway, and every agent on it, gets the environment of the shell that ran
+  `up`. Only the dialogue refresh needs `CEREBRAS_API_KEY`. For that run, export it in the
+  shell before `up` and run `down` afterwards. Never put it in the agent's workspace.
+- **One workspace, one job at a time.** All three agents share a workspace, and so one
+  `target/` and one `content/`. Overlapping runs queue on cargo's lock and can trip over
+  each other's files. For real parallelism, give each agent its own worktree
+  (`git worktree add ../JEKO-agent-<job>`) and point `agents add --workspace` at it.
+- **Rate limits.** Overlapping runs share one Cerebras key, so expect 429s and retries.
+
 ## Model
 
 OpenClaw picks its own model, separate from the game's `CEREBRAS_MODEL`. The generator
