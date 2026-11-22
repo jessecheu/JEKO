@@ -117,6 +117,27 @@ game from the worktree. To run the playtest after your own changes, point its wo
 at the checkout you changed, since it needs your code, and it writes only to a scratch
 folder.
 
+## Cerebras rate limits
+
+Cerebras limits tokens per minute for each model, and an agent resends its whole
+conversation on every turn, so a run can hit `429 Tokens per minute limit exceeded`.
+OpenClaw waits and retries (up to 9 times, 60 s apart), which is slow but not fatal.
+The three JEKO agents are set up to avoid most of it:
+
+```bash
+openclaw config patch --stdin <<'JSON5'
+{ agents: { entries: { "jeko-dialogue": {   // same for jeko-monsters and jeko-playtest
+    model: { primary: "cerebras/gpt-oss-120b",
+             fallbacks: ["cerebras/zai-glm-4.7", "cerebras/gemma-4-31b"] },  // separate quota per model
+    thinkingDefault: "low",          // fewer reasoning tokens per call
+    bootstrapTotalMaxChars: 12000,   // smaller system prompt
+} } } }
+JSON5
+```
+
+The skills also keep tool output short. The game's own question generator uses the same
+key, so a running game counts against the same limits: expect more 429s during play.
+
 ## Running agents as background jobs
 
 `openclaw agent --local` runs the agent inside your terminal's process and takes an
