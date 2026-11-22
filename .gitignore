@@ -15,3 +15,6 @@
 /IDENTITY.md
 /SOUL.md
 /USER.md
+
+# Logs and pids of background OpenClaw runs (openclaw/agentctl.sh).
+/.agent-runs/
