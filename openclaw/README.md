@@ -119,24 +119,25 @@ folder.
 
 ## Cerebras rate limits
 
-Cerebras limits tokens per minute for each model, and an agent resends its whole
-conversation on every turn, so a run can hit `429 Tokens per minute limit exceeded`.
-OpenClaw waits and retries (up to 9 times, 60 s apart), which is slow but not fatal.
-The three JEKO agents are set up to avoid most of it:
+Two different 429s showed up while testing (2026-11-21), and neither is fixed by
+fallback models:
 
-```bash
-openclaw config patch --stdin <<'JSON5'
-{ agents: { entries: { "jeko-dialogue": {   // same for jeko-monsters and jeko-playtest
-    model: { primary: "cerebras/gpt-oss-120b",
-             fallbacks: ["cerebras/zai-glm-4.7", "cerebras/gemma-4-31b"] },  // separate quota per model
-    thinkingDefault: "low",          // fewer reasoning tokens per call
-    bootstrapTotalMaxChars: 12000,   // smaller system prompt
-} } } }
-JSON5
-```
+- **The generator.** `make gen-content` uses the model in `.env`
+  (`moonshotai-kimi-k3.1-pro-trial`). Its limits are generous (1000 requests and 50k
+  tokens a minute), but the trial model answers `429 queue_exceeded` ("high traffic")
+  when Cerebras is busy. `src/bin/gen_content.rs` now retries up to 8 times with a
+  growing wait (5 s up to 60 s), so a busy moment doesn't fail the whole bank.
+- **The agent's own model.** `gpt-oss-120b` on this key allows **5 requests and 30k
+  tokens a minute**, and an agent makes a request per turn and resends its history
+  each time. Two things keep it inside that: `agentctl.sh run` starts a **fresh session
+  per run** (a reused session kept growing and every run after the first got 429s), and
+  the skills keep tool output short. OpenClaw also waits 60 s and retries up to 9 times
+  on its own.
 
-The skills also keep tool output short. The game's own question generator uses the same
-key, so a running game counts against the same limits: expect more 429s during play.
+`zai-glm-4.7` and `gemma-4-31b` are archived for this account, so don't use them as
+fallbacks; check what your key can use with `curl -H "Authorization: Bearer $KEY"
+https://api.cerebras.ai/v1/models`. The game's own question generator shares the key,
+so a running game counts against the same limits.
 
 ## Running agents as background jobs
 

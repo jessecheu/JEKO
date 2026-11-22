@@ -49,7 +49,8 @@ run)
   gateway_pid >/dev/null || die "Gateway is not running; start it with: $0 up"
   log="$state/$agent-$(date +%Y%m%d-%H%M%S).log"
   # No --local: the call goes to the Gateway, so runs of different agents overlap.
-  setsid nohup "$oc" agent --agent "$agent" --message "$msg" > "$log" 2>&1 < /dev/null &
+  # A fresh session per run: reusing one grows its history, and every turn resends it.
+  setsid nohup "$oc" agent --agent "$agent" --session-id "$agent-$(date +%s)" --message "$msg" > "$log" 2>&1 < /dev/null &
   echo $! > "${log%.log}.pid"
   echo "started $agent (pid $!), log $log"
   ;;
