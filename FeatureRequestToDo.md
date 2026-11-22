@@ -2,7 +2,7 @@
 type: Feature Request
 title: JEKO — Feature Requests
 description: Concrete, actionable feature requests for JEKO (Math Quest) — work that is scoped and wanted but not yet built. Each entry states the motivation, a proposed approach, and what "done" looks like. Maintained as the shared agent todo list.
-tags: [feature-request, backlog, creation-bar, progress-circle, gameplay, urgency, curse, sickness, monsters, battle, education, minigames, pets, cat, controls, pause, settings, health, death, art-direction, spawn, tooling, ci-cd, dagger, content-generation, hot-reload, live-content, villain, story, live-dialogue, generated-looks, npcs, setting, forest, manor, map, exploration, regions, village, castle, rest-stops, road, obstacles, agents, openclaw, hud, goalposts]
+tags: [feature-request, backlog, creation-bar, progress-circle, gameplay, urgency, curse, sickness, monsters, battle, education, minigames, pets, cat, controls, pause, settings, health, death, art-direction, spawn, tooling, ci-cd, dagger, content-generation, hot-reload, live-content, villain, story, live-dialogue, setting, forest, manor, map, exploration, regions, village, castle, rest-stops, road, obstacles, agents, openclaw, hud, goalposts, rate-limits, scheduler, streaming, stretch-packs, landmarks, npcs, narration, lighting, weather]
 timestamp: 2026-11-21
 ---
 
@@ -36,7 +36,7 @@ Entries are grouped by area. Numbering is stable; don't renumber when one is rem
 
 ## Numbering
 
-**The next free number is FR36**; bump it when you file one. Numbers are never
+**The next free number is FR42**; bump it when you file one. Numbers are never
 reused or renumbered when an entry is removed. Take the next number, not the first gap.
 
 ---
@@ -146,7 +146,7 @@ its "help" is animation. It never changes XP, speed, answers or battle outcomes.
 (see [Completed](#completed)), each on a provisional answer so the work could
 land; this entry keeps the questions so they are answered, not settled silently.
 
-## FR16. Confirm the provisional answers from FR1–FR3, FR5–FR15, FR17, FR20–FR22, FR24, FR26, FR27, FR28, FR31, FR32 and FR33
+## FR16. Confirm the provisional answers from FR1–FR3, FR5–FR15, FR17, FR20–FR24, FR26, FR27, FR28, FR31, FR32 and FR33
 
 **Status.** **Waiting on the owner.** Every default below is live in the code.
 Tick an item once the owner confirms it, or replace it with the owner's answer
@@ -318,6 +318,22 @@ recorded here.
   *No: an empty cottage whose door is the shop.* Does it change invariant 4? *Yes, extended
   from the hub to a stop's span (recorded in the architecture doc).*
 
+- [ ] **FR23** The mad scientist. **The owner's answers (2026-11-21):** live lines are on by
+  default with a key (`JEKO_VILLAIN=off` keeps the bank); both reactions to a flask are asked for
+  when it opens, under the cap; a scheme steers the next 3 flasks (not battles); the bubble has its
+  own "Villain chatter" switch rather than following the HUD. **Still provisional:** the name, look
+  and lore? *Dr. Nix Nullwell, who wants every number to be zero, as FR23 proposed; no link to
+  Professor Pebble.* A wrong answer? *A gloat about the doctor's own plan, never at the player (the
+  prompt says so).* Moderation? *A schema, a 90-character cap cut at a word, the word blocklist and a
+  link filter; anything else turned down goes to the reviewed bank; no human review.* Cost? *6 live
+  calls a minute (`JEKO_VILLAIN_RPM`), one out at a time, a flask's two reactions in one call; no
+  session token budget.* How long does a due line wait for a live one? *2 s of game time, then the
+  bank.* Schemes? *Every 300 m with none running, lasting 3 flasks or 250 m, whichever comes first; a
+  toast says the topic; the topic must be one of `topics_for_level`; one fallback scheme name and
+  gadget per topic.* A cameo in battles? *No; the doctor is hidden and no villain call starts in a
+  battle.* The studio link? *Tinkering and brewing while a monster is built, and an `Unveil` with
+  its name when it lands.* The showdown? *Filed as FR35.*
+
 **Acceptance criteria.**
 
 - [ ] The owner has confirmed or replaced every decision above, and any change
@@ -364,7 +380,8 @@ with `fakemodel:700`: scripted runs step game time at 1/60 s per frame while fra
 faster, so the 0.8 s attack covers less than 0.8 s of wall-clock and the stand-in model
 looks slow. (2) Optional: live and look-ahead questions still spawn a thread each; one
 shared worker with a priority queue would replace the `live_busy` flag. Nothing needs it
-yet, and villain lines (FR23) would be its first user.
+yet, and villain lines (FR23) would be its first user. *(Now filed as FR36, with a
+shared rate budget.)*
 
 Provisional choices for the owner (change freely):
 
@@ -508,6 +525,183 @@ gets there. The waits come from the timing, not from the model being slow.
 
 ---
 
+# Live content — spending the token budget
+
+**Goal:** keep Cerebras busy writing things the player sees, all along the road, and
+let the player *watch* it write. Today the game makes many small calls (a question, a
+doctor's line or a tip is about 100–300 output tokens, written in a fraction of a
+second), so it runs into the per-minute *request* cap long before the *token* cap:
+the lane caps add up to more than 32 requests a minute (prefetch 20, villain 6, studio
+6, plus live questions), and on the trial tier most calls come back 429 and fall to the
+bank (*Known limits* in `docs/ARCHITECTURE.md`). Nothing streams, so a reply appears
+all at once and the token panel only knows the speed after the call is over. The way to
+use the budget is fewer, bigger calls under one shared rate budget (FR36), streamed so
+the writing shows (FR37), filling the road with content a stretch at a time (FR38), with
+scenery (FR39) and voices (FR40) built on the same machinery.
+
+## FR36. One scheduler and one rate budget for every model call
+
+**Status.** **Not started.** Filed 2026-11-21 at the owner's request; the approach is
+suggested only. Takes over FR32's optional refactor (one shared worker) and the fix
+named under *Known limits* ("one long-lived worker with a priority queue").
+
+**Depends on:** [] _(the base for FR37 and FR38; replaces the `live_busy` flag between
+the question lanes, the villain's `Voice` and the studio)_
+
+**Motivation.** Every lane keeps its own per-minute cap (`JEKO_PREFETCH_RPM`,
+`JEKO_VILLAIN_RPM`, `JEKO_STUDIO_RPM`) and spawns its own thread, and nothing knows what
+Cerebras will actually allow. The caps add up to more than the trial tier takes, so calls
+fail with 429, while the tokens per minute go mostly unused. One scheduler that knows the
+real limits can send exactly as much as fits, most important first, and stop before a 429
+instead of after.
+
+**Proposed approach.** *(suggested, not decided)*
+
+- **One worker, one queue.** A long-lived thread in `llm` (no macroquad, invariant 10)
+  takes `Job`s with a priority: live question > battle's next question > look-ahead >
+  villain line > stretch pack (FR38) > studio. Each job still answers over its own
+  `mpsc` channel, so `TriggerState`, `Prefetch`, `Voice` and the studio poll exactly as
+  today (invariant 1). A few calls may be out at once (a small pool, say 3), and a live
+  question never waits behind a slow pack: it takes the next free slot, and if every slot
+  is busy the soft deadline and the bank cover it as today (invariant 2).
+- **A budget from the real limits.** Read Cerebras' `x-ratelimit-*` response headers
+  (requests and tokens remaining, and when they reset; check the exact names against a
+  real reply) into a `RateBudget` beside `TokenStats`. Before a call, estimate its tokens
+  (prompt length plus `max_tokens`) and send it only if the budget has room; low-priority
+  jobs leave headroom for live questions (say they may use only 70% of what's left). With
+  no headers yet, start from conservative defaults (env: `JEKO_RPM`, `JEKO_TPM`).
+- **429s back off.** A 429 marks the budget empty until its reset time and puts the job
+  back in the queue (live questions go straight to the bank instead, as today).
+- **Bigger calls.** Set `max_tokens` per kind and use JSON mode (`response_format`) where
+  the model supports it, so large structured replies parse first time.
+- **The old caps become shares.** The per-lane env vars stay as upper bounds per lane, so a
+  player can still turn a lane down or off (`JEKO_VILLAIN=off` and friends keep working).
+- **The token panel shows the budget:** requests and tokens left this minute, the queue by
+  kind, and how much of the minute's token allowance was used.
+
+**Open questions.**
+
+- Which Cerebras plan is this for, and what are its request, token-per-minute and
+  token-per-day limits? Should a session have a hard token cap of its own (like
+  `JEKO_STUDIO_TOKENS`, but for everything)?
+- How much headroom should background work leave for live questions?
+
+**Acceptance criteria.**
+
+- [ ] Every model call in the game (questions, look-ahead, villain, studio, packs) goes
+  through the one scheduler; no lane spawns its own thread per call.
+- [ ] Under the trial tier's limits, a 20-minute run with a key gets (close to) no 429s,
+  and the token panel shows the share of the minute's tokens used.
+- [ ] A live question is never delayed by background work beyond today's soft deadline,
+  and with no key or network the game plays as it does today.
+- [ ] The priority order, the budget and the back-off are unit-tested without a network
+  (a fake clock and fake headers).
+- [ ] `docs/ARCHITECTURE.md` (§1, §2, §5, §11 env vars, §13) and the README are updated.
+
+## FR37. Stream replies and show the writing
+
+**Status.** **Not started.** Filed 2026-11-21 at the owner's request; the approach is
+suggested only.
+
+**Depends on:** [36] _(streaming is a property of the shared worker; FR38–FR40 are what
+it shows)_
+
+**Motivation.** Cerebras writes at hundreds to thousands of tokens a second, and that
+speed is the point of the project, but the player never sees it: `post_chat` waits for
+the whole reply, and the dialogue box's typewriter (`Dialogue`) reveals text at a fixed
+speed. Streaming lets long text appear at the model's own rate, and lets the token panel
+and the creation bar show the speed *during* the call.
+
+**Proposed approach.** *(suggested, not decided)*
+
+- **Stream on the worker.** Send `stream: true` (and ask for usage in the last chunk if
+  the API offers it, so `RequestUsage` still has real token counts) and read the
+  server-sent events on the worker thread. Partial text goes down the job's channel as
+  `Partial(String)` events, then `Done(reply)` or `Failed`.
+- **Checked before shown, still.** Text a child reads must pass `content::vet` first, so
+  only *prose* streams to the screen, a sentence (or clause) at a time: each finished
+  sentence is vetted and cut to length on the worker, then sent. A sentence that fails
+  ends the stream there and the rest comes from the bank. Questions do **not** stream
+  visibly: their answer is verified against `expression` (FR22) before the problem is
+  shown, as today.
+- **Pulling prose out of JSON.** Replies are JSON, so add a small incremental reader that
+  yields the growing value of named string fields (`"line"`, `"text"`, `"steps"`) while
+  the rest of the object is still arriving.
+- **On screen.** The dialogue box, signposts and notes (FR38), diary pages and battle
+  narration (FR40) take streamed text instead of a fixed typewriter. The token panel
+  shows live tokens per second while a stream is open, and a creation-bar circle can show
+  the characters written so far.
+
+**Open questions.**
+
+- Is showing text a sentence at a time (after vetting) fast enough to feel live, or should
+  shorter clauses be vetted and shown?
+- Should the player be able to tap to skip a stream, as they can skip the typewriter?
+
+**Acceptance criteria.**
+
+- [ ] With a key, a long piece of prose (a Pebble line, a signpost) visibly writes itself
+  at the model's speed, and the token panel shows the live rate while it does.
+- [ ] Nothing reaches the screen before `content::vet` has passed it, and a blocked
+  sentence ends the stream and falls back to the bank (unit-tested with a scripted stream).
+- [ ] The incremental JSON reader is pure and unit-tested on replies cut at every byte.
+- [ ] `fakemodel` streams too, so the whole path can be seen offline.
+- [ ] `docs/ARCHITECTURE.md` (§1, §5, §7 if a panel changes, §9, §11) is updated.
+
+## FR38. Stretch packs: the road written ahead, 100 m at a time
+
+**Status.** **Not started.** Filed 2026-11-21 at the owner's request; the approach is
+suggested only.
+
+**Depends on:** [36] _(FR37 makes the text appear live; without it a pack's text just
+appears whole. Reuses FR32's look-ahead and FR22's checks)_
+
+**Motivation.** Most of the road is trees, fence posts and flasks, and the only words on it
+are the questions and the doctor's bubble. One call that writes everything for the next
+stretch of road (about 100 m, 7–8 chunks of 320 px) fills the map with things to read and
+spends the token budget in a few large calls instead of many small ones.
+
+**Proposed approach.** *(suggested, not decided)*
+
+- **Slots, placed by the world.** Invariant 3 holds: *where* things are stays a pure
+  function of the chunk index. The world places empty slots — a signpost, a note pinned to
+  a tree, a carved stone, a traveller resting by the road — with a `slot_for_chunk` rule
+  beside `spot_for_chunk`, kept clear of flasks, zones, gears and stops, with a determinism
+  test. The model only fills in what a slot *says*.
+- **One pack per stretch.** As the player nears a stretch (look-ahead, as FR32 does for
+  questions), the scheduler asks for a `StretchPack`: the region and what has happened this
+  run go in; out comes JSON with the text for each slot, 6–8 region-flavoured questions
+  (each verified against its `expression`, FR22, then added to the question buffer), and
+  flavour lines for the monsters in that stretch. A pack is 3–5k tokens.
+- **A small quest per stretch** (if the owner allows it, see below): a traveller asks for
+  help ("the miller needs ¾ of 24 sacks carried up to the mill"), and the stretch's next
+  three flasks ask questions in that story, the way a scheme steers topics (invariant 7).
+  Finishing it gets a cosmetic thank-you and a line in the map.
+- **Offline and on failure,** each slot kind has a reviewed bank (`assets/stretch_bank.json`,
+  checked like `villain_lines.json` with a `check_bank` and `make validate`), so the road
+  reads the same with no key.
+- **Checked.** Text through `content::vet` and length caps, questions through `llm::expr::verify`;
+  a pack that fails its checks is dropped whole, never half-shown.
+
+**Open questions.**
+
+- May a stretch's quest steer the *text* of its flask questions (a story around the same maths)
+  the way a scheme steers their topic? It changes no difficulty, judging, XP or HP.
+- How long is a stretch: 100 m, a region, or between safe stops (250 m)?
+- Should packs be saved to the content dir (like lesson packs) so a stretch written once is
+  reused next run, or written fresh every run?
+
+**Acceptance criteria.**
+
+- [ ] Every stretch of road has readable slots (signposts, notes, travellers) whose text,
+  with a key, comes from that stretch's pack, and from the bank without one.
+- [ ] Slots are placed by a pure chunk rule, never on a flask, zone, gear or stop, with a
+  determinism test.
+- [ ] A pack's questions are verified before they enter the buffer, and its text is vetted.
+- [ ] Over a run with a key, packs account for most of the session's tokens, and calls per
+  minute stay under the plan's cap (the token panel shows it).
+- [ ] `docs/ARCHITECTURE.md` (§5, §6, §11, §12 if an invariant changes) and the README are updated.
+
 ---
 
 # World — the map and the destination
@@ -516,7 +710,7 @@ gets there. The waits come from the timing, not from the model being slow.
 The map on M (FR27, built) fills in as the player explores, the road runs through
 four regions and ends at the castle gate 1,500 m up, where walking up to it wins the
 run. Its open questions are in FR16. What's left of the story there (a showdown with
-the mad scientist inside) is FR23's.
+the mad scientist inside) is FR35.
 
 ---
 
@@ -629,280 +823,90 @@ and gives the player something to steer around.
 
 # Story — the villain
 
-**Goal:** give the endless road a face and a reason. Today nothing ties the
-flasks, monsters and road together. A recurring antagonist who's always
-just ahead, reacting to what the player does, makes the walk feel like a chase
-and gives Cerebras a second live job: writing what the villain says and schemes,
-in the moment.
+**Goal:** give the endless road a face and a reason. FR23 (built) put a mad
+scientist just up the road who reacts to what the player does, with lines and
+schemes Cerebras writes in the moment. What's left is an ending (FR35) and more live
+voices along the road than the doctor's (FR40).
 
-## FR23. The ultimate villain: a mad scientist who's always up the road, live-scripted by Cerebras
+## FR35. A showdown with the doctor at the castle
 
-**Status.** **Milestones A and B built (2026-11-21); C not started.** *B:* `llm/villain_gen.rs`
-(the prompt, `BeatContext`, `parse_reply`), `CerebrasClient::request_line_async`, `villain::beat_line`
-(the game's check), `Villain::wants_line` / `mark_asked` / `supply` and the `LIVE_WAIT_S` (1.5 s) hold,
-`Game::tick_villain_lines` / `poll_villain_line` (lane after the questions, one in flight,
-`JEKO_VILLAIN_RPM`), `JEKO_VILLAIN=off`, a "Dr. Nullwell" circle on the creation bar, `live=`/`bank=` on
-the `STATE` line. 195 library tests pass. Checked with `JEKO_DEV=fakemodel:300,tovillain@30` and a
-screenshot: the stand-in's line is in the bubble and the token panel counts `line 1`. **Not checked:**
-a real key (tone, length and latency of real replies). **Deviations from the plan below:** the check is
-split, the shaping in `llm::villain_gen` and the enum mapping and blocklist in `game::villain::beat_line`,
-because `llm` can't depend on `content::vet`; a blocked line falls back to the bank's line for the cue,
-not a random one. **Left for later in B:** prefetching right/wrong reactions when a question opens (so
-a reaction is never late), and splitting `line` out in the token panel's graph (it's counted by kind
-already). *A:* done: `game/villain.rs`
-(the doctor and their cart, drawn through a 2× canvas; all the behaviours; the pure `target_pos` that keeps them in a
-band near the top of the screen and at least 150 px north of the player; `Scurry`; the soot
-`Appear` / `Vanish`; the cue queue with priorities, an 8 s gap, stale-cue lapse and an idle mutter;
-`observe`, which turns level, streak, distance and hearts into cues), `gfx::speech_bubble` and
-`gfx::wrap_text`, `assets/villain_lines.json` (34 lines, every cue) with `villain::check_bank`,
-which `make validate` runs, the hooks in `Game` (`watch_villain`, the road-frame `villain.update`,
-cues from `submit_answer`, `start_battle`, a battle won and `damage_player`), and the `tovillain` and
-`villain:<cue>` dev events. 182 library tests pass and `make validate` is ok. **Checked by screenshot**
-(`JEKO_SHOT`, 960×600): the doctor on the road with the cart and a bubble, the poses for a gloat, a
-cackle, a spy and a scribble, the first sighting, and the hub with no doctor. **Not checked:** a long
-play-through at other window sizes (the band is 30% of the window height, clamped to 160–240 px, and
-the scurry threshold assumes a window of about 600 px or taller); the reduce-flashing look beyond one
-shot; a dialogue open with the doctor on screen (hidden by code, not by screenshot). **Deviations from
-the plan below:** the doctor is a `Layer::Villain` in `Game::draw`'s sort, beside the player and the
-arrows, not a `Tall::Villain` in `world.rs` (a `Tall` borrows from the world, and the doctor isn't
-world-owned); the band is taller than the plan's 60–110 px because their head and a bubble have to fit
-above them; the `JEKO_VILLAIN` and `JEKO_VILLAIN_RPM` variables belong to B and don't exist yet. **Defaults chosen,
-the owner's to confirm:** the name and look as proposed; a wrong answer gets a gloat about the doctor's
-own plan, never a jab at the player; the bubble shows whatever the HUD setting; no cameo in battles.
-**Next step:** milestone B, starting with `llm/villain_gen.rs`'s prompt and the pure beat validation.
+**Status.** **Not started.** Split out of FR23 (built 2026-11-21), whose open question "the
+'ultimate' fight" said a showdown would need battle work and be its own FR. The approach is
+suggested only.
 
-**Depends on:** [] _(stands alone; Milestone C pairs with FR21/FR22, where the
-villain becomes the in-world face of the content `Studio`, and a final showdown
-would build on FR2/FR3's blocking battles)_
+**Depends on:** [] _(builds on FR2/FR3's blocking battles, FR27's castle gate and win screen, and
+FR23's doctor, live lines and schemes)_
 
-**Motivation.** The player walks north forever with no one to chase. A mad
-scientist who potters around at the top of the screen, always a little out of
-reach, turns "walk up the road" into "catch the doctor". Because Cerebras answers
-in well under a second, the villain can react **to this run**: the flask just
-missed, the Puffspike just beaten, the 10-answer streak. Canned lines can't do
-that. In the story, the monsters are the doctor's creations, which ties the FR10
-roster (and FR21's generated monsters) to one cause.
+**Motivation.** The doctor is always just up the road and ducks into the castle as the player
+nears the gate, and the victory panel says "to be continued". A last battle with them would give the
+run an ending that matches the chase.
 
-### Character design *(suggested, not decided: name and lore are the owner's call)*
+**Suggested approach.** At the castle gate, before `Game::win`, the doctor comes back out for a
+multi-phase battle (`Battle` with a doctor `Species`, or a new battle kind): one phase per scheme they
+ran this run, each asking about that scheme's topic through `request_task`, with live taunts from
+`villain_gen` between rounds and the bank as the fallback. Winning opens the gate as today.
 
-**Dr. Nix Nullwell** ("Dr. Nullwell"): a gangly, over-caffeinated inventor who
-wants to turn every number in the woods into **zero**, so nobody ever has to do
-sums again. Comic rather than scary. They brag about their inventions and fall
-apart when the player gets things right. They're bad at maths themselves: their
-chalkboard says `2 + 2 = 5`.
+**Open questions** (the owner's):
 
-```
-            ~~ ~ ~~            frizz puffs (grow when flustered)
-          (( (  _  ) ))        bald dome, one cowlick
-           \\( O=O )//         brass goggles, glowing green lenses
-             \  ᵕ  /           long nose, toothy grin, waggling brows
-          .---| ⋈ |---.        crooked bow tie
-         /  [|::|::|]  \       long lab coat: scorch marks, patched pockets,
-     🧪-o   |  ;;  |    o      test tubes and pencils in the breast pocket
-            | /  \ |           rubber gloves, bubbling flask in one hand
-            |/    \|           coat tails flap when walking
-           _|_    _|_          big clompy boots
-```
+- Is there a showdown at all, or does the castle stay a quiet win?
+- At the gate only, or a boss battle every 1,000 m as well?
+- What does losing cost: a heart per wrong answer, as monsters do, or something gentler for the end?
+- Does the doctor get a battle sprite of their own, or the road sprite scaled up?
 
-| Part | Look | Animates |
-|---|---|---|
-| Silhouette | About 1.25× the hero's height, hunched, oversized head, so they read as "the boss" from the top of the screen | Leans and bobs with the walk |
-| Hair | Two big white frizz puffs over the ears, bald dome, one cowlick | Frizz grows and sparks when flustered |
-| Goggles | Brass rims, round lenses with a soft green glow | Glow pulses slowly (steady under reduce flashing) |
-| Face | Long nose, bushy brows, big grin; eyes are the lenses | Brows waggle while cackling or scheming |
-| Coat | Cream, too long, scorch marks, mismatched patches, stained pockets | Tails flap with speed; puffs of soot on a fluster |
-| Gloves and boots | Purple rubber gloves, clompy dark boots | Gloves wave while monologuing |
-| Flask | Bubbling glass flask; the liquid's colour follows the current scheme | Bubbles rise; it fizzes over on a fluster |
-| Contraption cart | A rolling lab bench with a small Tesla coil, a chalkboard and a crank | Sparks while tinkering (steady glow under reduce flashing) |
+**Acceptance criteria**
 
-Palette: coat `#F2EEDF`, brass `#C89B3C`, lens glow `#7CFF6B`, gloves `#8E5BD6`,
-outlines in `gfx::INK`, the shadow in `gfx::SHADOW`, so they sit in the existing
-storybook-cartoon look. Drawn with flat primitives like everything else (no
-textures), into a 2× render target like the player and monsters, so the
-appear/vanish puff can fade them as one piece.
+- [ ] The owner has answered the questions above.
+- [ ] Reaching the gate starts the showdown, winning it shows the victory panel, and the game plays
+  offline from the bank.
+- [ ] `docs/ARCHITECTURE.md` and the README are updated.
 
-**Behaviours** (a closed enum, `VillainAction`): `Pace` (stroll across the top of
-the road, coat flapping), `Tinker` (bent over the cart, wrench, sparks), `Brew`
-(pour the flask, a puff of coloured smoke), `Cackle` (leans back, shoulders
-shake, a "MWAHAHA!" word-burst), `Scribble` (writes a wrong sum on the chalkboard),
-`Spy` (telescope pointed at the player), `Fluster` (frizz, fizzing flask: the
-player got something right), `Gloat` (rubs gloves: the player got something wrong),
-`Scurry` (dashes ahead pushing the cart when the player gains on them), and
-`Appear`/`Vanish` (a soot puff).
+---
 
-### Proposed approach *(suggested, not decided)*
+## FR40. Live voices along the road: villagers, the doctor's diary, battle narration, explanations
 
-**Where they are and how they move.**
+**Status.** **Not started.** Filed 2026-11-21 at the owner's request; the approach is
+suggested only. Can be built in parts, one voice at a time.
 
-- New module `src/game/villain.rs` holds `Villain { pos, action, action_t, mood,
-  bubble, … }` on `Game`, plus `Villain::update(dt, cam_y, player_pos, time)` and
-  `draw`.
-- **Always at the top of the road.** Each frame the target `y` is a band just
-  below the top of the screen (`cam_y` minus the camera anchor plus roughly 60–110
-  px), and the target `x` wanders along the road and the verge beside it with
-  `world::path_center(y)` and `walkable_x(y)`. The doctor eases towards that
-  target. When the camera moves fast (sprint), the ease speeds up and the action
-  switches to `Scurry`, so the player can never catch them. They stay in view
-  without ever being reachable.
-- **Not a placed thing.** Their position comes from the camera and the game clock,
-  not from the chunk index, so invariant 3 isn't touched and no world-generation
-  test changes. Any wander jitter uses `gfx::hash01` on game time, so `JEKO_DEV`
-  runs stay repeatable frame for frame.
-- **Drawn in the depth-sorted pass** as a new `Tall::Villain` keyed by their ground
-  `y`. They're always north of the player, so trees and cottages near the top of the
-  screen overlap them properly. Under them goes a slight haze tint (a `gfx::mix`
-  towards the night colour, `gfx::NIGHT`) so they read as "far up the road".
-- **First appearance** is at the iron gate (`ROAD_START_Y`), with an `Appear`
-  puff and an intro line. They aren't shown in the hub, which stays calm (invariant
-  4). They're hidden during the battle view and Professor Pebble's dialogue, and
-  they freeze with pause (invariant 8).
-- **Speech bubble.** A world-anchored bubble above their head, drawn in `game` with
-  a new `gfx::speech_bubble` (same parchment and dark-wood look as `gfx::key_prompt`),
-  not an egui panel. That keeps `game` free of egui (invariant 10). One line at a
-  time, about 4 s on screen, with a typewriter reveal reusing `Dialogue`'s pacing.
-  Whether it hides with `show_hud` is an open question.
+**Depends on:** [36, 37] _(streams through FR37; the diary and villagers can share FR38's
+slots and packs)_
 
-**What Cerebras generates in real time: a "beat".**
+**Motivation.** The doctor (FR23) is the only character who speaks live. Tallybrook has houses
+but nobody to talk to, Professor Pebble's lines are a fixed bank plus tips, battles are silent
+between questions, and a wrong answer's explanation is the problem's canned steps. Each of these
+is a place where live, streamed text makes the world feel written for this run.
 
-The game sends a short **cue** describing what just happened, and the model replies
-with one JSON object that's validated before use:
+**Proposed approach.** *(suggested, not decided)*
 
-```json
-{
-  "line": "Impossible! That was my FINEST fraction! Back to the lab!",
-  "mood": "flustered",
-  "action": "fluster",
-  "scheme": null
-}
-```
+- **Villagers you can talk to.** A few villagers stand in Tallybrook Fields and Village (slots
+  from a pure chunk rule, invariant 3). E opens the dialogue box; the villager's line streams in,
+  written from their role and what has happened this run, and may end with a small word problem
+  that goes through `request_task` and `submit_answer` like a flask (invariant 6). The bank
+  (`assets/dialogue.json`, checked by `dialogue::check_bank`) is the offline voice.
+- **The doctor's diary.** Pages dropped along the road (a slot kind from FR38) that the doctor
+  "wrote" about this run: the schemes they ran, the monsters the player beat, a hint of what waits
+  at the castle (sets up FR35). Read with E, streamed.
+- **Battle narration.** One call at the start of a battle writes the monster's taunt and a line for
+  each round (`hits` of them), streamed into the battle view between phases, never delaying a
+  question. A bank line per monster offline.
+- **Explanations for this mistake.** A wrong answer streams a short explanation of where *this*
+  answer went wrong (the given answer and the expression go in), checked by the vet and length
+  caps; the problem's own steps stay as the fallback.
+- **Every line checked** before it's shown (FR37's sentence vetting), and every voice off with one
+  setting, like `villain_chatter`.
 
-- `line`: ≤ 90 chars, kid-safe. `mood`: `smug | gleeful | flustered | scheming |
-  furious_but_funny`. `action`: one `VillainAction`. `scheme`: optional (Milestone
-  C). Unknown enums become a default for the mood, an over-long line is cut at a
-  word boundary, and a line that hits the blocklist is replaced from the fallback
-  bank. Validation is a pure function in `llm`, unit-tested with hostile input.
-- **Cues** (`VillainCue`, built in `Game` from events that already exist):
-  `FirstSighting`, `Milestone { meters }` (every 100 m), `FlaskRight/Wrong { topic }`,
-  `BattleStart { monster }`, `BattleWon { monster }`, `PlayerHurt`, `Streak { n }`
-  (5, 10), `LevelUp { level }`, `LowHealth`, and `Idle` (no event for about 25 s).
-  Each cue carries a little run context: distance, level, streak, hearts, the last
-  monster's name, the last topic. It never carries anything about the person
-  playing.
-- **The prompt** lives in a new `src/llm/villain_gen.rs` (plain Rust, no
-  macroquad/egui, like `task_gen.rs`): the character sheet above, the rules
-  (original character, silly and never mean, **mocks themself and their inventions,
-  never the player**, no real people or brands, one short line, JSON only), and the
-  cue. The reply goes through `extract_json_object` and serde into `VillainBeat`.
-- **Asynchronous, the same way questions are** (invariant 1).
-  `CerebrasClient::request_villain_async(cue) -> Receiver<Result<VillainBeat>>`
-  reuses `request_raw_blocking` on a thread. `Game::update` polls it with `try_recv`
-  next to `trigger_state.poll`, and still polls while paused, so a reply isn't lost.
-- **Live questions always win.** Villain lines take the third of FR32's lanes, after
-  live questions and question prefetches. No villain request starts while
-  `trigger_state` is `Loading` or a question prefetch is due. At most one villain request is in flight. Cues that arrive while
-  one is busy coalesce (the newest, highest-priority cue wins). There's a minimum
-  gap of about 8 s between bubbles and a cap of `JEKO_VILLAIN_RPM` (default 6).
-  `JEKO_VILLAIN=off` turns the live lines off; the doctor still appears, using the
-  fallback bank.
-- **Instant reactions through prefetch.** When a question opens, request *two*
-  beats in the background, one for "right" and one for "wrong". When the answer
-  lands, the matching one is already there, so the doctor reacts on the same frame
-  and the other is dropped. That costs one extra small call per question, so it's
-  behind a setting or the RPM cap (see open questions). Without prefetch, a reaction
-  arrives about 0.3–1 s late, which is still fine for a bubble.
-- **Offline fallback** (invariant 2's spirit). `assets/villain_lines.json`, compiled
-  in with `include_str!` like the other assets, has a few lines per cue with a mood
-  and action. It's used with no key, on a timeout or a bad payload, when rate
-  limited, and with `JEKO_VILLAIN=off`. The doctor always says *something*.
-  `gen_content` could gain `--villain` to regenerate this bank offline.
-- **Token panel.** Villain calls are recorded in `TokenStats` like any other.
-  Tag each `RequestUsage` with a kind (`question | villain`, extending FR21's
-  `question | monster | lesson` idea) so the panel can split throughput.
+**Open questions.**
 
-**Cosmetic by design.** In this FR the villain changes nothing a rule reads (invariant
-7). They never call `damage_player` or `request_task`, and they don't touch XP,
-speed, answers or battle outcomes. Their reactions follow what the game already
-decided.
+- Which voices first? (Suggested: explanations, then villagers, then the diary, then battles.)
+- May a villager's word problem reward anything (gears, XP), or is it cosmetic like the cat (FR34)?
+- Should a personal explanation ever name the child's wrong answer, or only explain the right way?
 
-### Milestones (each lands on its own)
+**Acceptance criteria.**
 
-1. **A: the doctor on the road, no LLM.** `villain.rs` drawing and all behaviours,
-   the top-of-road movement and `Scurry`, `Tall::Villain` in the sort, the gate
-   `Appear`, the speech bubble, cues from game events, and `assets/villain_lines.json`
-   for every cue. Fully playable offline.
-2. **B: live beats from Cerebras.** `villain_gen.rs` prompt and validation,
-   `request_villain_async`, polling, coalescing and rate limiting, live-questions-win,
-   prefetching right/wrong reactions, and token tagging. Each request also opens a
-   `RequestKind::Line` job on `Game.activity` (FR33), so the creation bar shows the doctor's
-   line being written; the kind, its icon and `JEKO_DEV=gen:line` already exist.
-3. **C: schemes** (best after FR21/FR22). Every ~300 m the doctor announces a scheme,
-   such as `{"name": "Operation Fraction Fog", "topic": "fractions", "gadget":
-   "fog_machine"}`. `gadget` is a closed enum of **cosmetic** effects (fog tint,
-   bubble rain, a sign on the cart, the flask's colour). `topic` is passed to
-   `Game::request_task` as a topic hint for the next few flasks and battles, so it
-   still goes through the one door (invariant 6) and the difficulty still comes from
-   the level. With FR21's `Studio`, the doctor is shown `Tinker`ing or `Brew`ing while
-   a `GenMonster` job is in flight and holds up the flask when a new species lands:
-   a live, in-world view of the background generation.
-
-### Open questions
-
-- **Name, look and lore.** Is "Dr. Nix Nullwell, who wants every number to be zero"
-  right, or does the owner want a different name, look or motive? Are they
-  connected to Professor Pebble (an old lab partner, say)?
-- **Tone on a wrong answer.** The proposal says the doctor gloats about their own
-  plan but never mocks the player, since this is a learning game for kids. Should a
-  wrong answer get a gloat at all, or only a neutral "Hmm, interesting…"?
-- **The "ultimate" fight.** Is there ever a showdown? On an endless road, a choice
-  is a boss battle every 1000 m (after which the doctor flees in their cart and
-  shows up again further on), or a single finale at a set distance. That needs
-  battle work, so it would be its own FR built on FR2/FR3. *(FR27 is built: the road
-  ends at the castle gate, 1,500 m up, and the doctor ducks inside as the player nears
-  it, so a single finale there is the natural place. The win screen says "to be
-  continued".)*
-- **Moderation.** Are a schema, a length cap, a blocklist and a kid-safe prompt
-  enough for live lines, or should live lines be optional, with the reviewed
-  fallback bank as the default?
-- **Cost.** Is the prefetch of two reactions per question worth the extra calls?
-  What RPM and session token budget are acceptable?
-- **Visibility.** Does the bubble hide with `show_hud` off, or get its own "Villain
-  chatter" toggle in settings? Does the doctor appear in the background of the
-  battle view (a cameo cheering on their monster)?
-- **Schemes and questions.** Should a scheme actually steer question topics
-  (Milestone C), or stay pure flavour? Steering changes what the player is asked,
-  which touches FR3/FR22's question about subjects.
-
-### Acceptance criteria
-
-- [x] Past the gate, a mad scientist with frizzy hair, goggles, a lab coat and a
-  bubbling flask is visible near the top of the road and keeps moving around
-  (pacing, tinkering, brewing, cackling) as the player walks.
-- [x] They stay ahead as the player progresses, sprinting included, and are never
-  reached. They draw in the right depth order with scenery, freeze with pause and
-  are hidden in the hub, battles and dialogue.
-- [x] They react to game events (flask right or wrong, battle won, streak, level-up,
-  milestones) with a speech bubble and a matching animation.
-- [x] With an API key, the lines are generated live by Cerebras from the run's
-  context. The frame never blocks (invariant 1), and no villain request delays or
-  overlaps a live question. *(Built; only checked with the stand-in model.)*
-- [x] With no key, no network, a bad payload, rate limiting or `JEKO_VILLAIN=off`,
-  lines come from `assets/villain_lines.json` and the game plays as before.
-- [x] Beat validation is a pure, unit-tested function. Hostile input (unknown enums,
-  over-long lines, blocklisted words, missing fields) is clamped, defaulted or
-  replaced.
-- [x] The villain changes no XP, speed, answer, HP or battle outcome (invariant 7),
-  and every glow, spark and puff honours reduce flashing (invariant 9).
-- [ ] The token panel shows villain calls separately from question calls.
-- [x] New dev events let it be checked without the window: e.g. `villain:<cue>`
-  (fire a cue), `tovillain` (snap the camera so the doctor is on screen), plus the
-  `JEKO_VILLAIN` / `JEKO_VILLAIN_RPM` env vars. *(`villain:<cue>` always uses the bank;
-  live lines are checked through `fakemodel` and a natural cue.)*
-- [ ] `docs/ARCHITECTURE.md` (new `game/villain.rs` and `llm/villain_gen.rs`, the
-  villain poll in the frame, `Layer::Villain` in the draw order, the new asset, env
-  vars, dev events and tests) and the README layout are updated. *(Done for A: the
-  module, the frame hooks, the draw order, the asset, the dev events, the tests, the
-  invariant and the known limit. Done for B: `villain_gen.rs`, the live-lines lane, the env
-  vars, the creation bar, the tests and the known limit.)*
+- [ ] With a key, villagers, diary pages, battle narration and wrong-answer explanations stream
+  live text that fits the run; with no key each falls back to a reviewed bank.
+- [ ] No battle question and no flask question waits on narration or a villager's line.
+- [ ] Every new bank has a `check_bank` run by a test and by `make validate`.
+- [ ] `docs/ARCHITECTURE.md` (§5, §8, §9, §10 panels, §11) is updated.
 
 ---
 
@@ -913,82 +917,9 @@ forest at night with the mad scientist's manor across a black lake. The characte
 still dress for the beach: the hero (`Player::draw`, "chibi beachgoer: straw sun hat,
 Hawaiian shirt, swim shorts") and the monster roster in `src/game/monster.rs`
 (Pinchling the hermit crab, Jellyglow, Puffspike the pufferfish, Coco Knight,
-Gull Bandit, Dune Wyrm, Tide Titan).
-
-## FR35. Looks written live by Cerebras: characters, NPCs and obstacles
-
-**Status.** **Not started: design discussion.** Requested by the owner (2026-11-21): "the UI of
-characters, NPCs and obstacles generated by the Cerebras live API". The approach is suggested only.
-
-**Depends on:** [] _(builds on FR21's spec-and-rig pattern and the studio lane; obstacles pair with
-FR29, which doesn't exist yet; characters overlap FR25's restyle; FR23 B shows the live-text half)_
-
-**Motivation.** Monsters already look like whatever the model designs (FR21), and the doctor's lines
-are live (FR23 B). Everyone else is hand-drawn Rust: the hero, Professor Pebble, the doctor, and every
-prop and blocker. Making their *look* come from the model makes each session's road feel new, and puts
-the speed of Cerebras on screen, not only in the text.
-
-### The constraint that shapes everything
-
-The model can't draw, and the game must never run code or pixels it was sent. So "generated look"
-means what it means for monsters today: **the model writes a small JSON spec in a closed vocabulary,
-and a fixed renderer (a rig) in `game` draws it** with the shared `gfx` primitives, `INK` outlines and
-the 2× canvas. The model picks shapes, sizes, colours and named parts; the rig owns proportions,
-animation, collision and the art style. Everything is parsed, clamped and vetted before use, like
-`monster_spec::parse`. Bad output means the hand-drawn default, never a broken frame.
-
-### Proposed approach *(suggested, not decided)*
-
-1. **NPC looks (`content/npc_spec.rs`, `game/npc_rig.rs`).** One humanoid rig with slots: body build,
-   head shape, hair (enum), hat (enum), outfit top/bottom (enum + colour), accessory (lantern, satchel,
-   staff…), palette, and an idle animation. Spec text: name, one-line role. Where they appear: the rest
-   stops (FR28), the village (FR27), and new wandering NPCs in the hub. Professor Pebble keeps their
-   hand-drawn look unless the owner says otherwise.
-2. **Character variants.** The hero and Dr. Nullwell stay hand-drawn (they're the game's identity), but
-   expose *cosmetic slots* the model can fill: the doctor's coat patches, flask colour, cart gadget
-   (ties into FR23 C's schemes); the hero's hat or scarf as an unlock. Small, safe and visible.
-3. **Obstacle looks (`content/obstacle_spec.rs`).** Collision stays the game's: a fixed set of
-   obstacle *kinds* (log, boulder, puddle, gate, bramble) with their hitboxes in code. The model
-   writes only the dressing: which kind, size class, palette, decorations (moss, mushrooms, runes,
-   glow), a name and a flavour line. Needs FR29's obstacles, or the existing road blockers, to hang on.
-4. **When it's generated ("live").** In the studio's lane (FR21), below questions and the villain's
-   lines, with the existing per-minute cap and token budget: a `Job::Npc` / `Job::Obstacle`, written
-   to `content/npcs/` and `content/obstacles/` and hot-reloaded by the watcher. Like monsters, a new
-   look joins where it can't change a run that's in progress (the next rest stop, the next chunk
-   generated, or the next run), so invariant 3 (the world is a pure function of the chunk index)
-   holds within a run. A live look for an NPC the player is about to meet can be asked for ahead,
-   the way FR32 prefetches questions.
-5. **Offline.** Shipped hand-written specs for each, so no key still plays with variety, and
-   `validate_content` / `make validate` check the new folders.
-
-### Open questions *(the owner's)*
-
-- **What "UI" means here.** The sprites in the world (proposed above), or also the egui panels
-  around them, such as dialogue box frames and nameplates themed per character? The panels are
-  safer to leave fixed.
-- **How live.** Is "designed in the background and seen on the next stop, chunk or run" enough, or
-  must a look be generated at the moment the player meets the character (with a placeholder while it
-  loads)? The second needs a placeholder look and breaks run determinism unless it's cosmetic only.
-- **The hero and the doctor.** Keep their identity hand-drawn with model-filled slots (proposed), or
-  fully generated?
-- **Obstacles before FR29.** Restyle today's road blockers' surroundings first, or wait for FR29?
-- **Persistence.** Generated looks kept in the content dir between sessions (like `gen-*.json`), or
-  fresh every session?
-- **Moderation.** The same blocklist and closed enums as monsters, or also a person's review before
-  a generated NPC can speak?
-
-### Acceptance criteria *(draft)*
-
-- [ ] NPC, character-slot and obstacle specs parse with clamping and rejection like `monster_spec`,
-  unit-tested with hostile input, and draw through fixed rigs in the existing style.
-- [ ] The studio designs them in its lane, never in a question's or a villain line's way, inside its
-  caps and budget, and the watcher hot-reloads them.
-- [ ] No key, a bad reply or `JEKO_STUDIO=off`: hand-written specs, and the game plays as before.
-- [ ] Collision and placement stay the game's; a look never changes a hitbox, a rule or a run in
-  progress (invariants 3 and 7).
-- [ ] `docs/ARCHITECTURE.md` and the README layout are updated.
-
----
+Gull Bandit, Dune Wyrm, Tide Titan). Restyling them is FR25. Beyond the characters,
+FR39 lets the model design one-off landmarks for the road, and FR41 adds light, weather
+and depth that change with the region.
 
 ## FR25. Restyle the hero and the monsters for the dark forest
 
@@ -1026,6 +957,93 @@ follow the renames.
 - [ ] Every monster keeps its stats and special (stun, growing, hat theft, boss), and
   the existing tests pass unchanged.
 - [ ] Monster names in the battle view, toasts, FR16 and `docs/ARCHITECTURE.md` match.
+
+---
+
+## FR39. Landmark specs: scenery the model designs, drawn by a rig
+
+**Status.** **Not started.** Filed 2026-11-21 at the owner's request; the approach is
+suggested only.
+
+**Depends on:** [] _(copies FR21's monster pipeline — studio, spec, vetting, watcher, hot
+reload — for scenery; pairs with FR38, whose packs could name the landmark ahead, and with
+FR25 and FR29)_
+
+**Motivation.** The road's props are a fixed set (`decor::Kind`), so every stretch of a
+region looks alike. Monsters already show how tokens become graphics: the model writes a
+`MonsterSpec` in a closed vocabulary and `monster_rig::draw_spec` draws it. The same for
+scenery would give each stretch a one-off landmark — a crooked shrine, a broken windmill,
+a lab ruin leaking green light — and spend tokens on something the player sees.
+
+**Proposed approach.** *(suggested, not decided)*
+
+- **`LandmarkSpec`** in `content/` (plain Rust): a base shape (tower, hut, arch, ruin,
+  statue, well, mill), parts with positions, sizes and colours from a closed set, roof and
+  window styles, what lights it casts (feeding `Decoration::lights`), an optional idle
+  motion (sails turning, smoke, flicker), a name and a one-line plaque. `parse` clamps and
+  validates it, as `monster_spec::parse` does, including the palette check against `INK`.
+- **`landmark_rig::draw_spec`** in `game/` draws it with the `gfx` vocabulary, depth-sorted
+  as a `Tall` item.
+- **The studio designs them** (`Job::Landmark`, lowest priority, through FR36's scheduler when
+  that lands) into `<content dir>/landmarks/`, and the watcher loads them.
+- **Placement stays pure.** A landmark slot every so often (say one per 100 m, beside the road)
+  comes from the chunk index; which spec stands in it comes from the run's frozen pool, as spec
+  monsters do (invariant 3). An empty pool shows a hand-written landmark.
+
+**Open questions.**
+
+- How often should a landmark appear, and only beside the road or sometimes across it (an arch)?
+- Can a landmark be visited (its plaque read with E), or is it scenery only?
+
+**Acceptance criteria.**
+
+- [ ] Hand-written landmark specs ship in `content/landmarks/` and load, reload and draw.
+- [ ] With a key, the studio writes new ones that pass `make validate`, and they appear on the
+  road on the next run.
+- [ ] `parse` rejects or clamps bad specs (tests as for `MonsterSpec`), and placement is
+  deterministic with a test.
+- [ ] `docs/ARCHITECTURE.md` (§2, §6, §7, §8, §11) and the README layout are updated.
+
+## FR41. Lighting, weather and depth that change with the region
+
+**Status.** **Not started.** Filed 2026-11-21 at the owner's request; the approach is
+suggested only.
+
+**Depends on:** [] _(pairs with FR25 and FR29; uses `regions::Scenery` for the per-region knobs)_
+
+**Motivation.** The night is drawn with flat colours, soft light pools and one vignette,
+and the four regions differ mostly in which props they place. Light that falls on things,
+weather and some depth behind the road would make each region feel like its own place.
+
+**Proposed approach.** *(suggested, not decided)*
+
+- **A lighting pass.** Draw the world into a render target, then composite it through a
+  macroquad `Material` (a small fragment shader) with a light map built from
+  `Decoration::lights`, the flasks and the player's lantern: warm falloff, a little bloom on
+  `LANTERN` and `LAB_GREEN` things, and the night darkness from the light map instead of the
+  fixed vignette. A fallback to today's drawing if the shader fails to compile.
+- **Weather per region,** as `Scenery` knobs: drizzle and puddle ripples in the forest, drifting
+  seed fluff over the fields, chimney smoke in the village, low fog in the castle grounds. All
+  on the game clock (invariant 8); flashes such as lightning honour reduce flashing (invariant 9).
+- **Depth.** One or two parallax treeline layers at the screen's edges, and lake water that
+  moves (ripple bands and a moving moon reflection).
+
+**Open questions.**
+
+- Is a shader acceptable on every machine the game targets (WSL, older GPUs), or should all
+  of this stay in plain primitives?
+- Which regions get which weather, and does weather ever change gameplay? (Suggested: never;
+  it's cosmetic under invariant 7.)
+
+**Acceptance criteria.**
+
+- [ ] Light from lampposts, windows, flasks and the player visibly falls on the ground and
+  props, and the game still draws correctly without the shader.
+- [ ] Each region has its own weather or atmosphere, shown in `JEKO_SHOT` screenshots per region
+  (`region:<n>`).
+- [ ] Reduce flashing turns off every new flash, and pausing freezes the weather.
+- [ ] Frame time on the default window stays within today's budget.
+- [ ] `docs/ARCHITECTURE.md` §7 (draw order, render targets, the `gfx` vocabulary) is updated.
 
 ---
 
@@ -1146,7 +1164,7 @@ against a real install. The `JEKO_DEV` scenarios in `jeko-playtest` were spot-ch
 Gateway and fix what's wrong; (2) the run log (`content/runs/<date>.jsonl`) and the
 owner's call on its fields; (3) `jeko-lessons`, now that FR22 is in this checkout (the
 validator already loads lesson packs and tips); (4) the live bridge and `jeko-villain`
-(milestone D, needs FR23); (5) `jeko-tutor` (E, needs the child-data decision). **Next
+(milestone D; FR23 is built, so it's unblocked); (5) `jeko-tutor` (E, needs the child-data decision). **Next
 step:** step (1). **Corrections to this entry** from the docs and the CLI: agents are
 `agents.entries.<id>`, not `agents.list[]` (that is a legacy roster); cron is
 `openclaw cron` / `openclaw automations`, stored in the Gateway, not in `openclaw.json`;
@@ -1296,6 +1314,31 @@ monsters for tomorrow").
 
 When an entry is fully built, delete it above and add one line here, newest
 first: `FR<n> — title — date — why it closed (commit)`. Its number stays retired.
+
+- FR23 — The ultimate villain: a mad scientist who's always up the road, live-scripted by Cerebras —
+  2026-11-21 — all three milestones built. **A:** `game/villain.rs`, the doctor and their cart at the top
+  of the road, every behaviour, cues from game events, the speech bubble and `assets/villain_lines.json`.
+  **B:** `llm/villain_gen.rs` (the prompt, `parse_reply` with unknown enums defaulted, lines cut at a word,
+  blocked words and links turned down), `CerebrasClient::request_villain_async` (checked on its thread,
+  tagged `RequestKind::Line`), and `game/villain_voice.rs` (`Voice`: one call out, the third lane behind
+  questions and look-ahead, `JEKO_VILLAIN` / `JEKO_VILLAIN_RPM`, a flask's two reactions in one call so the
+  doctor answers on the same frame, replies routed to the cue they were for by number, late ones dropped);
+  a due cue waits up to 2 s for its line, else the bank; each call is a `Line` circle on the creation bar
+  and a `line` row in the token panel; the `villain_chatter` setting. **C:** a scheme every 300 m (name,
+  a topic for the level, a cosmetic gadget: fog, bubbles, a banner or a glowing flask), whose topic goes to
+  the next 3 flasks through `request_task`, with themed look-ahead so they're ready and offline questions on
+  every topic; it ends after 3 flasks or 250 m and the doctor says so; while the studio builds a monster
+  they're at the bench, and they `Unveil` it by name when it lands. Invariant 7 notes the scheme's topic
+  (the owner's call). Dev events `say:<cue>`, `scheme:<topic>`, `nochatter`, and `villain:scheme`,
+  `:foiled`, `:creation`. 24 new tests (`villain_gen` 8, `villain_voice` 7, `villain` 8,
+  `prefetch` 1); 259 library tests pass, and `make validate` is ok. Checked by screenshot with the stand-in model: a live first sighting, the
+  right and wrong reactions from the prefetched pair, a live scheme, each gadget, a creation, a scheme
+  steering a flask offline and fizzling out past its span, chatter off, `JEKO_VILLAIN=off`. **Found while
+  checking:** a wrong answer's hurt used to replace its reaction (fixed: the reaction is cued after the
+  damage at the same rank). **Not checked:** the prompt against the real model at length (the trial key
+  answered most calls with 429, which fell back to the bank as designed); the doctor shares the top band
+  with the goalpost badge and creation bar, which can cover the bubble on a small window. **Left out:** the
+  showdown (FR35). Provisional answers in FR16. (uncommitted)
 
 - FR27 — A discovery map on M, regions, and a castle at the end of the road — 2026-11-21 — built in
   three milestones. **A:** the map (`game/map.rs`, `ui/map_panel.rs`, `ui/minimap.rs`), which pauses the

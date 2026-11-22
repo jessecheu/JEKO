@@ -1,12 +1,18 @@
 # JEKO — Math Quest
 
-A 2.5D exploration game set in a dark forest at night: you walk up an
-endless, winding cobbled road past a black lake, with a mad scientist's
-gothic manor looming across the water. Opening a glowing potion flask (walk
-up, press E) asks Cerebras-hosted
-Kimi K3.1 to write a fresh, difficulty-scaled math problem on the spot. Built
-for a hackathon demo of Cerebras' low-latency inference: the problem should
-appear fast enough that it doesn't break the player's movement flow.
+A 2.5D exploration game set in a dark forest at night: you walk 1,500 m up a
+winding cobbled road past a black lake, through fields and a village, to the
+gate of a mad scientist's castle. Glowing potion flasks and the monsters on the
+road ask math problems that Cerebras-hosted Kimi K3.1 writes live, scaled to
+the player's level; the game asks for them before the player arrives, so most
+are ready on the spot. The same model writes the mad scientist's taunts and,
+in the background, new monsters, lesson packs and tips. Built for a hackathon
+demo of Cerebras' low-latency inference: generation should be fast enough that
+it never breaks the player's movement flow. With no API key the game still
+plays fully offline, from question and line banks compiled into the binary.
+
+How the code fits together is in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md);
+the backlog is [FeatureRequestToDo.md](FeatureRequestToDo.md).
 
 ## Stack
 
@@ -22,14 +28,22 @@ appear fast enough that it doesn't break the player's movement flow.
   to Cerebras run on a plain `std::thread`, and the game loop polls an
   `mpsc::Receiver` each frame instead of awaiting the request in-line. See
   `CerebrasClient::request_task_async` in `src/llm/cerebras_client.rs`.
-- **serde / serde_json** — parsing the model's JSON task payload and the
-  local fallback bank.
+- **serde / serde_json** — the model's JSON replies, the compiled-in banks
+  (questions, NPC and villain lines) and the content dir's monster, lesson and
+  tip files.
 
 ## Project layout
 
 ```
+Makefile                 every build/run/test target (`make help`); wraps `nix develop --command`
+flake.nix                the dev shell (and an opt-in `openclaw` shell); `nix build`
+secretspec.toml          declares CEREBRAS_API_KEY / _MODEL / _BASE_URL for secretspec
+.env.example             copy to .env and fill in the key
+AGENTS.md, CLAUDE.md     instructions for coding agents (CLAUDE.md imports AGENTS.md)
+FeatureRequestToDo.md    the backlog, and where each feature stands
+docs/ARCHITECTURE.md     how the code fits together, as built, and the rules a change must keep
 src/
-  lib.rs                 shared library (so src/main.rs and src/bin/gen_content.rs can both use it)
+  lib.rs                 shared library (so the game and the two offline tools in src/bin/ can all use it)
   main.rs                game entry point / macroquad loop
   config.rs               reads CEREBRAS_API_KEY / CEREBRAS_MODEL / CEREBRAS_BASE_URL from .env; instance_name() labels the checkout
   content/
@@ -42,12 +56,13 @@ src/
     prompts.rs            what the studio asks the model for
     vet.rs                the word blocklist for NPC lines and generated text
   llm/
+    mod.rs                MathTask (the one question type) and the compiled-in fallback bank
     activity.rs           what the model is writing now (jobs for the creation bar; a read-only mirror)
     buffer.rs             ready-question buffer, the pure look-ahead planner, and the wait readout
     expr.rs               a tiny arithmetic evaluator that checks a generated problem's answer against its own sum
     cerebras_client.rs    OpenAI-compatible chat-completions call to Cerebras, async wrapper
     task_gen.rs           prompt templates + JSON extraction helpers
-    villain_gen.rs        the mad scientist's live lines: prompt and first check of the reply (FR23)
+    villain_gen.rs        the mad scientist's prompt and the pure checks on a live line or scheme (moods, actions, gadgets) (FR23)
     usage.rs              per-call tokens, speed + timing, calls in flight, windowed usage rate (feeds the token panel)
   game/
     world.rs              the cobbled road to the castle gate (1,500 m), camera view, chunked scenery, potion-flask triggers, encounter zones and road-blocking monsters, region borders, lake/ground/road drawing, light pools, mist, bats and fireflies
@@ -56,7 +71,8 @@ src/
     regions.rs            the table of regions along the road (forest, fields, village, castle grounds): names, map colours, scenery knobs (FR27)
     castle.rs             the castle at the road's end: curtain wall, gatehouse towers, portcullis, with the manor's keep behind it (FR27)
     manor.rs              the gothic manor backdrop across the lake (and on the battle horizon), its lightning, bats
-    villain.rs            the mad scientist at the top of the road: movement, animation, cues and a speech bubble, lines asked of Cerebras live, with assets/villain_lines.json as the fallback (FR23)
+    villain.rs            the mad scientist at the top of the road: movement, animation, cues, schemes and a speech bubble; lines live or from assets/villain_lines.json (FR23)
+    villain_voice.rs      the doctor's live voice: one model call at a time behind the questions, a per-minute cap, a flask's two reactions asked ahead (FR23)
     gfx.rs                shared drawing helpers (night palette, ink outline, shadows, ribbons, stars, glows, vignette, potion flask, speech bubble)
     player.rs             WASD/arrow movement along the path, speed multiplier from upgrades and Shift sprint, player sprite, jump/roll/shoot
     skills.rs             roll charges and sprint stamina, and the skill bar at the bottom centre
@@ -73,7 +89,7 @@ src/
     task_trigger.rs        state machine: Idle -> Loading -> Active -> Resolved
     prefetch.rs            looks up the road and asks for questions ahead of need; soft deadlines; picks the next lesson pack
     field_guide.rs         the field guide's cards, unlocked by beating monsters
-    mod.rs                 ties player/world/progression/trigger together
+    mod.rs                 Game: the one owner of run state; the per-frame update and draw, mode order, dev events
   progression/
     mod.rs                 XP, levels, streak multiplier, upgrade unlocking
     upgrades.rs             upgrade definitions (just "Quickstep Boots" for the vertical slice)
@@ -91,21 +107,24 @@ src/
     dialogue_panel.rs        NPC dialogue box
     task_panel.rs            problem text, hint, answer input, submit
     token_panel.rs           model + API address, live usage rate, 60 s call timeline, recent calls, speed graph, totals
+    style.rs                 the egui theme (parchment panels, dark-wood borders), applied every frame
   bin/
     gen_content.rs          offline batch generator for NPC dialogue and monsters (not called at runtime)
     validate_content.rs     offline checker: loads the dialogue bank and the content dir the way the game does (`make validate`)
-openclaw/                  optional OpenClaw agent skills (FR30); the game never needs them, see openclaw/README.md
+openclaw/                  optional OpenClaw agent skills (FR30); the game never needs them
+  README.md                setup, the agents' tool limits, Cerebras rate limits, safety
+  agentctl.sh              runs agents as background jobs through an OpenClaw Gateway (logs in .agent-runs/)
   skills/jeko-dialogue/    refreshes assets/dialogue.json: runs `make gen-content`, validates, leaves the diff
   skills/jeko-monsters/    designs monster specs into content/monsters/ and validates them
   skills/jeko-playtest/    runs the JEKO_DEV / JEKO_SHOT scenarios, looks at the screenshots, reports
-content/
-  monsters/*.json          monsters defined as data, loaded at runtime and hot-reloaded while the game runs
-  lessons/*.json           lesson packs the studio writes (a per-machine cache; created on first use)
-  tips/*.json              Professor Pebble's tips the studio writes (created on first use)
-assets/
+content/                   read at runtime and hot-reloaded (JEKO_CONTENT_DIR points elsewhere)
+  monsters/*.json          monsters defined as data: four hand-written ones, plus the studio's gen-*.json (git-ignored)
+  lessons/*.json           lesson packs the studio writes (git-ignored, per-machine; created on first use)
+  tips/*.json              Professor Pebble's tips the studio writes (git-ignored; created on first use)
+assets/                    compiled into the binary (editing one needs a rebuild)
   tasks_fallback.json      hand-written fallback math tasks (used if no API key, or the live call fails)
   dialogue.json            NPC flavor lines; Professor Pebble says one after the hub tutorial. Regenerate with gen_content
-  villain_lines.json       what the mad scientist says for each cue (level-up, streak, flask right or wrong, ...), with a mood and an action
+  villain_lines.json       what the mad scientist says for each cue (level-up, streak, flask right or wrong, scheme, ...) when no live line comes, with a mood and an action
 ```
 
 ## Setup
@@ -117,7 +136,7 @@ runtime library macroquad needs (X11, GL, libxkbcommon, ALSA) already on
 `LD_LIBRARY_PATH` — no system Rust install or manual `apt`/`nix-env` package
 hunting required.
 
-1. Set `CEREBRAS_API_KEY` one of two ways:
+1. Set `CEREBRAS_API_KEY` one of two ways (or skip it to play offline):
    - **secretspec** (declarative, no plaintext key in a file you could
      accidentally commit): the dev shell already has the `secretspec` CLI on
      `PATH`. Run `secretspec check` once to see what `secretspec.toml`
@@ -125,62 +144,105 @@ hunting required.
      (`keyring` is the default recommendation; `dotenv` and `env` also work
      if you just want something simple). `secretspec set CEREBRAS_API_KEY`
      stores it there.
-   - **`.env`** (quickest): `cp .env.example .env` and fill in
-     `CEREBRAS_API_KEY`. `dotenvy` loads it at startup same as before.
+   - **`.env`** (quickest): `cp .env.example .env` and put your key in
+     `CEREBRAS_API_KEY`. `dotenvy` loads it at startup. Any non-empty value
+     counts as a key, so don't leave the example's placeholder in place: delete
+     the value to play offline.
 
-   Either way, confirm the exact model slug for Kimi K3.1 on Cerebras from
-   the hackathon docs and set `CEREBRAS_MODEL` accordingly — `kimi-k3.1` in
-   `.env.example`/`secretspec.toml` is a placeholder, not a verified model ID.
+   Set `CEREBRAS_MODEL` to a model your key can use. The default, `kimi-k3.1`,
+   is a placeholder, not a verified model ID; this project has been run against
+   `moonshotai-kimi-k3.1-pro-trial`. `curl -H "Authorization: Bearer $KEY"
+   https://api.cerebras.ai/v1/models` lists what a key can use.
 2. `make run` (or `nix develop`, then `cargo run` inside — or
    `secretspec run -- cargo run` if you went the secretspec route). See
-   `make help` for every target (`build`, `release`, `check`, `fmt`, `lint`,
-   `test`, `gen-content`, `gen-monsters`, `validate`, `nix-build`).
-3. Controls: W/Up walks up the road (the map scrolls with you, until the castle gate 1,500 m up),
-   A/D or Left/Right steer across it, S/Down backs up; hold **Shift** to
-   sprint, which drains the stamina meter on the skill bar at the bottom of the
-   screen (run it dry and you're winded until it refills). Walk up to a glowing
-   potion flask and an **E** key prompt floats over it; press E to
-   open its task (you stay put until it's answered). Press E again to jump
-   into the answer field, type the number, and hit Enter. **M** opens the map of the road you've walked, with the castle waiting at the top (the world pauses). Walk all the way to the castle gate to win the run. At a safe stop's cottage (every 250 m), **E** opens the gear shop. No mouse needed
-   (clicking the field and Submit still works). **Space** jumps,
-   **Ctrl** rolls the way you're steering (3 in a row, then a short wait) and **F** shoots an arrow from your bow (the
-   shot is cosmetic for now; in a battle, a right answer is shown as a bow shot). **P** pauses,
-   **G** opens the field guide (a card for each monster you've beaten) and **O** opens settings
-   (O or Esc closes them).
-   The run starts in Professor Pebble's camp at the forest edge (press E by
-   Professor Pebble for a quick tutorial); walk north through the iron gate
-   signed "THE ROAD". Patches of ferns on the road hide monsters:
-   step in and answer questions to beat them. Every so often a monster
-   stands right on the road behind a glowing ward and won't let you by:
-   press E next to it to fight, and beat it to open the road. Past the gate the doctor's
-   curse sets in: it worsens while you linger, eases as you reach new
-   ground or solve a flask, lifts back in the camp, and drains hearts at
-   full. Wrong answers cost hearts,
-   and at zero hearts it's Game Over (E/Enter to try again).
+   `make help` for every target (`info`, `build`, `release`, `check`, `fmt`,
+   `lint`, `test`, `gen-content`, `gen-monsters`, `validate`, `nix-build`).
 
-   Dev aids: `JEKO_SHOT=out.png:120` saves a screenshot at frame 120 and
-   exits; `JEKO_DEV=jelly@150,wrong@270` fires scripted events (`hurt`,
-   `kill`, `restart`, `jump`, `roll`, `shoot`, `stun`, `cheer`, `spent`, `pause`, `settings`,
-   battles `pinch`/`jelly`/`puff`/`coco`/`gull`/`wyrm`/`titan`, `battle:<id>`
-   for a monster from `content/monsters/`, `right`/
-   `wrong` answers through the real submit path, `e` presses E, and
-   teleports `toflask`/`tozone`/`toblocker`/`topebble`/`toroad`/`neargoal`/`atgoal`, `nohud` hides the side panels,
-   `calm` turns on reduce flashing, `curse`/`cursefull` set the curse to
-   the fever stage or full) at those frames, stepping a
-   fixed 1/60 s per frame. At the shot it prints a `STATE ...` line of run
-   state to stderr.
-
-   Monsters as data: each file in `content/monsters/` is a monster (body shape,
-   colours, eyes, parts, an idle and an attack, a `tier` 1–4 and a `special`).
-   Edit one while the game runs and it updates within a second, even mid-battle;
-   a broken edit is reported in a toast and the last good version stays. Try
-   `JEKO_DEV=battle:mossmunch@5 make run`, then edit
-   `content/monsters/mossmunch.json`. `JEKO_CONTENT_DIR` points the game at
-   another folder.
+`make nix-build` (`nix build`) produces `./result/bin/jeko` as a standalone
+derivation from the committed `Cargo.lock`.
 
 Optional: `direnv allow` (if you use direnv) picks up `.envrc` so the shell
 activates automatically on `cd`, without typing `nix develop` or prefixing
 every command with `make`.
+
+### Playing
+
+| Key | Does |
+|---|---|
+| W / Up, S / Down | Walk up the road, back down it |
+| A D / Left Right | Steer across the road |
+| Shift (hold) | Sprint; drains the stamina meter on the skill bar (run it dry and you're winded until it refills) |
+| E | Open the flask, challenge the monster, open the shop or talk to the person you're next to; with a problem open, jump to the answer field |
+| Enter | Submit the answer (clicking the field and Submit works too) |
+| Space | Jump |
+| Ctrl | Roll the way you're steering (3 charges, then a short wait) |
+| F | Shoot an arrow (cosmetic on the road; in a battle a right answer is shown as a bow shot) |
+| M | The map of the road walked so far, with the castle at the top (pauses) |
+| G | The field guide: a card for each monster you've beaten |
+| P | Pause |
+| O | Settings: panel toggles, reduce flashing, villain chatter, the controls (O or Esc closes) |
+
+The run starts in Professor Pebble's camp at the forest edge (press E by
+Professor Pebble for a quick tutorial); walk north through the iron gate
+signed "THE ROAD". At a glowing potion flask an **E** prompt floats over it:
+open it, type the number, hit Enter. You stay put until it's answered. Patches
+of ferns on the road hide monsters: step in and answer questions to beat them.
+Every so often a monster stands right on the road behind a glowing ward and
+won't let you by: press E next to it to fight, and beat it to open the road.
+
+Past the gate the doctor's curse sets in: it worsens while you linger, eases
+as you reach new ground or solve a flask, lifts back in the camp, and drains
+hearts at full. Every 250 m the road opens onto a safe stop, where the curse
+lifts, hearts mend fast, nothing can hurt you, and the cottage door (E) sells
+soup and heart charms for the gears you pick up along the way. Wrong answers
+cost hearts, and at zero hearts it's Game Over (E/Enter to try again). Reach
+the castle gate 1,500 m up to win the run.
+
+### Dev aids
+
+- `JEKO_SHOT=out.png:120` saves a screenshot at frame 120, prints a `STATE ...`
+  line of run state to stderr, and exits.
+- `JEKO_DEV=name@frame,...` fires scripted events at those frames, stepping a
+  fixed 1/60 s per frame: damage, moves, battles (`jelly@150`, `battle:<id>`),
+  answers through the real submit path (`right`, `wrong`), teleports (`toflask`,
+  `toblocker`, `tostop`, `tocastle`, ...), the curse, the mad scientist
+  (`villain:<cue>`, `say:<cue>`, `scheme:<topic>`) and more. The full list is in
+  [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#11-content-configuration-and-dev-hooks).
+- `JEKO_DEV=fakemodel:700` swaps the model for a stand-in that answers every
+  call after 700 ms, so the live paths (look-ahead, the studio, the doctor's
+  lines, the creation bar) can be tried with no key.
+
+Example: `JEKO_SHOT=shot.png:300 JEKO_DEV=toflask@10,e@20,right@60 make run`.
+
+### Monsters as data
+
+Each file in `content/monsters/` is a monster (body shape, colours, eyes, parts,
+an idle and an attack, a `tier` 1–4 and a `special`). Edit one while the game
+runs and it updates within a second, even mid-battle; a broken edit is reported
+in a toast and the last good version stays. Try
+`JEKO_DEV=battle:mossmunch@5 make run`, then edit
+`content/monsters/mossmunch.json`. With a key, the studio designs new ones in the
+background (`gen-*.json`); they join the road from the next run. `make validate`
+checks the content dir and the line banks offline, the way the game loads them.
+
+### Configuration
+
+Everything is optional. Values come from the environment, `.env` or secretspec.
+
+| Variable | Default | Does |
+|---|---|---|
+| `CEREBRAS_API_KEY` | none | Turns on live generation; without it the game runs offline |
+| `CEREBRAS_MODEL` | `kimi-k3.1` (placeholder) | The model slug (see Setup) |
+| `CEREBRAS_BASE_URL` | `https://api.cerebras.ai/v1` | OpenAI-compatible endpoint |
+| `JEKO_CONTENT_DIR` | `./content` | Where hot-reloaded monsters, lessons and tips live |
+| `JEKO_INSTANCE` | the checkout's folder name | Label in the window title (see below) |
+| `JEKO_PREFETCH` / `JEKO_PREFETCH_RPM` | on / 20 | Asking for questions ahead of need, and its calls per minute |
+| `JEKO_VILLAIN` / `JEKO_VILLAIN_RPM` | on / 6 | The mad scientist's live lines (`off` uses the line bank), and their calls per minute |
+| `JEKO_STUDIO` / `JEKO_STUDIO_RPM` / `JEKO_STUDIO_TOKENS` | on / 6 / 60,000 | The background studio, its calls per minute and its token budget per session |
+
+All the live lanes share one key and its rate limit. On a trial key, expect
+429s: a failed question or line falls back to its offline bank, and the studio
+just tries again later.
 
 ### Running two checkouts side by side
 
@@ -205,21 +267,22 @@ game has no ports, save files or other shared state (assets are compiled in).
 - **Running both.** Use `make run` in a terminal per folder. Both use the same
   API key, so they share its rate limit.
 
-### openclaw (optional, not part of the game)
+### OpenClaw agents (optional, not part of the game)
 
-`nix develop .#openclaw` drops into a separate shell with
-[OpenClaw](https://docs.openclaw.ai) on `PATH`, for anyone who wants a
-personal AI-assistant gateway available alongside this repo. It's kept out of
-the default shell deliberately: nixpkgs marks `openclaw` as an insecure
-package — not for an unpatched CVE, but as a standing classification, because
-it gives an LLM full system access by default and parses untrusted content,
-so it's vulnerable to prompt injection. The `openclaw` devShell scopes
-`permittedInsecurePackages` to just that shell (see `flake.nix`) so running
-the normal game dev shell never pulls it in.
+`openclaw/` holds skills that let [OpenClaw](https://docs.openclaw.ai) agents
+do JEKO's offline jobs: refresh the NPC dialogue, design monster specs, and
+playtest through the dev hooks. They only run the repo's own tools and leave
+their results in the working tree for review; nothing in `src/` knows they
+exist. `openclaw/agentctl.sh` runs them as background jobs. Setup, tool
+limits and safety notes are in [openclaw/README.md](openclaw/README.md).
 
-`nix build` also works once `Cargo.lock` exists (it's generated the first
-time you run `cargo build`/`make build`, and is committed to the repo here) —
-it produces `./result/bin/jeko` as a standalone derivation.
+`nix develop .#openclaw` drops into a separate shell with OpenClaw on `PATH`.
+It's kept out of the default shell deliberately: nixpkgs marks `openclaw` as an
+insecure package — not for an unpatched CVE, but as a standing classification,
+because it gives an LLM full system access by default and parses untrusted
+content, so it's vulnerable to prompt injection. The `openclaw` devShell scopes
+`permittedInsecurePackages` to just that shell (see `flake.nix`) so running the
+normal game dev shell never pulls it in.
 
 ### Without Nix
 
@@ -248,7 +311,8 @@ without re-checking this.
 - **Progress bar** — always-visible XP bar toward the next level
   (`ui/hud.rs`), so "how close am I" is never a question.
 - **Goalpost tracker** — a badge at the top centre names the next thing up the
-  road (a flask, ferns, a monster, a milestone, the Tide Titan) and counts down
+  road (a flask, ferns, a monster, a milestone, a safe stop, a new region, the
+  Tide Titan, the castle) and counts down
   the metres to it (`ui/goalpost_panel.rs`, `game/goalpost.rs`).
 - **Gears and safe stops** — brass gears lie in trails along the road, and every
   250 m the road opens onto a lantern-lit clearing with a cottage. There the fever
@@ -258,38 +322,50 @@ without re-checking this.
 - **The mad scientist** — past the gate, Dr. Nullwell potters around at the top
   of the road, always just out of reach, and reacts to what you do with a speech
   bubble: a right answer flusters them, a level-up or a streak makes their frizz
-  stand on end (`game/villain.rs`). With a key, Cerebras writes each line live from
-  the run; offline they use a reviewed line bank. They only talk; nothing they do changes the
-  game.
+  stand on end (`game/villain.rs`). With an API key Cerebras writes their lines
+  live from what just happened in the run, behind the questions and capped at
+  `JEKO_VILLAIN_RPM` (6) a minute; with none, or with `JEKO_VILLAIN=off`, they use
+  the reviewed lines in `assets/villain_lines.json`. Every 300 m they announce a
+  scheme ("Operation Fraction Fog") with a gadget on their cart, and the next three
+  flasks ask about its topic. When the studio finishes a monster they show it off.
+  Apart from a scheme's topic, nothing they do changes the game. Settings has a
+  "Villain chatter" switch.
 - **Creation bar** — circles at the top centre show the model writing as it
-  happens: live questions, look-ahead questions, and the studio's monsters,
-  lesson packs and tips. A ring turns while it writes, closes when it lands, and
+  happens: live questions, look-ahead questions, the doctor's lines, and the
+  studio's monsters, lesson packs and tips. A ring turns while it writes, closes when it lands, and
   shows how long it took, and a line under it says what is already made and
   waiting (`ui/creation_bar.rs`, `llm/activity.rs`). Settings can hide it.
 - **Streak multiplier** — consecutive correct answers raise XP gain up to
   +100% (`Progression::streak_multiplier`). Getting one wrong resets it to
   zero — this is what makes stopping mid-streak feel costly, which is the
   actual hook that keeps someone going "just one more."
-- **Upgrade unlocked by XP, not by a shop** — "Quickstep Boots" (+25% move
+- **Upgrade unlocked by XP, not bought** — "Quickstep Boots" (+25% move
   speed) unlocks automatically at a lifetime-XP threshold, with a toast
   announcing it. It's tied to total effort, not a single success, so it
-  can't be gamed by one easy problem.
+  can't be gamed by one easy problem (gears buy only soup and hearts).
 - **Live, varied problems** — because each task is freshly generated
   (subject to difficulty scaling off player level), the content doesn't
-  visibly repeat the way a static problem bank would.
+  visibly repeat the way a static problem bank would. Every generated answer
+  is checked against its own arithmetic before it's shown.
+- **Learning from mistakes** — a wrong answer shows a worked explanation
+  beside the next question, and the studio writes practice packs on the topic
+  the player keeps missing (`content/lessons.rs`, `game/prefetch.rs`).
+- **Somewhere to get to** — the road runs through regions with their own look
+  to the castle gate, 1,500 m up, and the map (M) fills in as you walk it
+  (`game/regions.rs`, `game/map.rs`). Beaten monsters fill the field guide (G).
 
-## Stretch goals (not in the vertical slice)
+## What's next
+
+The backlog, with what's built and what's left, is
+[FeatureRequestToDo.md](FeatureRequestToDo.md). A few smaller ideas that
+aren't filed there:
 
 - More upgrades: a dash, double-jump, or cosmetic skin — `progression/upgrades.rs`
   is the only file that needs a new entry; the unlock logic is generic.
-- Escalating difficulty with distance walked — flasks currently scale only
-  with player level.
-- A second task type (geometry, fractions) via a second prompt template in
-  `llm/task_gen.rs`.
-- Putting the other NPCs from `assets/dialogue.json` (Wanderer Finch, Old
-  Lantern) on the road for flavor text between tasks. Only Professor Pebble,
-  in the hub, uses the bank so far.
-- A save file (serde to a local JSON) so progress persists across runs.
+- Escalating difficulty with distance walked — questions currently scale only
+  with player level (plus a monster's bias), capped at 5.
+- A save file (serde to a local JSON) so progress persists across runs. Nothing
+  is saved today; keeping learner data needs the owner's privacy decision (FR14, FR16).
 - Swapping the flat-color primitives in `game/decor.rs`, `game/world.rs`,
   and `game/player.rs` for real sprite textures — the lift-and-shadow and
   y-sorted drawing already in place will read as much more convincingly

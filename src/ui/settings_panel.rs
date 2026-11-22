@@ -33,6 +33,10 @@ pub fn draw(ctx: &egui::Context, settings: &mut Settings, open: &mut bool, guide
                 "Show creation bar (what the model is writing)",
             );
             ui.checkbox(
+                &mut settings.villain_chatter,
+                "Villain chatter (Dr. Nullwell's speech bubble and live lines)",
+            );
+            ui.checkbox(
                 &mut settings.reduce_flashing,
                 "Reduce flashing (steady tint instead of flicker)",
             );

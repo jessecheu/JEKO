@@ -12,7 +12,7 @@ result in the working tree for you to review.
 | [`jeko-monsters`](skills/jeko-monsters/SKILL.md) | Designs monster specs into `content/monsters/`, checks them with `make validate` | Built (milestone B, monsters only) |
 | [`jeko-playtest`](skills/jeko-playtest/SKILL.md) | Runs `JEKO_DEV` / `JEKO_SHOT` scenarios, looks at the screenshots, reports | Built (milestone C) |
 | `jeko-lessons` | Writes lesson packs into the content dir | Not built (milestone B, lessons) |
-| `jeko-villain`, `jeko-tutor` | Need FR23 and a decision on child data | Not built (D, E) |
+| `jeko-villain`, `jeko-tutor` | `jeko-villain` is unblocked now FR23 is built; `jeko-tutor` needs a decision on child data | Not built (D, E) |
 
 Checked against OpenClaw 2026.10.5 and its docs (2026-11-21). OpenClaw changes quickly, so
 if a command below stops working, `openclaw <command> --help` is the source of truth.

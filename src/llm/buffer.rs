@@ -55,6 +55,14 @@ impl QuestionBuffer {
         true
     }
 
+    /// Ready questions on `topic` at exactly `difficulty`.
+    pub fn count_topic(&self, difficulty: u32, topic: &str) -> usize {
+        self.slots[slot(difficulty)]
+            .iter()
+            .filter(|t| same_topic(&t.topic, topic))
+            .count()
+    }
+
     /// A ready question for `difficulty`: the exact one if there is one, else
     /// one a level below (a question a level too easy is better than a wait,
     /// and a level-up can leave the buffer one behind). With a `topic` (a
