@@ -20,6 +20,7 @@ pub mod shop;
 pub mod skills;
 pub mod task_trigger;
 pub mod villain;
+pub mod villain_voice;
 pub mod world;
 
 use crate::content::studio::{self, MonsterJob, Studio, StudioEvent, StudioStatus, TipsJob};
@@ -28,6 +29,7 @@ use crate::llm::activity::{BarView, GenActivity, JobState, Stock};
 use crate::llm::buffer::{Source, WaitStats};
 use crate::llm::cerebras_client::CerebrasClient;
 use crate::llm::usage::RequestKind;
+use crate::llm::villain_gen::{RunContext, VillainAsk};
 use crate::llm::MathTask;
 use crate::progression::Progression;
 use battle::{Battle, Phase};
@@ -42,6 +44,7 @@ use prefetch::{Ask, Prefetch, PrefetchConfig};
 use std::sync::mpsc::{Receiver, TryRecvError};
 use task_trigger::{Arrival, TriggerState};
 use villain::{Villain, VillainCue};
+use villain_voice::{Reaction, Voice, VoiceConfig};
 use world::{SpotState, View, World};
 
 /// The darkness vignette around the player (FR24): clear within the first
@@ -80,6 +83,9 @@ pub struct Settings {
     pub reduce_flashing: bool,
     /// The creation bar at the top centre (FR33).
     pub show_creation_bar: bool,
+    /// The mad scientist's speech bubble and live lines (FR23). Off, the
+    /// doctor still appears and acts, but says nothing and costs no calls.
+    pub villain_chatter: bool,
 }
 
 impl Default for Settings {
@@ -90,6 +96,7 @@ impl Default for Settings {
             show_minimap: true,
             reduce_flashing: false,
             show_creation_bar: true,
+            villain_chatter: true,
         }
     }
 }
@@ -236,6 +243,15 @@ pub struct Game {
     /// The mad scientist at the top of the road (FR23). Cosmetic: nothing a
     /// rule reads depends on them.
     pub villain: Villain,
+    /// The doctor's live lines (FR23 B): the one call out, its cap, and the
+    /// open flask's two reactions.
+    pub voice: Voice,
+    /// The scheme the doctor has running (FR23 C), steering the next flasks.
+    pub scheme: Option<SchemeRun>,
+    /// The creature last met and the topic last answered, for the doctor's
+    /// live lines. Nothing about the person playing.
+    last_monster: Option<String>,
+    last_topic: Option<String>,
     /// The question in `trigger_state` while it's still loading, for the wait
     /// measurement and the soft deadline.
     asking: Option<Ask>,
@@ -255,7 +271,7 @@ pub struct Game {
     studio_bad_seen: u32,
     studio_settle: f32,
     /// Studio jobs on the creation bar: the studio's job number and its circle.
-    studio_jobs: Vec<(u64, u32)>,
+    studio_jobs: Vec<(u64, u32, RequestKind)>,
     /// The roster has been frozen into the world's pool for this run: spec
     /// monsters can stand in zones, and new files join only on the next run.
     roster_frozen: bool,
@@ -280,6 +296,23 @@ pub struct Explain {
     /// Seconds left on screen (game time).
     pub left: f32,
 }
+
+/// A scheme the doctor has running (FR23 C): its next few flasks ask about
+/// its topic, through `request_task` like any themed question (invariant 6).
+/// The difficulty still comes from the level.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SchemeRun {
+    pub name: String,
+    pub topic: String,
+    /// Flasks still to open on the scheme's topic.
+    pub flasks_left: u32,
+    /// It fizzles out past this distance, flasks or not.
+    pub until_m: u32,
+}
+
+/// How many flasks a scheme steers, and how far it lasts at most.
+pub const SCHEME_FLASKS: u32 = 3;
+pub const SCHEME_SPAN_M: u32 = 250;
 
 /// Seconds an explanation stays up: a few to start, and a while per step.
 const EXPLAIN_BASE_S: f32 = 3.0;
@@ -354,6 +387,10 @@ impl Game {
             waits: WaitStats::default(),
             activity: GenActivity::new(),
             villain: Villain::new(),
+            voice: Voice::new(VoiceConfig::from_env()),
+            scheme: None,
+            last_monster: None,
+            last_topic: None,
             asking: None,
             next_question: None,
             studio: None,
@@ -565,6 +602,7 @@ impl Game {
             // Keep polling so a Cerebras response that lands mid-pause is
             // stored, not lost; nothing else advances.
             self.poll_questions(0.0);
+            self.voice.poll(&mut self.villain, &mut self.activity);
             self.set_studio_gate();
             return;
         }
@@ -594,6 +632,7 @@ impl Game {
         });
         self.tick_goalpost(dt);
         self.watch_villain();
+        self.tick_voice();
         // The studio works in battles and dialogues too, behind the questions.
         self.tick_studio(dt);
         if self.battle.is_some() {
@@ -656,6 +695,7 @@ impl Game {
         self.world.ensure_generated(self.cam_y - world::CHUNK_H);
         self.villain
             .update(dt, self.cam_y, screen_height(), self.player.pos);
+        self.tick_scheme();
 
         self.poll_questions(dt);
         self.tick_prefetch();
@@ -822,6 +862,137 @@ impl Game {
         });
     }
 
+    /// How the run is going, for the doctor's live lines (FR23 B). `topic` is
+    /// the problem on screen, if there is one.
+    fn run_context(&self, topic: Option<String>) -> RunContext {
+        RunContext {
+            meters: self.distance_m(),
+            level: self.progression.level,
+            streak: self.progression.streak,
+            health: self.health.current,
+            max_health: self.health.max,
+            last_monster: self.last_monster.clone(),
+            last_topic: topic.or_else(|| self.last_topic.clone()),
+            scheme: self.scheme.as_ref().map(|s| s.name.clone()),
+        }
+    }
+
+    /// The doctor's live lines (FR23 B), the third lane after live questions
+    /// and the look-ahead (FR32). Collects what has landed, then asks for at
+    /// most one thing: both reactions to the flask that's open, or else the
+    /// line for the cue that's waiting. Starts nothing while a question is
+    /// loading or a look-ahead is out, while paused, or in a battle (the
+    /// doctor is frozen there anyway), or when the minute's cap is spent, in
+    /// which case the cue goes to the line bank. Never touches a rule
+    /// (invariant 7).
+    fn tick_voice(&mut self) {
+        self.voice.poll(&mut self.villain, &mut self.activity);
+        let live =
+            self.voice.enabled() && self.client.has_api_key() && self.settings.villain_chatter;
+        self.villain.set_live(live);
+        if !live || self.is_paused() || self.battle.is_some() || self.voice.in_flight() {
+            return;
+        }
+        let loading = |s: &TriggerState| matches!(s, TriggerState::Loading(_));
+        if loading(&self.trigger_state)
+            || self.next_question.as_ref().is_some_and(|(s, _)| loading(s))
+            || self.prefetch.in_flight() > 0
+        {
+            return;
+        }
+        let now = std::time::Instant::now();
+        // 1. Both reactions to the flask that's open, so the doctor answers on
+        //    the frame the player does.
+        if let (TriggerState::Active(task), Some(spot)) = (&self.trigger_state, self.active_spot) {
+            if self.villain.is_here() && self.voice.wants_pair(spot) {
+                if self.voice.budget(now) == 0 {
+                    self.voice.skip_pair(spot);
+                } else {
+                    let ctx = self.run_context(Some(task.topic.clone()));
+                    let ask = VillainAsk::Pair {
+                        right: self.villain.reaction_ask(true, ctx.clone()),
+                        wrong: self.villain.reaction_ask(false, ctx),
+                    };
+                    self.voice
+                        .ask_pair(&self.client, spot, ask, &mut self.activity, now);
+                    return;
+                }
+            }
+        }
+        // 2. The line for the cue that's waiting.
+        if let Some((id, cue)) = self.villain.wants_line() {
+            if self.voice.budget(now) == 0 {
+                self.voice.stats.capped += 1;
+                self.villain.give_up(id);
+                return;
+            }
+            self.villain.mark_asked(id);
+            let topics = crate::content::prompts::topics_for_level(self.progression.level);
+            let ask = VillainAsk::One(self.villain.beat_ask(cue, self.run_context(None), topics));
+            self.voice
+                .ask_cue(&self.client, id, ask, &mut self.activity, now);
+        }
+    }
+
+    /// The doctor reacts to a flask's answer: with the reaction asked for when
+    /// it opened if it's here, routed to them when it lands if it's still
+    /// coming, or else asked for (or taken from the bank) like any cue.
+    fn react_to_flask(&mut self, correct: bool) {
+        let cue = if correct {
+            VillainCue::FlaskRight
+        } else {
+            VillainCue::FlaskWrong
+        };
+        let reaction = match self.active_spot {
+            Some(spot) => self.voice.reaction(spot, correct),
+            None => Reaction::Nothing,
+        };
+        match reaction {
+            Reaction::Ready(beat) => {
+                self.villain.cue_with(cue, beat);
+            }
+            Reaction::Coming => {
+                if let Some(id) = self.villain.cue(cue) {
+                    self.villain.mark_asked(id);
+                    self.voice.route_answer(correct, id);
+                }
+            }
+            Reaction::Nothing => {
+                self.villain.cue(cue);
+            }
+        }
+    }
+
+    /// Starts the scheme the doctor has just announced, and ends the one
+    /// running once its flasks are done or the player is well past it (FR23
+    /// C). The scheme only picks the topic of the next few flasks; nothing
+    /// else changes.
+    fn tick_scheme(&mut self) {
+        if let Some(s) = self.villain.take_announced() {
+            self.toast = Some((
+                format!("{}: the next flasks are about {}!", s.name, s.topic),
+                3.5,
+            ));
+            self.scheme = Some(SchemeRun {
+                name: s.name,
+                topic: s.topic,
+                flasks_left: SCHEME_FLASKS,
+                until_m: self.distance_m() + SCHEME_SPAN_M,
+            });
+        }
+        let Some(run) = &self.scheme else {
+            return;
+        };
+        let open = matches!(
+            self.trigger_state,
+            TriggerState::Loading(_) | TriggerState::Active(_)
+        );
+        if (run.flasks_left == 0 && !open) || self.distance_m() > run.until_m {
+            self.scheme = None;
+            self.villain.end_scheme();
+        }
+    }
+
     /// Advances the curse (FR1) and acts on what it reports: a toast as it
     /// takes hold or worsens, half a heart at full.
     fn tick_curse(&mut self, dt: f32) {
@@ -892,6 +1063,8 @@ impl Game {
         if let Species::Spec(spec) = &species {
             self.seen_generated.insert(spec.id.clone());
         }
+        self.villain.note_monster(species.name());
+        self.last_monster = Some(species.name().to_string());
         self.villain.cue(VillainCue::BattleStart);
         self.trigger_state = TriggerState::Idle;
         self.interact_target = None;
@@ -1175,6 +1348,10 @@ impl Game {
         self.goalpost = Tracker::new();
         self.explain = None;
         self.villain.reset();
+        self.voice.reset_run();
+        self.scheme = None;
+        self.last_monster = None;
+        self.last_topic = None;
     }
 
     /// One line of run state, printed by the `JEKO_SHOT` hook so scripted
@@ -1242,10 +1419,22 @@ impl Game {
                 ),
             ),
             if self.villain.is_here() {
+                let said = self.villain.sources();
+                let v = self.voice.stats;
                 format!(
-                    "{:?} saying={:?}",
+                    "{:?} saying={:?} live={} bank={} calls={}/{}/{}/{} scheme={}",
                     self.villain.action(),
-                    self.villain.saying().unwrap_or_default()
+                    self.villain.saying().unwrap_or_default(),
+                    said.live,
+                    said.bank,
+                    v.asked,
+                    v.landed,
+                    v.failed,
+                    v.capped,
+                    self.scheme.as_ref().map_or_else(
+                        || "none".to_string(),
+                        |s| format!("{:?}:{}:{}left", s.name, s.topic, s.flasks_left)
+                    ),
                 )
             } else {
                 "away".to_string()
@@ -1527,9 +1716,34 @@ impl Game {
             // `:hurt`, `:streak`, `:levelup`, `:battle_won`, `:idle`, and so on
             // (`VillainCue::from_dev`). Needs them out on the road first.
             n if n.starts_with("villain:") => match VillainCue::from_dev(&n["villain:".len()..]) {
-                Some(cue) => self.villain.cue_now(cue),
+                Some(cue) => {
+                    if cue == VillainCue::Creation {
+                        self.villain.note_creation("Fizzwick");
+                    }
+                    self.villain.cue_now(cue);
+                    // A scheme said this way starts like any other.
+                    self.tick_scheme();
+                }
                 None => eprintln!("JEKO_DEV: no villain cue {n:?}"),
             },
+            // The doctor's line through the live path (FR23 B), as if `cue` had
+            // just happened: `say:right`, `say:scheme`, ... It waits its turn
+            // like a real cue, so it needs the stand-in model or a key.
+            n if n.starts_with("say:") => match VillainCue::from_dev(&n["say:".len()..]) {
+                Some(cue) => {
+                    self.villain.cue(cue);
+                }
+                None => eprintln!("JEKO_DEV: no villain cue {n:?}"),
+            },
+            "nochatter" => self.settings.villain_chatter = false,
+            // A scheme on `topic` with that topic's fallback name and gadget
+            // (FR23 C), so each gadget can be seen: `scheme:fractions`.
+            n if n.starts_with("scheme:") => {
+                let topic = &n["scheme:".len()..];
+                self.villain
+                    .announce_now(crate::llm::villain_gen::fallback_scheme(topic));
+                self.tick_scheme();
+            }
             // A fake job on the creation bar (FR33): `gen:question`,
             // `gen:monster`, `gen:lesson`, `gen:fallback`, `gen:slow` (writes
             // for ten seconds). Writes for 2.5 s, then is ready.
@@ -1551,7 +1765,15 @@ impl Game {
         self.world.spots[i].state = SpotState::Pending;
         self.active_spot = Some(i);
         self.interact_target = None;
-        let asked = self.request_task(0, prefetch::SOFT_DEADLINE_FLASK_S, None);
+        // A scheme's flasks ask about its topic (FR23 C).
+        let topic = match &mut self.scheme {
+            Some(run) if run.flasks_left > 0 => {
+                run.flasks_left -= 1;
+                Some(run.topic.clone())
+            }
+            _ => None,
+        };
+        let asked = self.request_task(0, prefetch::SOFT_DEADLINE_FLASK_S, topic);
         self.show_question(asked);
     }
 
@@ -1695,9 +1917,17 @@ impl Game {
         let range = prefetch::LOOKAHEAD_SCREENS * screen_height();
         let upcoming = self.world.upcoming(self.player.pos.y, range);
         let wants = prefetch::demand(&upcoming, self.progression.level);
+        // A scheme's flasks, on its topic, before anything else (FR23 C).
+        let difficulty = self.progression.level.min(5);
+        let themed = self
+            .scheme
+            .as_ref()
+            .filter(|run| run.flasks_left > 0)
+            .map(|run| (difficulty, run.topic.as_str(), run.flasks_left as usize));
         self.prefetch.tick(
             &self.client,
             &wants,
+            themed,
             std::time::Instant::now(),
             &mut self.activity,
         );
@@ -1801,17 +2031,21 @@ impl Game {
                 match event {
                     StudioEvent::Started { seq, kind, label } => {
                         let id = self.activity.start(kind, &label);
-                        self.studio_jobs.push((seq, id));
+                        self.studio_jobs.push((seq, id, kind));
                     }
                     StudioEvent::Finished { seq, made } => {
-                        let Some(at) = self.studio_jobs.iter().position(|(s, _)| *s == seq) else {
+                        let Some(at) = self.studio_jobs.iter().position(|(s, ..)| *s == seq) else {
                             continue;
                         };
-                        let (_, id) = self.studio_jobs.swap_remove(at);
+                        let (_, id, kind) = self.studio_jobs.swap_remove(at);
                         match made {
                             Some(name) => {
                                 self.activity.rename(id, &name);
                                 self.activity.finish(id, JobState::Ready);
+                                // The doctor shows off their new creation (FR23 C).
+                                if kind == RequestKind::Monster {
+                                    self.villain.creation(&name);
+                                }
                             }
                             None => self.activity.cancel(id),
                         }
@@ -1819,6 +2053,12 @@ impl Game {
                 }
             }
         }
+        // While a monster is being built, the doctor is at the workbench.
+        self.villain.set_workshop(
+            self.studio_jobs
+                .iter()
+                .any(|(.., kind)| *kind == RequestKind::Monster),
+        );
         let monsters = self.unseen_generated(self.studio_tier());
         self.activity.set_stock(Stock {
             questions: self.prefetch.buffer.len(),
@@ -1838,7 +2078,8 @@ impl Game {
         let busy = self.is_paused()
             || loading(&self.trigger_state)
             || self.next_question.as_ref().is_some_and(|(s, _)| loading(s))
-            || self.prefetch.in_flight() > 0;
+            || self.prefetch.in_flight() > 0
+            || self.voice.in_flight();
         studio.set_live_busy(busy);
     }
 
@@ -1926,11 +2167,7 @@ impl Game {
             return;
         }
 
-        self.villain.cue(if correct {
-            VillainCue::FlaskRight
-        } else {
-            VillainCue::FlaskWrong
-        });
+        self.last_topic = Some(task_for_record.topic.clone());
         if correct {
             self.run.flasks_solved += 1;
             let level = self.progression.level;
@@ -1955,6 +2192,9 @@ impl Game {
             // costs a heart, so HP has a stake before monsters exist.
             self.damage_player(2, None);
         }
+        // After the damage, so the doctor reacts to the answer rather than to
+        // the heart it cost (the two cues rank the same; the later one wins).
+        self.react_to_flask(correct);
 
         if let Some(i) = self.active_spot.take() {
             self.world.spots[i].state = if correct {
@@ -2092,7 +2332,8 @@ impl Game {
         }
 
         // The doctor's speech bubble, above the night so it's always readable.
-        if doctor {
+        // The chatter setting hides it (FR23).
+        if doctor && self.settings.villain_chatter {
             self.villain
                 .draw_bubble(&view, world::ground_lift(self.villain.ground_y()));
         }

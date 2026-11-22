@@ -102,5 +102,109 @@
       "10 wilt, so take 10 away: 48 - 10.",
       "38 healthy flowers remain."
     ]
+  },
+  {
+    "topic": "fractions",
+    "problem": "A pizza is cut into 8 equal slices. You eat half of it. How many slices is that?",
+    "answer": 4,
+    "hint": "Half means split into 2 equal parts.",
+    "difficulty": 3,
+    "expression": "8 / 2",
+    "explanation": [
+      "Half of the pizza is half of the 8 slices.",
+      "Split 8 into 2 equal parts: 8 / 2.",
+      "8 / 2 = 4 slices."
+    ]
+  },
+  {
+    "topic": "fractions",
+    "problem": "There are 12 marbles in a bag. 3/4 of them are blue. How many marbles are blue?",
+    "answer": 9,
+    "hint": "Find one quarter first, then take three of them.",
+    "difficulty": 4,
+    "expression": "12 / 4 * 3",
+    "explanation": [
+      "One quarter of 12 is 12 / 4 = 3.",
+      "Three quarters is 3 of those: 3 x 3.",
+      "3 x 3 = 9 blue marbles."
+    ]
+  },
+  {
+    "topic": "place value",
+    "problem": "How many tens are there in 340?",
+    "answer": 34,
+    "hint": "Each ten is a group of 10.",
+    "difficulty": 2,
+    "expression": "340 / 10",
+    "explanation": [
+      "Count how many groups of 10 make 340: 340 / 10.",
+      "340 / 10 = 34.",
+      "So 340 has 34 tens."
+    ]
+  },
+  {
+    "topic": "place value",
+    "problem": "What number has 4 hundreds, 2 tens and 7 ones?",
+    "answer": 427,
+    "hint": "Write the hundreds, then the tens, then the ones.",
+    "difficulty": 2,
+    "expression": "4 * 100 + 2 * 10 + 7",
+    "explanation": [
+      "4 hundreds is 400 and 2 tens is 20.",
+      "Add the 7 ones: 400 + 20 + 7.",
+      "The number is 427."
+    ]
+  },
+  {
+    "topic": "perimeter and area",
+    "problem": "A garden is 5 m long and 3 m wide. How many metres of fence go all the way round it?",
+    "answer": 16,
+    "hint": "Add up all four sides.",
+    "difficulty": 4,
+    "expression": "2 * (5 + 3)",
+    "explanation": [
+      "The sides are 5, 3, 5 and 3 metres.",
+      "One long side and one short side make 5 + 3 = 8.",
+      "There are two of each: 2 x 8 = 16 metres."
+    ]
+  },
+  {
+    "topic": "perimeter and area",
+    "problem": "A rug is 6 squares long and 4 squares wide. How many squares does it cover?",
+    "answer": 24,
+    "hint": "Area is rows times columns.",
+    "difficulty": 4,
+    "expression": "6 * 4",
+    "explanation": [
+      "The rug has 4 rows of 6 squares.",
+      "Multiply: 6 x 4.",
+      "6 x 4 = 24 squares."
+    ]
+  },
+  {
+    "topic": "word problems",
+    "problem": "A baker makes 3 trays of 6 rolls and sells 5 rolls. How many rolls are left?",
+    "answer": 13,
+    "hint": "Find how many were made, then take away the sold ones.",
+    "difficulty": 3,
+    "expression": "3 * 6 - 5",
+    "explanation": [
+      "3 trays of 6 rolls is 3 x 6 = 18 rolls.",
+      "5 are sold: 18 - 5.",
+      "13 rolls are left."
+    ]
+  },
+  {
+    "topic": "word problems",
+    "problem": "Mia has 20 stickers. She gives half to her brother, then finds 4 more. How many does she have now?",
+    "answer": 14,
+    "hint": "Halve first, then add.",
+    "difficulty": 3,
+    "expression": "20 / 2 + 4",
+    "explanation": [
+      "Half of 20 is 20 / 2 = 10.",
+      "She finds 4 more: 10 + 4.",
+      "Mia has 14 stickers."
+    ]
   }
 ]

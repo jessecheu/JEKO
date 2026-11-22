@@ -1,5 +1,6 @@
 use crate::config::Config;
 use crate::llm::usage::{RequestKind, RequestUsage, TokenStats};
+use crate::llm::villain_gen::{self, VillainAsk, VillainReply};
 use crate::llm::{expr, fallback_bank, task_gen, MathTask};
 use rand::seq::SliceRandom;
 use serde_json::{json, Value};
@@ -90,8 +91,43 @@ impl CerebrasClient {
 
     /// Like `request_task_async`, but tagged as a look-ahead request (FR32),
     /// so the token panel can tell it from a question the player waits on.
-    pub fn prefetch_task_async(&self, difficulty: u32) -> Receiver<anyhow::Result<MathTask>> {
-        self.request_task_as(difficulty, None, RequestKind::Prefetch)
+    /// A `topic` asks for a question on it (a scheme's, FR23 C).
+    pub fn prefetch_task_async(
+        &self,
+        difficulty: u32,
+        topic: Option<String>,
+    ) -> Receiver<anyhow::Result<MathTask>> {
+        self.request_task_as(difficulty, topic, RequestKind::Prefetch)
+    }
+
+    /// Asks for what the mad scientist says next (FR23 B) on a background
+    /// thread, tagged `RequestKind::Line`. The reply is checked on that thread
+    /// (`villain_gen::parse_reply`, with `vet` as the word check), so what
+    /// comes back is safe to show; an error means the caller uses its bank.
+    pub fn request_villain_async(
+        &self,
+        ask: VillainAsk,
+        vet: villain_gen::Vet,
+    ) -> Receiver<anyhow::Result<VillainReply>> {
+        let (tx, rx) = mpsc::channel();
+        let client = self.clone();
+        std::thread::spawn(move || {
+            let raw = match client.fake_delay {
+                Some(delay) => {
+                    client.fake_call(RequestKind::Line, 420, 48, delay);
+                    Ok(villain_gen::fake_reply(&ask))
+                }
+                None => {
+                    let (system, user) = villain_gen::build_prompt(&ask);
+                    client.request_tagged_blocking(RequestKind::Line, &system, &user)
+                }
+            };
+            let result = raw.and_then(|raw| {
+                villain_gen::parse_reply(&ask, &raw, vet).map_err(anyhow::Error::from)
+            });
+            let _ = tx.send(result);
+        });
+        rx
     }
 
     fn request_task_as(

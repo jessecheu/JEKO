@@ -54,5 +54,20 @@
     { "line": "Two plus two is five. I'm almost sure. Hmm-hmm-hmm.", "mood": "scheming", "action": "scribble" },
     { "line": "Is it quiet, or am I just too excited to hear? Hee hee!", "mood": "gleeful", "action": "cackle" },
     { "line": "Bubble, bubble, fizz! That's the whole recipe. I think.", "mood": "smug", "action": "brew" }
+  ],
+  "scheme": [
+    { "line": "Behold my newest plan: {scheme}! Hee hee!", "mood": "scheming", "action": "cackle" },
+    { "line": "Step one of {scheme}: confuse the flasks. Step two: snacks.", "mood": "scheming", "action": "scribble" },
+    { "line": "Presenting {scheme}! I drew the plans myself. Upside down.", "mood": "gleeful", "action": "brew" }
+  ],
+  "scheme_foiled": [
+    { "line": "Bah! {scheme} has fizzled! Back to the drawing board!", "mood": "furious_but_funny", "action": "fluster" },
+    { "line": "{scheme}, ruined! I should have read the instructions.", "mood": "flustered", "action": "fluster" },
+    { "line": "Fine! {scheme} was just practice. The next one is REAL.", "mood": "smug", "action": "gloat" }
+  ],
+  "creation": [
+    { "line": "It's alive! Say hello to {name}, my newest creation!", "mood": "gleeful", "action": "unveil" },
+    { "line": "Fresh from the lab: {name}! Mind the bubbles, they're new too.", "mood": "gleeful", "action": "unveil" },
+    { "line": "Ta-da! {name}! Built it myself. Mostly. The cart helped.", "mood": "smug", "action": "unveil" }
   ]
 }

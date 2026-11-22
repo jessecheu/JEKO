@@ -30,8 +30,10 @@ timestamp: 2026-11-21
 > linger, which is what keeps them moving. Every 250 m a safe stop (FR28) opens the road onto a
 > lantern-lit clearing with a cottage: nothing hostile is placed there, the curse lifts, hearts mend
 > faster, and a shop sells hearts for the gears (FR17) that lie in trails along the road. A mad scientist potters about at the top of the
-> road, always out of reach, and remarks on what the player does in a speech bubble (FR23). Their lines are canned today and
-> they are purely cosmetic.
+> road, always out of reach, and remarks on what the player does in a speech bubble (FR23). With a key, Cerebras writes
+> those lines live in a third lane behind the questions; every line is checked before it's shown, and the reviewed line bank
+> stands in whenever one doesn't come. Every 300 m the doctor announces a scheme whose topic steers the next three flasks'
+> questions. Apart from that, they are purely cosmetic.
 
 This doc is **descriptive**. It says what the code is today, checked against the source
 on the date in the frontmatter. It isn't a roadmap: planned and open work lives in
@@ -73,10 +75,14 @@ content::studio thread ── waits for a job and for the model to be free (Game
        │                 finish_pack (every answer checked against its expression) · tips::finish
        └─ writes <content dir>/monsters/gen-<name>.json · lessons/<topic>-<level>.json · tips/<topic>.json
             └─▶ the watcher above loads them: specs to the roster, packs to the question buffer, tips to Pebble
+
+Game::tick_voice ── the doctor's next line (FR23): one call at a time, third in line after questions
+  └─ request_villain_async (a thread) ─▶ villain_gen::parse_reply ─▶ Voice::poll ─▶ Villain::offer
+       └─ no key, JEKO_VILLAIN=off, the cap, a failure or a late reply ─▶ a line from assets/villain_lines.json
 ```
 
-*Figure: the frame loop and its two background paths: questions from Cerebras (asked
-for live or ahead of need), and monster specs from the content dir.*
+*Figure: the frame loop and its background paths: questions from Cerebras (asked
+for live or ahead of need), the doctor's lines, and monster specs from the content dir.*
 
 ---
 
@@ -107,7 +113,9 @@ The layering holds today, and new code should keep it:
 
 - **`config`, `content`, `llm`, `progression`** know nothing about macroquad or egui. They're
   plain Rust, so they can be tested and reused without a window (`gen_content` uses
-  `llm` this way). The studio thread lives in `content` and uses `llm` for the call.
+  `llm` this way). The studio thread lives in `content` and uses `llm` for the call. `llm`
+  doesn't use `content`: `llm::villain_gen` takes the word check as a function
+  (`villain_gen::Vet`), and `game` passes it `content::vet::vet_text`.
 - **`game`** uses macroquad (input, drawing, render targets) and never egui. It
   mentions egui only in comments.
 - **`ui`** is the only module that imports egui. Its panels are functions, not
@@ -127,13 +135,14 @@ The layering holds today, and new code should keep it:
 | `llm/mod.rs` | `MathTask { topic, problem, answer: f64, hint, difficulty, explanation, expression }`, the one task type every question path produces (the last two are FR22's and default to empty), and `fallback_bank()`, the compiled-in bank. |
 | `llm/expr.rs` | `eval` (a tiny arithmetic evaluator) and `verify` (a generated problem passes only if its `answer` equals its `expression`; FR22). |
 | `llm/activity.rs` | `GenActivity` (FR33): the jobs the creation bar shows, one per model call being written, each `Writing`, then `Ready` or `Fallback`, plus the `Stock` ready ahead of need (look-ahead questions, unseen generated monsters). `view()` gives the bar's circles (oldest three, and the count of the rest) and the stock; `view_where` leaves jobs out (a battle). A read-only mirror: nothing reads it to decide anything. |
-| `llm/buffer.rs` | `QuestionBuffer` (ready questions per difficulty, with an optional strict topic), `plan_prefetch` (the pure look-ahead policy and its `PrefetchCaps`), and `WaitStats` (where each shown question came from and how long the player waited). |
-| `llm/cerebras_client.rs` | `CerebrasClient`: the async wrappers (live and look-ahead), the blocking chat-completions call with its `RequestKind` tag, the shared token stats, and the `fakemodel` stand-in. |
+| `llm/buffer.rs` | `QuestionBuffer` (ready questions per difficulty, with an optional strict topic, and `count_topic`), `plan_prefetch` (the pure look-ahead policy and its `PrefetchCaps`), and `WaitStats` (where each shown question came from and how long the player waited). |
+| `llm/cerebras_client.rs` | `CerebrasClient`: the async wrappers (live and look-ahead questions, and `request_villain_async` for the doctor's lines, which checks the reply on its thread), the blocking chat-completions call with its `RequestKind` tag, the shared token stats, and the `fakemodel` stand-in. |
+| `llm/villain_gen.rs` | The doctor's live lines and schemes (FR23): `VillainAction`, `Mood` and `Gadget` (closed sets), `Scheme`, `Beat` (a line, mood, action and maybe a scheme), `RunContext` and `BeatAsk` (what the prompt is told), `VillainAsk` (one beat, or both reactions to a flask in one call), `build_prompt`, `parse_reply` / `parse_beat` (the pure checks: unknown enums defaulted, a line tidied and cut to 90 characters at a word, blocked words, links, a missing line or an unoffered scheme topic turned down), `fallback_scheme` (one per maths topic) and `fake_reply` for the stand-in model. |
 | `llm/task_gen.rs` | The prompt templates (`build_prompt(difficulty, topic)` for a live question, `build_pack_prompt` for a lesson pack) and lenient JSON extraction (`extract_json_object` / `_array`). |
 | `llm/usage.rs` | `RequestKind` (question, prefetch, monster, lesson, line), `RequestUsage` (one call's tokens, generation speed and finish time), `CallRecord` / `InFlight` (a finished or still-out call) and `TokenStats` (session totals, per-kind totals, the last 24 requests, a timeline of the last 128 calls, the calls in flight, and the time-windowed `window` / `bins` / `idle_for` queries). |
 | `game/mod.rs` | `Game`: run state, the per-frame update and draw, the mode precedence, the damage, answer and reset entry points, and the dev events. |
 | `game/task_trigger.rs` | `TriggerState`, the question state machine (§4), `Arrival` (how a `Loading` request ended), and `pick_fallback`. |
-| `game/prefetch.rs` | `Prefetch`: the question buffer, the look-ahead requests in flight and their per-minute budget; `demand` (what the road ahead needs); `plan_lesson` (which pack the studio writes next); the soft deadlines; `Ask` (a question asked for and not yet shown). |
+| `game/prefetch.rs` | `Prefetch`: the question buffer, the look-ahead requests in flight and their per-minute budget, and the themed requests for a scheme's flasks (`themed_count`); `demand` (what the road ahead needs); `plan_lesson` (which pack the studio writes next); the soft deadlines; `Ask` (a question asked for and not yet shown). |
 | `game/field_guide.rs` | `FieldGuide` (the cards unlocked this session) and `GuideCard`. Pure data; `ui/field_guide_panel.rs` draws it. |
 | `game/world.rs` | Coordinates and camera (`View`), path geometry, chunking, potion flasks (`Spot`), encounter zones and road blockers (`EncounterZone`, `clamp_blocked`), safe stops (`SafeStop`, `safe_stop_for_chunk`, `stop_bulge`, `in_safe_stop`, `World::stop_in_reach`), gears (`Gear`, `gears_for_chunk`, `World::collect_gears`), the castle's gate and wall (`CASTLE_M`, `CASTLE_GATE_Y`, `CASTLE_WALL_Y`, `at_the_gate`, `World::draw_castle`), the region borders (`RegionBorder`, `region_borders_in_chunk`), the goalposts the tracker counts down to (`Goalpost`, `goalposts_in_chunk`, `pick_goalpost`, `World::next_goalpost`), what will need a question soon (`Upcoming`, `upcoming_in`, `World::upcoming`), the depth-sorted `Tall` items, and drawing the ground, the cobbled road, the light pools, the mist, the bats and fireflies, and where the manor sits on screen. |
 | `game/decor.rs` | Per-chunk scenery generation (`generate_chunk`, dressed per region by `region_scenery`), the hand-placed hub camp (`hub_layout`) and each safe stop's furnishings (`stop_layout`), how each prop draws, and which props cast light (`Decoration::lights`). |
@@ -145,7 +154,8 @@ The layering holds today, and new code should keep it:
 | `game/skills.rs` | Movement skills (FR26): `RollCharges` (3 rolls, a trickle, a lockout) and `Stamina` (sprint drain, regen, winded), held together in `Skills`, and `draw_bar`, the skill bar at the bottom centre. |
 | `game/bow.rs` | The bow: the shot's timing (`aim`, `SHOOT_S`, `RELEASE_S`), drawing the bow slung and held and an arrow (`draw_arrow`), and `Arrow`, a cosmetic projectile that arcs, then sticks in the ground or splashes in the lake. |
 | `game/map.rs` | The discovery map (FR27): `Discovery` (the furthest `y` reached, kept on `Game`) and `snapshot`, which samples the world functions and the flasks and zones for the discovered stretch and returns a `MapView` (landmarks, the road's centreline, a `RegionBand` for each region entered, the castle and the distance to it, the player). No egui. |
-| `game/villain.rs` | The mad scientist (FR23, milestone A): `Villain` (where they stand, what they're doing, the bubble and the cue waiting to be said), `VillainAction`, `Mood` and `Pose` (the animation as pure numbers), `VillainCue` (what happened), `Snapshot` and `Villain::observe` (turns level, streak, distance and hearts into cues), `target_pos` (the pure rule for where they stand), and `load_bank` / `check_bank` for `assets/villain_lines.json`. Draws the doctor and their cart through a 2× canvas, and the bubble. No model call: everything it says is from the bank. |
+| `game/villain.rs` | The mad scientist (FR23): `Villain` (where they stand, what they're doing, the bubble, the cue waiting to be said with its number and its live line once it's here, the scheme running and the workshop flag), `Pose` (the animation as pure numbers; `VillainAction` and `Mood` come from `llm::villain_gen`), `VillainCue` (what happened), `Snapshot` and `Villain::observe` (turns level, streak, distance and hearts into cues, and a scheme every 300 m), the hand-off to the live voice (`wants_line`, `mark_asked`, `offer`, `give_up`, `beat_ask`, `reaction_ask`), `target_pos` (the pure rule for where they stand), and `load_bank` / `check_bank` for `assets/villain_lines.json`. Draws the doctor and their cart through a 2× canvas, the scheme's gadget, and the bubble. It makes no model call itself. |
+| `game/villain_voice.rs` | `Voice` (FR23 B): the one villain call that may be out, its per-minute cap (`VoiceConfig`: `JEKO_VILLAIN`, `JEKO_VILLAIN_RPM`), the open flask's two reactions once they land, `Reaction` (ready, coming or nothing when the player answers), `poll` (hands each reply to the cue it was for, or tells the doctor to use the bank), and `VoiceStats`. |
 | `game/flicker.rs` | `Flicker` / `FlickerKind` (spawn ghost, damage blink). It turns elapsed time into a `Look` (tint and alpha) and honours reduce flashing. |
 | `game/goalpost.rs` | `Tracker` (FR31): which goalpost the top-centre badge shows, the metres left, and its pop, unroll, "Now!" and close animation. It produces a `TrackerView` and draws nothing. |
 | `game/health.rs` | `Health`, counted in half-hearts: damage, heal, refill, `add_heart` (up to `MAX_HEARTS`, 8), clamped, and slow regeneration (`tick`, or `tick_rate` at a safe stop) with its HUD bar. |
@@ -198,7 +208,7 @@ Two consequences of this order:
 Everything that changes during a run is a field on `Game`, or is owned by one: `player`,
 `world`, `progression`, `health`, `curse`, `trigger_state`, `battle`, `dialogue`, `settings`,
 `run` stats, the camera (`cam_y`, `shake`), toasts, the goalpost `Tracker`, the game clock `time`, and the
-spec monster `roster` with the watcher's channel, the `studio` handle, and the question `prefetch` buffer with its `waits` readout, and the `villain` (FR23). The UI
+spec monster `roster` with the watcher's channel, the `studio` handle, and the question `prefetch` buffer with its `waits` readout, and the `villain` with its live `voice` and the `scheme` running (FR23). The UI
 gets it by reference. Nothing else holds gameplay state.
 
 `Game::update` runs these checks in a fixed order. The first one that matches decides
@@ -210,8 +220,8 @@ what the frame does:
 | 1 | **Game over** | `game_over.is_some()` | Only the death animation advances. After `DEATH_ANIM_S` (1.2 s), E or Enter calls `reset()`. |
 | 1b | **Victory** | `victory.is_some()` | The player has reached the castle gate (FR27). Only `victory` and `time` advance, the player stands (`player.stop`), and the gate rises (`Game::castle_open`). After `VICTORY_PANEL_S` (2.6 s) the victory panel is up and E or Enter calls `reset()`. Nothing is judged, healed or hurt (`damage_player` ignores hits). |
 | 2 | Toggles | not `typing` | With the shop open (FR17), E or Esc closes it. With the map open, M or Esc closes it. Otherwise M opens it (`can_open_map`: on the road, no battle, dialogue, open question, settings, field guide or shop). O toggles `settings_open`, and Esc closes it. With settings closed, G toggles the field guide (`guide_open`, Esc closes it) and P toggles `paused`. |
-| 3 | **Paused** | `paused \|\| settings_open \|\| guide_open \|\| map_open \|\| shop_open` | Only `poll_questions(0.0)` runs (the shown question, the battle's next one and the look-ahead receivers), so a response that arrives isn't lost, and the studio's gate is set to busy. The clock doesn't advance, and neither does the soft deadline. |
-| 4 | (every unpaused frame) | | Advance `time`, shake, the toast, the explanation card and the item-get timers, then `tick_goalpost` (the tracker, §10), `watch_villain` (§9) and `tick_studio` (§8), the last two of which also run in battles and dialogues. |
+| 3 | **Paused** | `paused \|\| settings_open \|\| guide_open \|\| map_open \|\| shop_open` | Only `poll_questions(0.0)` runs (the shown question, the battle's next one and the look-ahead receivers), and `Voice::poll` (the doctor's line), so a response that arrives isn't lost, and the studio's gate is set to busy. The clock doesn't advance, and neither does the soft deadline. |
+| 4 | (every unpaused frame) | | Advance `time`, shake, the toast, the explanation card and the item-get timers, then `tick_goalpost` (the tracker, §10), `watch_villain`, `tick_voice` (§9) and `tick_studio` (§8), the last three of which also run in battles and dialogues (`tick_voice` only polls there). |
 | 5 | **Battle** | `battle.is_some()` | `update_battle`: the player is held, phases advance (§8), and each question is asked for early and shown when the phase reaches `Question` (§5). |
 | 6 | **Dialogue** | `dialogue.is_some()` | The player is held. E reveals the line, then advances, then closes. |
 | 7 | **Road** | otherwise | See below. |
@@ -228,7 +238,7 @@ The road frame, in order:
    holds still while a question is loading or open, in a battle, in a dialogue and
    while paused.
 3. `discovery.note(player.y)` records the furthest point reached (FR27), `watch_region` shows each region's "Entering …" banner the first time the player steps into it (a toast; the table is `regions::REGIONS`), and standing at the castle gate (`world::at_the_gate`) calls `win()`, which starts the victory mode above and ends the frame. The camera eases toward the player (anchor 0.66 of screen height, rate `1 − e^(−6·dt)`).
-   `world.ensure_generated` keeps one chunk past the top of the screen generated. Then `villain.update` moves the doctor and picks what they say next (§9). It runs only on this branch, so a battle, a dialogue and a pause leave them frozen.
+   `world.ensure_generated` keeps one chunk past the top of the screen generated. Then `villain.update` moves the doctor and picks what they say next (§9). It runs only on this branch, so a battle, a dialogue and a pause leave them frozen. Then `tick_scheme` starts the scheme the doctor has just announced, or ends the one running (§9).
 4. `poll_questions(dt)`, then `tick_prefetch` (§5).
 5. If not busy, stepping into an uncleared fern patch starts a battle.
 6. Interaction targets: the nearest fresh flask in reach (`interact_target`), or else
@@ -248,7 +258,8 @@ to change each rule:
   from `from` (clamped to the path and short of any road blocker), shakes the screen unless reduce flashing is on,
   and calls `die()` at 0 HP.
 - `Game::request_task(bias, deadline_s, topic)` is the only way a question starts (§5). Look-ahead
-  only fills the buffer it reads from.
+  only fills the buffer it reads from. A scheme (FR23) steers a flask by passing its topic here
+  from `open_spot`, like a themed monster does.
 - `Game::submit_answer()` is the only way an answer is judged, for flasks and battles alike.
 - `Game::buy(item)` is the only way gears are spent (FR17): it runs `shop::buy`, which takes the gears and mends or grows `Health` through `heal` and `add_heart`.
 - `Game::reset()` starts a new run without relaunching. It keeps the client, the
@@ -312,7 +323,15 @@ the game asks before the player needs the answer:
   level-up), else it asks live. The buffer survives `reset()`.
 - **A live request beats a look-ahead.** `tick_prefetch` starts nothing while the shown
   question or the battle's next one is `Loading`, while paused, or in a battle. Receivers
-  are still polled while paused.
+  are still polled while paused. The doctor's lines (FR23, §9) come third: `tick_voice` starts
+  nothing while a question is loading or a look-ahead is out. The studio comes last, and its gate
+  also counts a villain call that's out.
+- **A scheme's flasks** (FR23). While the doctor has a scheme running (`Game.scheme`, a
+  `SchemeRun`), the next `SCHEME_FLASKS` (3) flasks pass its topic to `request_task`, and
+  `tick_prefetch` asks for that many questions on it first (`Prefetch::tick`'s `themed`, under the
+  same caps), so they're ready on arrival. Offline the bank has at least one question on every topic a
+  scheme can pick (a test checks it). The difficulty still comes from the level, and battles aren't
+  steered.
 - **The soft deadline.** A live question that hasn't landed after `SOFT_DEADLINE_BATTLE_S`
   (1.5 s) or `SOFT_DEADLINE_FLASK_S` (2.5 s) of unpaused game time is replaced by a
   fallback-bank question. The late answer isn't dropped: its receiver is adopted by
@@ -577,8 +596,9 @@ The night (FR24) comes from a dark palette, pools of light, and a vignette.
    `Blocker`s (the monster idling, drawn through its zone's own `MonsterCanvas`;
    a boss at 1.3× the size). The player and their
    arrows (keyed by the ground under them) and, once they're out on the road and no
-   dialogue is open, the mad scientist (keyed by their ground `y`, which is always
-   north of the player) are added, everything is sorted by
+   dialogue is open, the mad scientist (`Layer::Villain`, keyed by their ground `y`, which is always
+   north of the player; a scheme's gadget is drawn with them, the fog behind and the bubbles or
+   banner in front) are added, everything is sorted by
    `sort_y()`, and the items are drawn in order. The player walks behind a tree north
    of them and in front of one south of them. The sort is stable and arrows go in
    after the player, so a fresh arrow draws over the archer.
@@ -594,7 +614,7 @@ The night (FR24) comes from a dark palette, pools of light, and a vignette.
    on top of the darkness.
 9. Key prompts (E) over the flask, road blocker or NPC in reach, drawn last so
    they're never hidden, then the mad scientist's speech bubble (`Villain::draw_bubble`),
-   in screen space so the night never dims it.
+   in screen space so the night never dims it. The `villain_chatter` setting hides it.
 10. The item-get burst and banner, then the hearts and, once the curse has started,
    the curse meter under them (`curse::draw_meter`, with a tick where the fever starts).
    Both are always shown whatever the HUD setting. Then the skill bar (`skills::draw_bar`)
@@ -840,9 +860,9 @@ unless `JEKO_STUDIO=off`, `main` starts one long-lived thread that designs monst
   it waits) only while the player is hurt; the curse meter sits below it. Death sets
   `game_over = Some(0.0)`, clears pause and settings, records `best_distance_m`, and
   marks any open flask `Missed`.
-- **The mad scientist** (`game/villain.rs`, FR23 milestone A). `Game.villain` is Dr. Nix
-  Nullwell, who stands near the top of the screen and is never reachable. They aren't a
-  placed thing: `target_pos` puts their feet a band below the top of the window (30% of
+- **The mad scientist** (`game/villain.rs`, `game/villain_voice.rs`, `llm/villain_gen.rs`, FR23).
+  `Game.villain` is Dr. Nix Nullwell, who stands near the top of the screen and is never reachable.
+  They aren't a placed thing: `target_pos` puts their feet a band below the top of the window (30% of
   its height, within 160 to 240 px) and at least `LEAD_PX` (150) north of the player, wandering
   along the road and the verge on their own slow clock, and `update` eases them there. When the player
   gains on them (within 175 px) they `Scurry` off. They appear in a soot puff the first time
@@ -850,17 +870,50 @@ unless `JEKO_STUDIO=off`, `main` starts one long-lived thread that designs monst
   hidden in dialogues; battles replace the whole view. `Game` calls `villain.update` on the road
   frame only, so a battle, a dialogue and a pause freeze them, and `villain.observe` every unpaused
   frame with a `Snapshot` of level, streak, distance and hearts, which turns a level-up, a streak of 5
-  or each 10, each 100 m and low hearts into cues. The one-off events cue them where they happen: `submit_answer`
-  (`FlaskRight` / `FlaskWrong`), `start_battle`, a battle won, and `damage_player`. A cue waits for
-  the doctor to be free: the highest priority wins (`FirstSighting` over level-up over streak …), a
-  bubble opens at most every 8 s, and a small cue that has waited 6 s lapses rather than being said late.
-  Nothing said for 25 s becomes an `Idle` mutter. A line comes from `assets/villain_lines.json`
-  (`Bank`, rotating through the cue's lines) with its mood and action, which they act out for
-  a few seconds. The bubble is drawn in `game` (`gfx::speech_bubble`, typed out at the dialogue's pace)
-  and they're drawn through a 2× canvas so a soot puff can fade them as one piece. **Cosmetic by
-  design** (invariant 7): they never call `damage_player` or `request_task` and read nothing a rule uses.
-  Under reduce flashing the coil's sparks give way to a steady glow and the goggles stop pulsing. Their position comes only from the
-  camera and the clock, so no world-generation test depends on them.
+  or each 10, each 100 m, a scheme every 300 m and low hearts into cues. The one-off events cue them where
+  they happen: `submit_answer` (`FlaskRight` / `FlaskWrong`, cued after the heart a wrong one costs, so the
+  reaction wins over the hurt), `start_battle`, a battle won, `damage_player`, and the studio finishing a
+  monster (`Creation`). A cue waits for the doctor to be free: the highest priority wins (`FirstSighting`
+  over level-up and scheme over streak …), a bubble opens at most every 8 s, and a small cue that has
+  waited 6 s lapses rather than being said late. Nothing said for 25 s becomes an `Idle` cue. The line is
+  acted out with its mood and action for a few seconds, typed into a bubble drawn in `game`
+  (`gfx::speech_bubble`, at the dialogue's pace), and they're drawn through a 2× canvas so a soot puff can
+  fade them as one piece.
+
+  *Where a line comes from.* With a key, `JEKO_VILLAIN` not `off` and the `villain_chatter` setting on,
+  lines are live (`Villain::set_live`). `Game::tick_voice` (a `Voice`) asks for at most one thing at a time:
+  when a flask's problem is showing, both reactions to it in one call (`VillainAsk::Pair`), so the doctor
+  answers on the frame the player does (`react_to_flask`: `Reaction::Ready`, or `Coming`, which routes the
+  right half to the cue when it lands); otherwise the line for the waiting cue (`wants_line`). Each
+  request carries the cue in a sentence and a `RunContext` (distance, level, streak, hearts, the last
+  creature and topic, the scheme), nothing about the person playing, and opens a `Line` circle on the
+  creation bar. `request_villain_async` checks the reply on its thread (`villain_gen::parse_reply`), so the
+  doctor only ever gets a line that passed. A due cue waits up to `LIVE_WAIT_S` (2 s of game time) for its
+  line, then a bank line from `assets/villain_lines.json` is said (`Bank`, rotating through the cue's lines,
+  with `{m}`, `{n}`, `{level}`, `{scheme}` or `{name}` filled in). The bank is also used straight away with
+  no key, with `JEKO_VILLAIN=off`, with chatter off, when `JEKO_VILLAIN_RPM` (6 a minute) is spent, and
+  when the call fails or is turned down (`give_up`, with one line on stderr). A line that comes back after
+  its cue has been replaced is dropped (cue numbers never repeat, even across runs). Nothing starts while a
+  question is loading or a look-ahead is out, while paused, or in a battle.
+
+  *Schemes* (milestone C). A `Scheme` cue's line carries a scheme: a name (at most 32 characters), a topic
+  from `topics_for_level` (a live scheme with any other topic is turned down) and a `Gadget`. With no live
+  one, `fallback_scheme` names one for a topic that fits the level. When it's said, `Game::tick_scheme`
+  takes it (`take_announced`), shows a toast ("… the next flasks are about fractions!") and sets
+  `Game.scheme`: the next 3 flasks ask about its topic (§5). It ends after those 3 flasks or 250 m
+  (`SCHEME_SPAN_M`), whichever is first, and the doctor says so (`end_scheme`, `SchemeFoiled`). A new one
+  comes at the next 300 m mark with none running. The gadget is cosmetic: `fog_machine` (green fog rolling
+  off the cart), `bubble_rain` (bubbles rising from it), `banner` (a pennant with the name) or `glow_flask`
+  (the flask glows in the scheme's colour, steady under reduce flashing).
+
+  *The studio link.* While the studio is building a monster, idle time goes to the workbench (`Tinker`,
+  `Brew`; `set_workshop`), and when one lands the doctor holds up the flask (`Unveil`) and names it.
+
+  **Cosmetic by design** (invariant 7): they never call `damage_player`, and read nothing a rule uses. The
+  one thing they change is which topic a scheme's flasks ask about, through `request_task` (the owner's
+  call, 2026-11-21). Under reduce flashing the coil's sparks give way to a steady glow, the goggles stop
+  pulsing and the glowing flask holds steady. Their position comes only from the camera and the clock, so
+  no world-generation test depends on them.
 
 ---
 
@@ -927,8 +980,9 @@ gears reset with the run (the owner's answers for FR17, 2026-11-21).
 - *Stock.* `sync_creation_bar` also sets `Stock`: the buffer's size and the unseen generated
   monsters for the tier ahead (`unseen_generated`, the same count the studio tops up). The bar
   prints it under the circles as "ready: 9 questions · 2 monsters".
-- *Lines.* `RequestKind::Line` has its icon and `gen:line`, but nothing opens it: the villain's
-  lines are canned until FR23 B.
+- *Lines.* Each live villain call opens a `Line` job (`doctor's line`, `doctor's reactions` or
+  `doctor's scheme`, in `Voice::send`), closed `Ready` when it lands or `Fallback` (`bank`) when the
+  doctor will say a bank line instead. Themed look-ahead for a scheme shows as `scheme: <topic>`.
 
 The ring is a stage ring, not a percentage: an arc turns while the job is `Writing`, closes when
 it ends, the icon pops with a spark (no spark and a slower arc with reduce flashing), and the time
@@ -950,7 +1004,7 @@ game clock, so a pause freezes it, and it never changes XP, speed or answers (in
 text reads against the dark world), thick dark-wood borders, hard offset shadows, a
 lantern-amber hover and a moss-green accent. `gfx::key_prompt` copies the palette, so world
 prompts match the panels. `Settings` (`show_hud`, `show_token_panel`,
-`show_creation_bar`, `reduce_flashing`) lives on `Game` and isn't saved between launches.
+`show_creation_bar`, `villain_chatter`, `reduce_flashing`) lives on `Game` and isn't saved between launches.
 
 ---
 
@@ -962,8 +1016,8 @@ rebuild. The exception is the content dir, which is read at runtime and hot-relo
 
 | File | Loaded by | Used for |
 |---|---|---|
-| `assets/tasks_fallback.json` | `llm::fallback_bank` | Questions when there's no key or a call fails. Must deserialize as `Vec<MathTask>` and be non-empty. |
-| `assets/villain_lines.json` | `villain::load_bank` | The mad scientist's lines: an array per cue (`first_sighting`, `milestone`, `flask_right`, `flask_wrong`, `battle_start`, `battle_won`, `player_hurt`, `streak`, `level_up`, `low_health`, `idle`), each line with a mood and an action. `{m}`, `{n}` and `{level}` fill in a number on the cue that has it. `villain::check_bank` is the rule for it (every cue present, 2 to 8 lines each, at most 90 characters, the word blocklist, no `appear` or `vanish`): a test runs it on the shipped file and `make validate` runs it too, because `load_bank` panics at startup on a bad one. |
+| `assets/tasks_fallback.json` | `llm::fallback_bank` | Questions when there's no key or a call fails. Must deserialize as `Vec<MathTask>` and be non-empty. It has at least one question on every topic a scheme can pick (FR23), so an offline scheme still steers. |
+| `assets/villain_lines.json` | `villain::load_bank` | The mad scientist's lines: an array per cue (`first_sighting`, `milestone`, `flask_right`, `flask_wrong`, `battle_start`, `battle_won`, `player_hurt`, `streak`, `level_up`, `low_health`, `idle`, `scheme`, `scheme_foiled`, `creation`), each line with a mood and an action. `{m}`, `{n}` and `{level}` fill in a number, `{scheme}` the scheme's name and `{name}` a new creature's, on the cue that has it. It's what the doctor says whenever no live line comes (§9). `villain::check_bank` is the rule for it (every cue present, 2 to 8 lines each, at most 90 characters with a placeholder at its widest, the word blocklist, no `appear` or `vanish`): a test runs it on the shipped file and `make validate` runs it too, because `load_bank` panics at startup on a bad one. |
 | `assets/dialogue.json` | `dialogue::load_bank` | NPC lines. Professor Pebble says the hub tutorial and then rotates through their bank lines. Regenerate it with `make gen-content`. `dialogue::check_bank` is the rule for it (3 to 12 lines per NPC, at most 140 characters, the word blocklist, unique names, Professor Pebble present): `gen_content` runs it before writing, `make validate` runs it on the file, and a test runs it on the shipped file, because `load_bank` panics at startup on a bad one. |
 
 **OpenClaw (FR30, optional).** `openclaw/` holds skills for the OpenClaw agent gateway, one per job: `jeko-dialogue` (runs `make gen-content` then `make validate`), `jeko-monsters` (writes `content/monsters/<id>.json`, atomically, and runs `make validate`) and `jeko-playtest` (runs `JEKO_SHOT` / `JEKO_DEV` scenarios and reads the screenshots). Nothing in `src/` calls OpenClaw and the game doesn't know it exists: agents only use the repo's own tools and the content dir's file contract, and leave the result in the working tree for review. Setup, the agents' tool limits and the safety notes are in `openclaw/README.md`.
@@ -975,7 +1029,8 @@ rebuild. The exception is the content dir, which is read at runtime and hot-relo
 environment, a `.env` file, or secretspec (`secretspec.toml`). See the README.
 `JEKO_CONTENT_DIR` points the content watcher at another folder (§8).
 `JEKO_PREFETCH=off` turns the question look-ahead off, and `JEKO_PREFETCH_RPM` (default 20)
-caps its requests per minute (§5). `JEKO_STUDIO=off` turns the monster studio off, and
+caps its requests per minute (§5). `JEKO_VILLAIN=off` keeps the mad scientist on the line bank, and
+`JEKO_VILLAIN_RPM` (default 6) caps their live calls per minute (§9). `JEKO_STUDIO=off` turns the monster studio off, and
 `JEKO_STUDIO_RPM` (6) and `JEKO_STUDIO_TOKENS` (60,000) bound it (§8).
 `JEKO_INSTANCE` names the checkout for the window title (`JEKO — Math Quest [name]`)
 and the startup stderr line. It defaults to the build folder's name, so two clones
@@ -1002,13 +1057,16 @@ driving the window:
   at 1.0), and display settings: `nohud` (hide both side panels, so
   a shot shows the whole world) and `calm` (turn on reduce flashing). The mad scientist
   (FR23): `tovillain` (40 m up the road with the camera snapped, so they're on screen) and
-  `villain:<cue>` (they react at once; `first`, `milestone`, `right`, `wrong`, `battle_start`,
-  `battle_won`, `hurt`, `streak`, `levelup`, `lowhealth`, `idle`).
+  `villain:<cue>` (they react at once, from the bank; `first`, `milestone`, `right`, `wrong`, `battle_start`,
+  `battle_won`, `hurt`, `streak`, `levelup`, `lowhealth`, `idle`, `scheme` (which starts it), `foiled`,
+  `creation`), `say:<cue>` (the same cue through the live path, waiting its turn like a real one),
+  `scheme:<topic>` (start that topic's fallback scheme now, to see each gadget) and `nochatter` (turn
+  the chatter setting off).
 - `JEKO_DEV=fakemodel:700` (no `@frame`) swaps the model for a stand-in that answers every
   call from the fallback bank after 700 ms, with made-up token counts, so the buffer, the
   soft deadline and the token panel's wait readout can be tried with no key. The studio
   uses it too: it writes made-up creatures, so the whole path from job to a fightable
-  monster runs offline. `genmonster@N` queues one tier 2 job, `gen:question` (also `gen:fallback`, `gen:prefetch`, `gen:monster`, `gen:lesson`, `gen:line`, `gen:slow`) queues a fake creation-bar job that writes for 2.5 s (10 s for `slow`) and ends, `cards` unlocks four field guide cards and
+  monster runs offline, and so does the doctor's voice (lines marked `(stand-in)`). `genmonster@N` queues one tier 2 job, `gen:question` (also `gen:fallback`, `gen:prefetch`, `gen:monster`, `gen:lesson`, `gen:line`, `gen:slow`) queues a fake creation-bar job that writes for 2.5 s (10 s for `slow`) and ends, `cards` unlocks four field guide cards and
   `guide` opens the guide. `tospec` and `tospecblock` teleport to the first
   zone (or road blocker) that holds a spec monster.
 - With either variable set, the loop steps a fixed 1/60 s, so a run is repeatable
@@ -1032,7 +1090,9 @@ driving the window:
 | `game/monster_rig.rs` (2) | The palette check's `INK_RGB` matches `gfx::INK`; parts spread evenly. |
 | `game/world.rs` (40) | Scenery never lands on the road. Every flask is reachable and on the road. Generation is deterministic. Interact reaches only nearby fresh flasks. The clamp keeps the player on the road. Encounters are on the road and deterministic. A Titan guards every 500 m, blocking the road. Monsters block the road regularly (no gap over 100 m, the first under 70 m) and deterministically. A blocker shuts the road, can be challenged but doesn't ambush, and opens once beaten. Tougher monsters appear further up. The hub is wide, dry and bounded. The walkable width is continuous through the gate. Safe stops are every 250 m from 210 m and deterministic, never share a chunk with a flask or a zone (or sit next to one, or a gear), leave room before each Titan, open the road continuously onto the clearing on the woods side only, put the cottage door inside the walkable clearing and open the shop only from near it, and are goalposts that are never done. Gears are deterministic, on the road, clear of flasks and monsters and in a plausible share of chunks; one is picked up once, from close by, and a new world has them all again. Goalposts are deterministic and stand in their chunk, nothing hostile is one in the hub, the pick is always north of the player, nearest first and the bigger event first within 25 m, a solved flask or beaten monster is never offered again, and a blocker counts down to its line. `upcoming_in` is nearest first and in range, matches where the world places things, shows no monster in the hub, takes a monster's hits and bias from its stats, and `World::upcoming` leaves out what's been dealt with. About 40% of zones get a spec monster and never a boss, one far enough up the road; an empty pool changes nothing; the same pool gives the same zones and the layout never depends on it; rebinding a built world matches building it with the pool; an edited spec shows in its zones; `upcoming` uses a held spec's tier. |
 | `game/goalpost.rs` (7) | A new goalpost pops in as a circle and then unrolls. The metres go down as the player walks, rounded up, and the ring fills. It pulses under 10 m and says "Now!" on arrival. It closes before the next one appears, hides while a battle or problem is open and comes back, and shows nothing with nothing ahead. Labels. |
-| `game/villain.rs` (15) | The shipped line bank passes its own check and a bad one (unknown cue, missing cue, too long once a number is filled in, a blocked word, a placeholder on the wrong cue, `vanish`, an unknown mood, too few lines) is rejected. The doctor's target is always at least 150 px north of the player and near the road, a player sprinting for 40 s never reaches them, and one who gains on them makes them scurry. They arrive at the gate, are away in the hub (cues dropped) and don't greet twice in a run. The biggest waiting cue is the one said, bubbles keep 8 s apart, a stale small cue lapses and a big one waits. Lines rotate and fill in numbers. A level, a streak of 5, each 100 m and low hearts each become one cue. The same run plays the same every time. A reset goes back to before the first sighting. Every pose stays in bounds for every action. |
+| `llm/villain_gen.rs` (8) | A beat parses out of a chatty reply; unknown moods and actions become defaults and `appear` / `vanish` are never taken; over-long lines are cut at a word under the cap, markup, braces and quotes go, and blocked words, links, empty and wordless lines and non-JSON are turned down; a pair needs both halves; a scheme's topic must be one offered, an unknown gadget is defaulted, a long or blocked name is refused; the prompt carries the rules, the cue and the run; the stand-in's replies pass; every topic has a fallback scheme that fits the sign. |
+| `game/villain_voice.rs` (7) | The env switches parse; the minute cap; a ready pair gives the matching half once; a live line reaches the cue it was asked for and closes its circle; a pair still in flight goes to the answer; a late reply for a replaced cue is dropped; a failed call sends the cue to the bank and shows `bank`. |
+| `game/villain.rs` (23) | The shipped line bank passes its own check and a bad one (unknown cue, missing cue, too long once a number or a scheme's name is filled in, a blocked word, a placeholder on the wrong cue, `vanish`, an unknown mood, too few lines) is rejected. With live lines on, a due cue waits for its line and says it, and gives way to the bank after `LIVE_WAIT_S`, at once on a failure, and never with live lines off. A scheme every 300 m with a topic for the level, one at a time, ended by name; a live scheme is used and a scheme line without one isn't. A new creation is shown off by name and the workshop keeps them at the bench. A wrong flask's reaction wins over its own hurt. Every topic a scheme can pick has an offline question. The doctor's target is always at least 150 px north of the player and near the road, a player sprinting for 40 s never reaches them, and one who gains on them makes them scurry. They arrive at the gate, are away in the hub (cues dropped) and don't greet twice in a run. The biggest waiting cue is the one said, bubbles keep 8 s apart, a stale small cue lapses and a big one waits. Lines rotate and fill in numbers. A level, a streak of 5, each 100 m and low hearts each become one cue. The same run plays the same every time. A reset goes back to before the first sighting. Every pose stays in bounds for every action. |
 | `game/gfx.rs` (2) | `wrap_text` breaks at spaces, loses nothing and gives a long word its own line. |
 | `game/manor.rs` (1) | Lightning strikes now and then (under 12% of frames), stays in 0..1, and is the same every run. |
 | `llm/activity.rs` (13) | A job writes, then is ready and remembers how long it took; a failure shows as fallback; ending twice keeps the first ending; a finished job leaves after lingering; one nobody ended goes stale; cancel; the bar shows three circles and counts the rest; the pop and fade; an instant job; a scripted job ends by itself; a job is renamed once made; the view can leave jobs out and counts only the rest; the view carries the stock. |
@@ -1041,7 +1101,7 @@ driving the window:
 | `llm/mod.rs` (2) | The compiled-in bank loads, every answer in it checks out and has an explanation; a task without the FR22 fields still loads. |
 | `llm/task_gen.rs` (3) | The live prompt asks for an expression and explanation and takes a topic; the pack prompt names count, topic, level and what was missed; JSON is pulled out of chatty replies. |
 | `llm/buffer.rs` (11) | The buffer gives the exact difficulty, else one below, never a harder one, and prefers a topic. `plan_prefetch` asks for what's missing nearest first, counts ready and in-flight questions, and obeys the in-flight, per-difficulty and per-minute caps. `WaitStats` reads out as the panel shows it. A topic takes only that topic; a question isn't added twice. |
-| `game/prefetch.rs` (9) | A flask wants one question and a monster its hits plus a spare, clamped to difficulty 5. Env switches parse. Landed answers reach the buffer and failures vanish. A look-ahead has a circle that closes when it lands and goes quietly when it fails, and sending one opens it. A disabled prefetcher asks for nothing. A missed problem comes back first as similar practice; a thin buffer asks for the weakest topic, else the rotation; a stocked one asks for nothing. |
+| `game/prefetch.rs` (10) | A scheme asks for its topic first and stops once stocked. A flask wants one question and a monster its hits plus a spare, clamped to difficulty 5. Env switches parse. Landed answers reach the buffer and failures vanish. A look-ahead has a circle that closes when it lands and goes quietly when it fails, and sending one opens it. A disabled prefetcher asks for nothing. A missed problem comes back first as similar practice; a thin buffer asks for the weakest topic, else the rotation; a stocked one asks for nothing. |
 | `game/bow.rs` (2) | The shot draws, then releases, then lowers. An arrow flies the way it was loosed, comes down a believable distance away, then goes away. |
 | `game/health.rs` (10) | Starts full; damage, heal and refill clamping; regen interval, the delay and reset after a hit, holding while not allowed, and stopping at full or dead. Resting mends several times faster and still holds under the full fever. A heart can be added up to the cap. |
 | `game/shop.rs` (3) | Soup mends two hearts for its price; a refused purchase (too poor, hearts full, at the cap) changes nothing; heart charms grow the maximum up to 8 hearts. |
@@ -1097,7 +1157,9 @@ the owner, and update this section if it goes ahead.
 7. **Cosmetic means cosmetic.** The jump and shoot `Action`s, the bow's arrows, the mad scientist (FR23), the castle's drawing and the region banners (FR27), the planned pet cat (FR34)
    and visual effects never change XP, speed, answers or battle results. The one
    exception is the roll, which moves the player along its heading (the owner's call,
-   2026-11-21); it still changes no XP, answers or battle results.
+   2026-11-21); it still changes no XP, answers or battle results. The mad scientist's
+   scheme picks the *topic* of the next few flask questions, through `request_task` (the
+   owner's call for FR23, 2026-11-21); it changes no difficulty, judging, XP, HP or battle.
 8. **Animation runs on the game clock.** Use `Game.time` or per-object timers advanced
    by `dt`, so pausing freezes everything.
 9. **Reduce flashing is honoured** by every flicker, flash and shake.
@@ -1117,7 +1179,9 @@ still to make:
   check. Non-math subjects or multiple choice (an FR3 question, open in FR16) would need a
   new answer type through the prompt, the parser, `task_panel` and `submit_answer`.
 - **One thread and one HTTP client per request**, with no cancellation or retry. Look-ahead
-  now overlaps requests (at most two prefetches plus a live one), which is still fine. The
+  now overlaps requests (at most two prefetches, a live one and a villain line), which is still fine.
+  A villain call never starts while a question is loading, but one already out can overlap a question
+  asked after it (separate HTTP calls, so it doesn't delay it). The
   fix, one long-lived worker with a priority queue, is half there: the studio is a long-lived
   thread, but live and look-ahead questions still spawn a thread each, and the studio's
   lane is kept by a flag (`live_busy`), not by a shared queue.
@@ -1143,18 +1207,21 @@ still to make:
   down) is unmeasured. The live question prompt now also asks for an expression, and a reply
   without a checkable one falls back to the bank, so a model that ignores it would make every
   question a bank question. `make gen-monsters N=8` is the way to look at monsters.
-- **The mad scientist only says canned lines, and their look and tone are provisional.**
-  FR23's milestone A is in; the live Cerebras lines (B) and schemes (C) are not. The name,
-  look and lore are the owner's call (FR23's open questions), the speech bubble shows whatever
-  the HUD setting is, and there is no "Villain chatter" switch. There's no showdown yet.
+- **The mad scientist's look, tone and numbers are provisional.** The name, look and lore, the gloat
+  on a wrong answer, how often schemes come and how long they last, and the 6-a-minute cap are in FR16.
+  Live lines are checked by a schema, a length cap, the word blocklist and a link filter, with no human
+  review. The prompt hasn't been tried against the real model at length: the one real reply seen landed
+  fine, and Cerebras' trial limits answer most calls with 429, which sends the doctor to the bank. The
+  doctor stands in the top band of the screen that the goalpost badge, the creation bar and the toast also
+  use, so on a small window those can cover the bubble or a gadget. There's no showdown (FR35).
 - **The castle is a gate that opens onto nothing.** Reaching it wins the run and the victory panel says
-  "to be continued": there is no showdown with the doctor yet (FR23 would build it), no more road, and
+  "to be continued": there is no showdown with the doctor yet (FR35), no more road, and
   nothing is kept between runs, so a win is only a screen. The doctor ducks inside as you near the
   gate, so FR23's "never reached" idea is untouched. The castle's distance (1,500 m), the region names
   and borders (900, 1,100 and 1,400 m) and the plaque "THE CASTLE" are provisional (FR16).
 - **Safe stops are bare-bones.** They have no keeper to talk to and no checkpoint: dying still
   restarts at the hub, and gears are lost with the run (the owner's answers, FR17 and FR28). How
   often they come (every 250 m, the first at 210 m) and what resting gives are provisional (FR16).
-- **The settled-for-now defaults** from FR1–FR3, FR5–FR15, FR17, FR20, FR24, FR26, FR28 and FR31 are listed for the owner in FR16.
+- **The settled-for-now defaults** from FR1–FR3, FR5–FR15, FR17, FR20, FR23, FR24, FR26, FR28 and FR31 are listed for the owner in FR16.
 
 See [FeatureRequestToDo.md](../FeatureRequestToDo.md) for the backlog.

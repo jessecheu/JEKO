@@ -80,6 +80,8 @@ pub struct Ask {
 
 struct Flight {
     difficulty: u32,
+    /// The topic asked for, for a scheme's flasks (FR23 C).
+    topic: Option<String>,
     /// Its circle on the creation bar. A request adopted from a live one has
     /// none: that one's circle was ended or taken off already.
     job: Option<u32>,
@@ -156,18 +158,37 @@ impl Prefetch {
     pub fn adopt(&mut self, difficulty: u32, rx: Receiver<anyhow::Result<MathTask>>) {
         self.flying.push(Flight {
             difficulty,
+            topic: None,
             job: None,
             rx,
         });
     }
 
+    /// Questions on `topic` at `difficulty` that are ready or on their way.
+    pub fn themed_count(&self, difficulty: u32, topic: &str) -> usize {
+        let flying = self
+            .flying
+            .iter()
+            .filter(|f| {
+                f.difficulty == difficulty
+                    && f.topic
+                        .as_deref()
+                        .is_some_and(|t| crate::llm::buffer::same_topic(t, topic))
+            })
+            .count();
+        self.buffer.count_topic(difficulty, topic) + flying
+    }
+
     /// Starts whatever look-ahead requests the plan calls for. The caller has
     /// already ruled out the times it must not: while paused, while a live
-    /// question is loading.
+    /// question is loading. `themed` is a scheme's flasks (FR23 C):
+    /// `(difficulty, topic, how many)` questions on that topic, asked for
+    /// first, under the same caps.
     pub fn tick(
         &mut self,
         client: &CerebrasClient,
         wants: &[(u32, usize)],
+        themed: Option<(u32, &str, usize)>,
         now: Instant,
         activity: &mut GenActivity,
     ) {
@@ -181,6 +202,21 @@ impl Prefetch {
         {
             self.sent.pop_front();
         }
+        if let Some((difficulty, topic, want)) = themed {
+            let max = PrefetchCaps::default().max_in_flight;
+            while self.themed_count(difficulty, topic) < want
+                && self.flying.len() < max
+                && self.sent.len() < self.cfg.rpm
+            {
+                self.sent.push_back(now);
+                self.flying.push(Flight {
+                    difficulty,
+                    topic: Some(topic.to_string()),
+                    job: Some(activity.start(RequestKind::Prefetch, &format!("scheme: {topic}"))),
+                    rx: client.prefetch_task_async(difficulty, Some(topic.to_string())),
+                });
+            }
+        }
         let caps = PrefetchCaps {
             budget: self.cfg.rpm.saturating_sub(self.sent.len()),
             ..PrefetchCaps::default()
@@ -190,10 +226,11 @@ impl Prefetch {
             self.sent.push_back(now);
             self.flying.push(Flight {
                 difficulty,
+                topic: None,
                 job: Some(
                     activity.start(RequestKind::Prefetch, &format!("ahead, level {difficulty}")),
                 ),
-                rx: client.prefetch_task_async(difficulty),
+                rx: client.prefetch_task_async(difficulty, None),
             });
         }
     }
@@ -385,11 +422,13 @@ mod tests {
         let j2 = a.start(RequestKind::Prefetch, "ahead, level 3");
         p.flying.push(Flight {
             difficulty: 2,
+            topic: None,
             job: Some(j1),
             rx: rx1,
         });
         p.flying.push(Flight {
             difficulty: 3,
+            topic: None,
             job: Some(j2),
             rx: rx2,
         });
@@ -413,10 +452,52 @@ mod tests {
         })
         .with_fake_model(Duration::from_millis(5));
         let mut a = GenActivity::new();
-        p.tick(&client, &[(2, 2)], Instant::now(), &mut a);
+        p.tick(&client, &[(2, 2)], None, Instant::now(), &mut a);
         assert_eq!(p.in_flight(), a.running());
         assert!(a.running() > 0);
         assert!(a.jobs().iter().all(|j| j.kind == RequestKind::Prefetch));
+    }
+
+    #[test]
+    fn a_scheme_asks_for_its_topic_first_and_stops_when_stocked() {
+        let mut p = Prefetch::new(PrefetchConfig::parse(None, None));
+        let client = CerebrasClient::new(&crate::config::Config {
+            api_key: Some("k".into()),
+            model: "m".into(),
+            base_url: "http://127.0.0.1:9".into(),
+        })
+        .with_fake_model(Duration::from_millis(1));
+        let mut a = GenActivity::new();
+        p.tick(
+            &client,
+            &[(2, 2)],
+            Some((2, "fractions", 3)),
+            Instant::now(),
+            &mut a,
+        );
+        // Both slots in flight go to the scheme's topic, ahead of the plain plan.
+        assert_eq!(p.in_flight(), 2);
+        assert_eq!(p.themed_count(2, "Fractions"), 2);
+        // Once they land they're on the topic, and a stocked scheme asks for no more.
+        std::thread::sleep(Duration::from_millis(60));
+        p.poll(&mut a);
+        assert_eq!(p.buffer.count_topic(2, "fractions"), 2);
+        p.buffer.push(
+            2,
+            MathTask {
+                topic: "fractions".into(),
+                ..task()
+            },
+        );
+        let before = p.sent.len();
+        p.tick(
+            &client,
+            &[],
+            Some((2, "fractions", 3)),
+            Instant::now(),
+            &mut a,
+        );
+        assert_eq!(p.sent.len(), before, "three are ready: nothing more to ask");
     }
 
     #[test]
@@ -428,7 +509,7 @@ mod tests {
             base_url: "http://127.0.0.1:9".into(),
         });
         let mut a = GenActivity::new();
-        p.tick(&client, &[(1, 3)], Instant::now(), &mut a);
+        p.tick(&client, &[(1, 3)], None, Instant::now(), &mut a);
         assert_eq!(p.in_flight(), 0);
         assert!(a.is_empty());
     }

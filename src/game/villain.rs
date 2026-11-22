@@ -13,6 +13,8 @@
 use super::dialogue::TYPE_RATE;
 use super::gfx::{self, INK};
 use super::world::{self, View};
+use crate::llm::villain_gen::{self, BeatAsk, RunContext, MAX_SCHEME_CHARS};
+pub use crate::llm::villain_gen::{Beat, Gadget, Mood, Scheme, VillainAction};
 use macroquad::prelude::*;
 use serde::Deserialize;
 use std::cell::OnceCell;
@@ -53,59 +55,26 @@ const FADE_S: f32 = 0.4;
 /// Seconds an action from a spoken line lasts.
 const REACT_S: f32 = 2.8;
 
-/// What the doctor is doing. A closed set: the line bank names one for each
-/// line, and idle time picks among the first six.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum VillainAction {
-    /// Strolls across the top of the road, coat flapping.
-    Pace,
-    /// Bent over the cart with a wrench, sparks flying.
-    Tinker,
-    /// Pours the flask: a puff of coloured smoke.
-    Brew,
-    /// Leans back, shoulders shaking: "MWAHAHA!"
-    Cackle,
-    /// Writes a wrong sum on the chalkboard.
-    Scribble,
-    /// A telescope pointed at the player.
-    Spy,
-    /// Frizz up, flask fizzing over: the player got something right.
-    Fluster,
-    /// Rubs gloves together: the plan is going well.
-    Gloat,
-    /// Dashes ahead pushing the cart when the player gains on them.
-    Scurry,
-    /// A soot puff, and they're there.
-    Appear,
-    /// A soot puff, and they're gone.
-    Vanish,
-}
+/// The ones idle time chooses between. `Pace` is there twice because a doctor
+/// who is always walking looks busiest.
+const IDLE_ACTIONS: [VillainAction; 7] = [
+    VillainAction::Pace,
+    VillainAction::Tinker,
+    VillainAction::Pace,
+    VillainAction::Brew,
+    VillainAction::Cackle,
+    VillainAction::Scribble,
+    VillainAction::Spy,
+];
 
-impl VillainAction {
-    /// The ones idle time chooses between. `Pace` is there twice because a
-    /// doctor who is always walking looks busiest.
-    const IDLE: [VillainAction; 7] = [
-        VillainAction::Pace,
-        VillainAction::Tinker,
-        VillainAction::Pace,
-        VillainAction::Brew,
-        VillainAction::Cackle,
-        VillainAction::Scribble,
-        VillainAction::Spy,
-    ];
-}
-
-/// How the doctor feels; colours the flask.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Mood {
-    Smug,
-    Gleeful,
-    Flustered,
-    Scheming,
-    FuriousButFunny,
-}
+/// What idle time chooses between while the studio is building a monster
+/// (FR23 C): the doctor is at work on it.
+const WORKSHOP_ACTIONS: [VillainAction; 4] = [
+    VillainAction::Tinker,
+    VillainAction::Brew,
+    VillainAction::Tinker,
+    VillainAction::Pace,
+];
 
 impl Mood {
     /// The colour of the brew in the flask for this mood.
@@ -126,21 +95,35 @@ impl Mood {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum VillainCue {
     FirstSighting,
-    Milestone { meters: u32 },
+    Milestone {
+        meters: u32,
+    },
     FlaskRight,
     FlaskWrong,
     BattleStart,
     BattleWon,
     PlayerHurt,
-    Streak { n: u32 },
-    LevelUp { level: u32 },
+    Streak {
+        n: u32,
+    },
+    LevelUp {
+        level: u32,
+    },
     LowHealth,
     Idle,
+    /// The doctor announces their `n`th scheme of the run (FR23 C).
+    Scheme {
+        n: u32,
+    },
+    /// The scheme running has come to nothing.
+    SchemeFoiled,
+    /// The studio has just finished a new monster (FR21), shown off by name.
+    Creation,
 }
 
 impl VillainCue {
     /// Every cue's key in `assets/villain_lines.json`, in a fixed order.
-    pub const KEYS: [&'static str; 11] = [
+    pub const KEYS: [&'static str; 14] = [
         "first_sighting",
         "milestone",
         "flask_right",
@@ -152,6 +135,9 @@ impl VillainCue {
         "level_up",
         "low_health",
         "idle",
+        "scheme",
+        "scheme_foiled",
+        "creation",
     ];
 
     pub fn key(self) -> &'static str {
@@ -171,6 +157,9 @@ impl VillainCue {
             VillainCue::LevelUp { .. } => 8,
             VillainCue::LowHealth => 9,
             VillainCue::Idle => 10,
+            VillainCue::Scheme { .. } => 11,
+            VillainCue::SchemeFoiled => 12,
+            VillainCue::Creation => 13,
         }
     }
 
@@ -178,23 +167,80 @@ impl VillainCue {
     fn priority(self) -> u8 {
         match self {
             VillainCue::FirstSighting => 9,
-            VillainCue::LevelUp { .. } => 8,
+            VillainCue::LevelUp { .. } | VillainCue::Scheme { .. } => 8,
             VillainCue::Streak { .. } => 7,
-            VillainCue::BattleWon => 6,
-            VillainCue::Milestone { .. } | VillainCue::LowHealth => 5,
-            VillainCue::PlayerHurt | VillainCue::BattleStart => 4,
-            VillainCue::FlaskRight | VillainCue::FlaskWrong => 3,
+            VillainCue::BattleWon | VillainCue::SchemeFoiled => 6,
+            VillainCue::Milestone { .. } | VillainCue::LowHealth | VillainCue::Creation => 5,
+            // A flask's reaction ranks with the hurt a wrong one costs, so the
+            // reaction (cued after it) is what's said.
+            VillainCue::PlayerHurt
+            | VillainCue::BattleStart
+            | VillainCue::FlaskRight
+            | VillainCue::FlaskWrong => 4,
             VillainCue::Idle => 1,
         }
     }
 
-    /// The placeholder a line may use for this cue, and what it stands for.
-    fn placeholder(self) -> Option<(&'static str, u32)> {
+    /// The mood a live line falls back on when the model's is unknown.
+    fn mood(self) -> Mood {
         match self {
-            VillainCue::Milestone { meters } => Some(("{m}", meters)),
-            VillainCue::Streak { n } => Some(("{n}", n)),
-            VillainCue::LevelUp { level } => Some(("{level}", level)),
-            _ => None,
+            VillainCue::FirstSighting | VillainCue::LowHealth => Mood::Smug,
+            VillainCue::FlaskWrong | VillainCue::PlayerHurt | VillainCue::Creation => Mood::Gleeful,
+            VillainCue::Milestone { .. } | VillainCue::FlaskRight | VillainCue::Streak { .. } => {
+                Mood::Flustered
+            }
+            VillainCue::BattleStart | VillainCue::Idle | VillainCue::Scheme { .. } => {
+                Mood::Scheming
+            }
+            VillainCue::BattleWon | VillainCue::LevelUp { .. } | VillainCue::SchemeFoiled => {
+                Mood::FuriousButFunny
+            }
+        }
+    }
+
+    /// What happened, in a sentence, for the live prompt. `names` fills in the
+    /// creature, the scheme and the new creation where the cue has one.
+    fn happened(self, names: &Names) -> String {
+        let monster = names.monster.as_deref().unwrap_or("one of your creatures");
+        let scheme = names.scheme.as_deref().unwrap_or("your latest scheme");
+        let creation = names.creation.as_deref().unwrap_or("a new creature");
+        match self {
+            VillainCue::FirstSighting => "The player has just come through the iron gate onto \
+the road for the first time. Introduce yourself."
+                .into(),
+            VillainCue::Milestone { meters } => {
+                format!("The player has walked {meters} metres up the road after you.")
+            }
+            VillainCue::FlaskRight => {
+                "The player just solved one of your potion-flask maths problems.".into()
+            }
+            VillainCue::FlaskWrong => {
+                "The player just got one of your potion-flask maths problems wrong.".into()
+            }
+            VillainCue::BattleStart => {
+                format!("Your creature {monster} has just challenged the player to a maths battle.")
+            }
+            VillainCue::BattleWon => {
+                format!("The player has just beaten your creature {monster} in a maths battle.")
+            }
+            VillainCue::PlayerHurt => "The player has just lost a heart.".into(),
+            VillainCue::Streak { n } => {
+                format!("The player has answered {n} maths problems in a row correctly.")
+            }
+            VillainCue::LevelUp { level } => format!("The player has just reached level {level}."),
+            VillainCue::LowHealth => "The player is down to their last heart or so.".into(),
+            VillainCue::Idle => "Nothing much has happened for a while. Mutter something about \
+your inventions or your plan."
+                .into(),
+            VillainCue::Scheme { .. } => "Announce a brand-new scheme: a named plan with a \
+gadget, themed on one maths topic. For a while your potion flasks will ask about that topic."
+                .into(),
+            VillainCue::SchemeFoiled => {
+                format!("The player got past your scheme, {scheme}. It has fizzled out.")
+            }
+            VillainCue::Creation => {
+                format!("Your lab has just finished a brand-new creature called {creation}. Show it off.")
+            }
         }
     }
 
@@ -212,10 +258,37 @@ impl VillainCue {
             "level_up" | "levelup" => VillainCue::LevelUp { level: 3 },
             "low_health" | "lowhealth" => VillainCue::LowHealth,
             "idle" => VillainCue::Idle,
+            "scheme" => VillainCue::Scheme { n: 1 },
+            "scheme_foiled" | "foiled" => VillainCue::SchemeFoiled,
+            "creation" => VillainCue::Creation,
             _ => return None,
         })
     }
 }
+
+/// The names a line may use: the last creature met, the scheme running (or
+/// just over) and the newest creation.
+#[derive(Clone, Debug, Default)]
+struct Names {
+    monster: Option<String>,
+    scheme: Option<String>,
+    creation: Option<String>,
+}
+
+/// The placeholder a cue's bank lines may use, and the widest thing it can
+/// stand for (for the length check).
+fn placeholder(key: &str) -> Option<(&'static str, usize)> {
+    match key {
+        "milestone" => Some(("{m}", 5)),
+        "streak" => Some(("{n}", 5)),
+        "level_up" => Some(("{level}", 5)),
+        "scheme" | "scheme_foiled" => Some(("{scheme}", MAX_SCHEME_CHARS)),
+        "creation" => Some(("{name}", crate::content::monster_spec::NAME_MAX)),
+        _ => None,
+    }
+}
+
+const PLACEHOLDERS: [&str; 5] = ["{m}", "{n}", "{level}", "{scheme}", "{name}"];
 
 // ---------------------------------------------------------------------------
 // The line bank
@@ -248,10 +321,10 @@ impl Bank {
 }
 
 /// Fewest and most lines a cue may have, and the longest a line may be (the
-/// bubble's budget; FR23's live beats use the same cap).
+/// bubble's budget; live beats use the same cap, `villain_gen::MAX_LINE_CHARS`).
 pub const MIN_LINES: usize = 2;
 pub const MAX_LINES: usize = 8;
-pub const MAX_LINE_CHARS: usize = 90;
+pub const MAX_LINE_CHARS: usize = villain_gen::MAX_LINE_CHARS;
 
 /// The compiled-in bank. Panics at startup on a bad one, like the dialogue bank,
 /// and a test runs `check_bank` on the shipped file so that can't happen.
@@ -262,11 +335,12 @@ pub fn load_bank() -> Bank {
 
 /// Parses and checks a bank of lines: an object with one array per cue key
 /// (every key present, none unknown), each with 2 to 8 lines of at most 90
-/// characters (counted with the largest number a placeholder could hold), no
-/// word on the blocklist (`content::vet`), a `{m}`, `{n}` or `{level}`
-/// placeholder only on the cue that has it, and no `appear` or `vanish`
-/// action, which only the game chooses. The first problem found is the error.
-/// `validate_content` runs it on the shipped file.
+/// characters (counted with the widest thing a placeholder could hold), no
+/// word on the blocklist (`content::vet`), a placeholder (`{m}`, `{n}`,
+/// `{level}`, `{scheme}`, `{name}`) only on the cue that has it, and no
+/// `appear` or `vanish` action, which only the game chooses. The
+/// first problem found is the error. `validate_content` runs it on the
+/// shipped file.
 pub fn check_bank(json: &str) -> Result<Bank, String> {
     let map: BTreeMap<String, Vec<Line>> =
         serde_json::from_str(json).map_err(|e| format!("not a bank of cue lines: {e}"))?;
@@ -284,23 +358,18 @@ pub fn check_bank(json: &str) -> Result<Bank, String> {
             ));
         }
         // The one placeholder this cue's lines may use.
-        let allowed = match key {
-            "milestone" => Some("{m}"),
-            "streak" => Some("{n}"),
-            "level_up" => Some("{level}"),
-            _ => None,
-        };
+        let allowed = placeholder(key);
         for l in lines {
             if l.line.trim().is_empty() {
                 return Err(format!("{key} has an empty line"));
             }
-            for p in ["{m}", "{n}", "{level}"] {
-                if l.line.contains(p) && allowed != Some(p) {
+            for p in PLACEHOLDERS {
+                if l.line.contains(p) && allowed.map(|(a, _)| a) != Some(p) {
                     return Err(format!("{key}: {:?} can't use {p}", l.line));
                 }
             }
             let widest = match allowed {
-                Some(p) => l.line.replace(p, "99999"),
+                Some((p, w)) => l.line.replace(p, &"W".repeat(w)),
                 None => l.line.clone(),
             };
             if widest.chars().count() > MAX_LINE_CHARS {
@@ -315,7 +384,7 @@ pub fn check_bank(json: &str) -> Result<Bank, String> {
                     l.line
                 ));
             }
-            if matches!(l.action, VillainAction::Appear | VillainAction::Vanish) {
+            if !l.action.speakable() {
                 return Err(format!("{key}: a line can't use {:?}", l.action));
             }
         }
@@ -349,6 +418,12 @@ pub struct Snapshot {
     pub health: u32,
 }
 
+/// Schemes come every this many metres (FR23 C).
+pub const SCHEME_EVERY_M: u32 = 300;
+/// How long a cue that's due waits for its live line before a bank line is
+/// said instead (game seconds). Cerebras usually answers in well under one.
+pub const LIVE_WAIT_S: f32 = 2.0;
+
 struct Bubble {
     lines: Vec<String>,
     chars: usize,
@@ -364,6 +439,32 @@ impl Bubble {
     fn alpha(&self) -> f32 {
         ((self.life() - self.t) / FADE_S).clamp(0.0, 1.0)
     }
+}
+
+/// A cue waiting to be said.
+#[derive(Clone, Debug)]
+struct Pending {
+    cue: VillainCue,
+    /// Seconds it has waited, and seconds it has been due but held for its
+    /// live line.
+    age: f32,
+    held: f32,
+    /// Its number, so a live line that comes back late for a cue that has
+    /// since been replaced is dropped, not said over the new one.
+    id: u32,
+    /// The live line, once it's here.
+    beat: Option<Beat>,
+    /// A live line has been asked for, and whether that ask has failed.
+    asked: bool,
+    failed: bool,
+}
+
+/// Where the doctor's line came from, counted for the debug readout and the
+/// checks.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Said {
+    pub live: u32,
+    pub bank: u32,
 }
 
 /// The mad scientist.
@@ -385,11 +486,18 @@ pub struct Villain {
     /// They've had their first sighting this run.
     met: bool,
     bubble: Option<Bubble>,
-    /// A cue waiting to be said, and how long it has waited.
-    pending: Option<(VillainCue, f32)>,
+    pending: Option<Pending>,
+    /// The next cue's number. Kept across a reset, so a late reply from the
+    /// last run can't match a cue in this one.
+    next_id: u32,
+    /// Live lines are expected (FR23 B): a key, `JEKO_VILLAIN` on and the
+    /// chatter setting on. A due cue then waits a moment for its live line.
+    live: bool,
     since_bubble: f32,
-    /// Times each cue has been said, so its lines rotate.
+    /// Times each cue has been said from the bank, so its lines rotate.
     said: [u32; VillainCue::KEYS.len()],
+    /// How many lines came live and how many from the bank.
+    sources: Said,
     /// Picks made, to vary what they do next without a random generator.
     picks: u32,
     /// Their own slow clock for wandering; runs only while they're on the move.
@@ -399,6 +507,13 @@ pub struct Villain {
     /// The wrong sum on the chalkboard, and which one.
     sum: usize,
     prev: Snapshot,
+    /// The scheme running now (FR23 C), drawn on the cart; the one just
+    /// announced, for `Game` to start; and the names lines may use.
+    scheme: Option<Scheme>,
+    announced: Option<Scheme>,
+    names: Names,
+    /// The studio is building a monster: idle time goes to the workbench.
+    workshop: bool,
     canvas: OnceCell<RenderTarget>,
 }
 
@@ -427,24 +542,33 @@ impl Villain {
             met: false,
             bubble: None,
             pending: None,
+            next_id: 1,
+            live: false,
             since_bubble: 0.0,
             said: [0; VillainCue::KEYS.len()],
+            sources: Said::default(),
             picks: 0,
             wander: 0.0,
             travel: 0.0,
             sum: 0,
             prev: Snapshot::default(),
+            scheme: None,
+            announced: None,
+            names: Names::default(),
+            workshop: false,
             canvas: OnceCell::new(),
         }
     }
 
-    /// Back to before the first sighting, for a new run. Keeps the bank and the
-    /// canvas.
+    /// Back to before the first sighting, for a new run. Keeps the bank, the
+    /// canvas, the cue numbering and whether live lines are on.
     pub fn reset(&mut self) {
         let bank = std::mem::replace(&mut self.bank, Bank(BTreeMap::new()));
         let canvas = std::mem::take(&mut self.canvas);
         *self = Self {
             canvas,
+            next_id: self.next_id,
+            live: self.live,
             ..Self::with_bank(bank)
         };
     }
@@ -467,6 +591,16 @@ impl Villain {
         self.bubble.as_ref().map(|b| b.lines.join(" "))
     }
 
+    /// How many lines came live and how many from the bank, this run.
+    pub fn sources(&self) -> Said {
+        self.sources
+    }
+
+    /// The scheme running now, if any (FR23 C).
+    pub fn scheme(&self) -> Option<&Scheme> {
+        self.scheme.as_ref()
+    }
+
     /// The ground `y` they sort by in the depth pass.
     pub fn ground_y(&self) -> f32 {
         self.pos.y
@@ -481,32 +615,182 @@ impl Villain {
         }
     }
 
+    // -----------------------------------------------------------------------
+    // Cues and lines
+
     /// Something happened. The doctor remarks on it when they're next free to,
     /// unless it's already stale or something bigger came along. Dropped while
-    /// they're away (the hub stays calm).
-    pub fn cue(&mut self, cue: VillainCue) {
+    /// they're away (the hub stays calm). Returns the cue's number when it's
+    /// the one now waiting, for a live line to be matched to it.
+    pub fn cue(&mut self, cue: VillainCue) -> Option<u32> {
         if !self.here {
-            return;
+            return None;
         }
-        let better = match self.pending {
-            Some((p, _)) => cue.priority() >= p.priority(),
+        let better = match &self.pending {
+            Some(p) => cue.priority() >= p.cue.priority(),
             None => true,
         };
-        if better {
-            self.pending = Some((cue, 0.0));
+        if !better {
+            return None;
         }
+        let id = self.next_id;
+        self.next_id += 1;
+        self.pending = Some(Pending {
+            cue,
+            age: 0.0,
+            held: 0.0,
+            id,
+            beat: None,
+            asked: false,
+            failed: false,
+        });
+        Some(id)
+    }
+
+    /// `cue`, with its live line already in hand (a flask's prefetched
+    /// reaction, FR23 B).
+    pub fn cue_with(&mut self, cue: VillainCue, beat: Beat) -> Option<u32> {
+        let id = self.cue(cue)?;
+        self.offer(id, beat);
+        Some(id)
     }
 
     /// Says `cue` now, whatever else is going on, for the dev hook.
     pub fn cue_now(&mut self, cue: VillainCue) {
         if self.here {
-            self.speak(cue);
+            self.speak(cue, None);
+        }
+    }
+
+    /// Announces `scheme` now, for the dev hook (`JEKO_DEV=scheme:<topic>`).
+    pub fn announce_now(&mut self, scheme: Scheme) {
+        if self.here {
+            let line = format!("Behold: {}!", scheme.name);
+            let beat = Beat {
+                line,
+                mood: Mood::Scheming,
+                action: VillainAction::Cackle,
+                scheme: Some(scheme),
+            };
+            self.speak(VillainCue::Scheme { n: 0 }, Some(beat));
+        }
+    }
+
+    /// Whether live lines are expected (FR23 B). `Game` sets it every frame.
+    pub fn set_live(&mut self, live: bool) {
+        self.live = live;
+    }
+
+    /// The waiting cue that has no live line and hasn't asked for one, with
+    /// its number: what the game's voice should ask the model for next.
+    pub fn wants_line(&self) -> Option<(u32, VillainCue)> {
+        let p = self.pending.as_ref()?;
+        (self.here && p.beat.is_none() && !p.asked && !p.failed).then_some((p.id, p.cue))
+    }
+
+    /// A live line has been asked for cue `id`.
+    pub fn mark_asked(&mut self, id: u32) {
+        if let Some(p) = self.pending.as_mut().filter(|p| p.id == id) {
+            p.asked = true;
+        }
+    }
+
+    /// The live line for cue `id` has come back. Dropped if that cue is no
+    /// longer the one waiting.
+    pub fn offer(&mut self, id: u32, beat: Beat) -> bool {
+        match self.pending.as_mut().filter(|p| p.id == id) {
+            Some(p) => {
+                p.beat = Some(beat);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// No live line is coming for cue `id` (the call failed or was turned
+    /// down, or the rate cap is reached): say a bank line when it's due.
+    pub fn give_up(&mut self, id: u32) {
+        if let Some(p) = self.pending.as_mut().filter(|p| p.id == id) {
+            p.failed = true;
+        }
+    }
+
+    /// What a live prompt needs for `cue`, with `ctx` from the game and the
+    /// topics a scheme may pick (`topics`, for a `Scheme` cue only).
+    pub fn beat_ask(&self, cue: VillainCue, mut ctx: RunContext, topics: &[&str]) -> BeatAsk {
+        if ctx.scheme.is_none() {
+            ctx.scheme = self.scheme.as_ref().map(|s| s.name.clone());
+        }
+        let names = Names {
+            monster: ctx
+                .last_monster
+                .clone()
+                .or_else(|| self.names.monster.clone()),
+            ..self.names.clone()
+        };
+        BeatAsk {
+            cue: cue.key(),
+            happened: cue.happened(&names),
+            mood: cue.mood(),
+            ctx,
+            scheme_topics: match cue {
+                VillainCue::Scheme { .. } => topics.iter().map(|t| t.to_string()).collect(),
+                _ => Vec::new(),
+            },
+        }
+    }
+
+    /// The live prompt's ask for a flask's reaction, right or wrong.
+    pub fn reaction_ask(&self, correct: bool, ctx: RunContext) -> BeatAsk {
+        let cue = if correct {
+            VillainCue::FlaskRight
+        } else {
+            VillainCue::FlaskWrong
+        };
+        self.beat_ask(cue, ctx, &[])
+    }
+
+    /// The creature the player last met, for lines that name it.
+    pub fn note_monster(&mut self, name: &str) {
+        self.names.monster = Some(name.to_string());
+    }
+
+    /// The studio is (or isn't) building a monster right now (FR23 C).
+    pub fn set_workshop(&mut self, busy: bool) {
+        self.workshop = busy;
+    }
+
+    /// The studio has finished a new monster: the doctor holds up the flask
+    /// and shows it off by name.
+    pub fn creation(&mut self, name: &str) {
+        if self.here {
+            self.note_creation(name);
+            self.cue(VillainCue::Creation);
+        }
+    }
+
+    /// The newest creation's name, for the lines that show it off.
+    pub fn note_creation(&mut self, name: &str) {
+        self.names.creation = Some(name.to_string());
+    }
+
+    /// The scheme just announced, once, for `Game` to start (FR23 C).
+    pub fn take_announced(&mut self) -> Option<Scheme> {
+        self.announced.take()
+    }
+
+    /// The scheme has run its course: its gadget goes and the doctor says so.
+    pub fn end_scheme(&mut self) {
+        if let Some(s) = self.scheme.take() {
+            self.names.scheme = Some(s.name);
+            self.cue(VillainCue::SchemeFoiled);
         }
     }
 
     /// Turns changes in the run into cues: a level, a streak of 5 or each 10, each
-    /// 100 m, and hearts running low. Called every unpaused frame. `Game` fires
-    /// the ones that belong to a single event (an answer, a hit, a battle).
+    /// 100 m, a scheme every 300 m, and hearts running low. Called every unpaused
+    /// frame. `Game` fires the ones that belong to a single event (an answer, a
+    /// hit, a battle).
     pub fn observe(&mut self, now: Snapshot) {
         let prev = self.prev;
         self.prev = now;
@@ -519,6 +803,13 @@ impl Villain {
         if now.meters / 100 > prev.meters / 100 {
             self.cue(VillainCue::Milestone {
                 meters: now.meters / 100 * 100,
+            });
+        }
+        // A scheme every 300 m, when none is running (it outranks the milestone
+        // at the same mark).
+        if now.meters / SCHEME_EVERY_M > prev.meters / SCHEME_EVERY_M && self.scheme.is_none() {
+            self.cue(VillainCue::Scheme {
+                n: now.meters / SCHEME_EVERY_M,
             });
         }
         if now.health > 0 && now.health <= 2 && prev.health > 2 {
@@ -539,7 +830,7 @@ impl Villain {
             self.set_action(VillainAction::Appear, APPEAR_S);
             if !self.met {
                 self.met = true;
-                self.pending = Some((VillainCue::FirstSighting, 0.0));
+                self.cue(VillainCue::FirstSighting);
             }
         } else if !want && self.here {
             self.here = false;
@@ -562,9 +853,9 @@ impl Villain {
                 self.bubble = None;
             }
         }
-        if let Some((cue, age)) = &mut self.pending {
-            *age += dt;
-            if *age > STALE_S && cue.priority() < 6 {
+        if let Some(p) = &mut self.pending {
+            p.age += dt;
+            if p.age > STALE_S && p.cue.priority() < 6 {
                 self.pending = None;
             }
         }
@@ -579,14 +870,21 @@ impl Villain {
             } else {
                 self.action_t = 0.0;
             }
-        } else if let Some((cue, _)) = self.pending {
-            let free = self.since_bubble >= MIN_GAP_S || cue.priority() >= 9;
+        } else if let Some(p) = &mut self.pending {
+            let free = self.since_bubble >= MIN_GAP_S || p.cue.priority() >= 9;
             if free && !appearing {
-                self.pending = None;
-                self.speak(cue);
+                // Due. With live lines on, wait a moment for this one's.
+                let hold = self.live && p.beat.is_none() && !p.failed && p.held < LIVE_WAIT_S;
+                if hold {
+                    p.held += dt;
+                } else if let Some(p) = self.pending.take() {
+                    self.speak(p.cue, p.beat);
+                }
             }
         } else if self.since_bubble >= IDLE_S && !appearing {
-            self.speak(VillainCue::Idle);
+            // A mutter goes through the queue too, so it can be live.
+            self.cue(VillainCue::Idle);
+            self.since_bubble = IDLE_S - MIN_GAP_S - STALE_S;
         }
         if self.action_t >= self.action_len {
             self.next_action();
@@ -622,39 +920,98 @@ impl Villain {
 
     fn next_action(&mut self) {
         self.picks += 1;
-        let n = VillainAction::IDLE.len();
+        let list: &[VillainAction] = if self.workshop {
+            &WORKSHOP_ACTIONS
+        } else {
+            &IDLE_ACTIONS
+        };
+        let n = list.len();
         let r = gfx::hash01(self.picks as u64 * 7919 + 17);
         let mut i = (r * n as f32) as usize % n;
-        if VillainAction::IDLE[i] == self.action {
+        if list[i] == self.action {
             i = (i + 1) % n;
         }
         let len = 3.5 + 3.0 * gfx::hash01(self.picks as u64 * 104_729 + 3);
-        self.set_action(VillainAction::IDLE[i], len);
+        self.set_action(list[i], len);
     }
 
-    /// Opens a bubble for `cue` and acts out its line.
-    fn speak(&mut self, cue: VillainCue) {
+    /// A bank line for `cue`, its placeholder filled in, rotating through the
+    /// cue's lines. `scheme` names a scheme being announced.
+    fn bank_beat(&mut self, cue: VillainCue, scheme: Option<&Scheme>) -> Option<Beat> {
         let lines = self.bank.lines(cue.key());
         if lines.is_empty() {
-            return;
+            return None;
         }
         let k = cue.index();
         let start = (gfx::hash01(k as u64 + 5) * lines.len() as f32) as usize;
-        let pick = &lines[(start + self.said[k] as usize) % lines.len()];
+        let pick = lines[(start + self.said[k] as usize) % lines.len()].clone();
         self.said[k] += 1;
-        let mut text = pick.line.clone();
-        if let Some((p, n)) = cue.placeholder() {
-            text = text.replace(p, &n.to_string());
+        let fill = match cue {
+            VillainCue::Milestone { meters } => meters.to_string(),
+            VillainCue::Streak { n } => n.to_string(),
+            VillainCue::LevelUp { level } => level.to_string(),
+            VillainCue::Scheme { .. } => scheme.map(|s| s.name.clone()).unwrap_or_default(),
+            VillainCue::SchemeFoiled => self.names.scheme.clone().unwrap_or_default(),
+            VillainCue::Creation => self.names.creation.clone().unwrap_or_default(),
+            _ => String::new(),
+        };
+        let line = match placeholder(cue.key()) {
+            Some((p, _)) => pick.line.replace(p, &fill),
+            None => pick.line,
+        };
+        Some(Beat {
+            line,
+            mood: pick.mood,
+            action: pick.action,
+            scheme: None,
+        })
+    }
+
+    /// The scheme a scheme cue starts with no live one: the fallback for a
+    /// topic that fits the player's level, rotating with the scheme's number.
+    fn fallback_scheme(&self, n: u32) -> Scheme {
+        let topics = crate::content::prompts::topics_for_level(self.prev.level.max(1));
+        villain_gen::fallback_scheme(topics[n as usize % topics.len()])
+    }
+
+    /// Opens a bubble for `cue` and acts out its line: the live one when it
+    /// came, else one from the bank. A scheme cue starts its scheme.
+    fn speak(&mut self, cue: VillainCue, live: Option<Beat>) {
+        let mut scheme = None;
+        if let VillainCue::Scheme { n } = cue {
+            scheme = Some(
+                live.as_ref()
+                    .and_then(|b| b.scheme.clone())
+                    .unwrap_or_else(|| self.fallback_scheme(n)),
+            );
         }
-        let (mood, action) = (pick.mood, pick.action);
-        self.mood = mood;
+        // A live scheme line without its scheme can't be said.
+        let live = live.filter(|b| scheme.is_none() || b.scheme.is_some());
+        let beat = match live {
+            Some(b) => {
+                self.sources.live += 1;
+                b
+            }
+            None => match self.bank_beat(cue, scheme.as_ref()) {
+                Some(b) => {
+                    self.sources.bank += 1;
+                    b
+                }
+                None => return,
+            },
+        };
+        if let Some(s) = scheme {
+            self.scheme = Some(s.clone());
+            self.announced = Some(s);
+        }
+        self.mood = beat.mood;
         self.bubble = Some(Bubble {
-            chars: text.chars().count(),
-            lines: gfx::wrap_text(&text, 34),
+            chars: beat.line.chars().count(),
+            lines: gfx::wrap_text(&beat.line, 34),
             t: 0.0,
         });
         self.since_bubble = 0.0;
-        self.set_action(action, REACT_S);
+        self.set_action(beat.action, REACT_S);
     }
 
     // -----------------------------------------------------------------------
@@ -671,6 +1028,7 @@ impl Villain {
         // A little haze (towards the night colour) so they read as far up the road.
         let haze = gfx::mix(WHITE, gfx::NIGHT, 0.14);
         let tint = Color::new(haze.r, haze.g, haze.b, self.presence);
+        self.draw_gadget(ground, time, true);
         gfx::ground_shadow(ground, 24.0 * self.presence, 7.0);
 
         let canvas = self.canvas.get_or_init(|| {
@@ -697,6 +1055,8 @@ impl Villain {
             },
         );
 
+        self.draw_gadget(ground, time, false);
+
         // The soot puff of an appearance or a vanishing, over the top.
         let u = match self.action {
             VillainAction::Appear => (self.action_t / APPEAR_S).clamp(0.0, 1.0),
@@ -714,6 +1074,91 @@ impl Villain {
                 9.0 + 9.0 * u,
                 Color::new(0.20, 0.18, 0.22, 0.55 * (1.0 - u)),
             );
+        }
+    }
+
+    /// The running scheme's gadget (FR23 C), in screen space around the cart:
+    /// the fog behind the doctor (`behind`), the bubbles and the banner in
+    /// front. Cosmetic, and nothing in it flashes: it drifts on the game clock
+    /// and fades with the doctor.
+    fn draw_gadget(&self, ground: Vec2, time: f32, behind: bool) {
+        let Some(s) = &self.scheme else {
+            return;
+        };
+        let a = self.presence;
+        let colour = gadget_colour(s.gadget);
+        let cart = ground + vec2(64.0 * self.face, -30.0);
+        match (s.gadget, behind) {
+            (Gadget::FogMachine, true) => {
+                // Puffs that roll off the cart both ways, growing as they fade.
+                for i in 0..10 {
+                    let u = (time * 0.16 + i as f32 / 10.0).fract();
+                    let side = if i % 2 == 0 { 1.0 } else { -1.0 };
+                    let c = cart
+                        + vec2(
+                            side * (8.0 + u * 150.0) + (time * 0.6 + i as f32).sin() * 6.0,
+                            22.0 + u * 8.0,
+                        );
+                    let r = 16.0 + u * 38.0;
+                    let fade = (u * 5.0).min(1.0) * (1.0 - u);
+                    gfx::ellipse(c, r, r * 0.42, gfx::with_alpha(colour, 0.32 * fade * a));
+                }
+            }
+            (Gadget::BubbleRain, false) => {
+                for i in 0..12u64 {
+                    let u = (time * 0.3 + gfx::hash01(i)).fract();
+                    let x = cart.x
+                        + (gfx::hash01(i + 20) - 0.5) * 80.0
+                        + (time * 1.4 + i as f32).sin() * 5.0;
+                    let y = cart.y - 24.0 - u * 110.0;
+                    let r = 2.5 + 3.5 * gfx::hash01(i + 40);
+                    let al = a * (1.0 - u) * 0.85;
+                    draw_circle_lines(x, y, r, 1.2, gfx::with_alpha(colour, al));
+                    draw_circle(
+                        x - r * 0.35,
+                        y - r * 0.35,
+                        r * 0.28,
+                        gfx::with_alpha(WHITE, al * 0.8),
+                    );
+                }
+            }
+            (Gadget::Banner, false) => {
+                // A pole on the cart's far end with a pennant naming the scheme.
+                let foot = cart + vec2(-24.0 * self.face, 0.0);
+                let top = foot - vec2(0.0, 52.0);
+                gfx::line(foot, top, 2.6, gfx::with_alpha(INK, a));
+                draw_circle(top.x, top.y, 2.6, gfx::with_alpha(gfx::LANTERN, a));
+                let size = 14.0;
+                let w = measure_text(&s.name, None, size as u16, 1.0).width + 18.0;
+                let h = 20.0;
+                let dir = -self.face;
+                let wave = |x: f32| (time * 2.2 - x * 0.05).sin() * 2.0;
+                let p0 = top + vec2(0.0, 4.0);
+                let far = p0.x + dir * w;
+                gfx::quad(
+                    p0,
+                    vec2(far, p0.y + wave(w)),
+                    vec2(far + dir * -6.0, p0.y + h * 0.5 + wave(w)),
+                    p0 + vec2(0.0, h),
+                    gfx::with_alpha(gfx::shade(colour, 0.55), a),
+                );
+                gfx::quad(
+                    p0 + vec2(0.0, h * 0.5),
+                    vec2(far + dir * -6.0, p0.y + h * 0.5 + wave(w)),
+                    vec2(far, p0.y + h + wave(w)),
+                    p0 + vec2(0.0, h),
+                    gfx::with_alpha(gfx::shade(colour, 0.45), a),
+                );
+                let tx = if dir > 0.0 { p0.x + 8.0 } else { far + 10.0 };
+                draw_text(
+                    &s.name,
+                    tx,
+                    p0.y + 14.5 + wave(w * 0.5),
+                    size,
+                    Color::new(1.0, 0.96, 0.86, a),
+                );
+            }
+            _ => {}
         }
     }
 
@@ -745,7 +1190,16 @@ impl Villain {
         let skin = Color::new(0.95, 0.80, 0.66, 1.0);
         let frizz = Color::new(0.97, 0.97, 1.0, 1.0);
         let lens = gfx::LAB_GREEN;
-        let brew = self.mood.brew();
+        // A glowing-flask scheme tints the brew its colour (FR23 C).
+        let glow_flask = self
+            .scheme
+            .as_ref()
+            .is_some_and(|s| s.gadget == Gadget::GlowFlask);
+        let brew = if glow_flask {
+            gadget_colour(Gadget::GlowFlask)
+        } else {
+            self.mood.brew()
+        };
 
         // --- the cart, in front of them (the way they're facing) ---
         let cx = 64.0;
@@ -1083,7 +1537,16 @@ impl Villain {
             gfx::line(sh, hand, 6.0, ink);
             gfx::line(sh, hand, 4.2, coat_shade);
             // The flask in the glove, its brew the colour of the mood. It fizzes
-            // over on a fluster.
+            // over on a fluster. A glowing-flask scheme lights it up, steadily
+            // under reduce flashing.
+            if glow_flask {
+                let pulse = if rf {
+                    0.8
+                } else {
+                    0.65 + 0.35 * (time * 2.0).sin()
+                };
+                gfx::glow(hand, 26.0, 22.0, gfx::with_alpha(brew, 0.55 * pulse));
+            }
             gfx::potion_flask(
                 hand + vec2(0.0, 6.0),
                 0.85,
@@ -1295,9 +1758,49 @@ pub fn pose(action: VillainAction, t: f32, clock: f32, travel: f32) -> Pose {
             p.arm_b = 0.5 - 0.06 * (clock * 12.0).sin();
             p.brow = 2.0 * (clock * 8.0).sin();
         }
+        Unveil => {
+            // The flask held up high, fizzing, to show off a new creation.
+            p.lean = -4.0 * ease;
+            p.arm_a = 0.38 + 0.55 * ease;
+            p.fizz = ease;
+            p.brow = 2.2 * ease;
+        }
         Appear | Vanish => {}
     }
     p
+}
+
+/// The colour of a scheme's gadget.
+fn gadget_colour(g: Gadget) -> Color {
+    match g {
+        Gadget::FogMachine => gfx::LAB_GREEN,
+        Gadget::BubbleRain => Color::new(0.62, 0.86, 1.0, 1.0),
+        Gadget::Banner => Color::new(0.68, 0.45, 1.0, 1.0),
+        Gadget::GlowFlask => Color::new(1.0, 0.52, 0.88, 1.0),
+    }
+}
+
+#[cfg(test)]
+impl Villain {
+    /// A doctor out on the road with nothing waiting, for other modules' tests.
+    pub(crate) fn out_for_test() -> Villain {
+        let mut v = Villain::new();
+        v.here = true;
+        v.met = true;
+        v.presence = 1.0;
+        v.action = VillainAction::Pace;
+        v
+    }
+
+    /// The live line the waiting cue has, if any.
+    pub(crate) fn pending_line(&self) -> Option<String> {
+        self.pending.as_ref()?.beat.as_ref().map(|b| b.line.clone())
+    }
+
+    /// The waiting cue has given up on its live line.
+    pub(crate) fn pending_failed(&self) -> bool {
+        self.pending.as_ref().is_some_and(|p| p.failed)
+    }
 }
 
 #[cfg(test)]
@@ -1326,6 +1829,7 @@ mod tests {
         v.bubble = None;
         v.pending = None;
         v.since_bubble = 0.0;
+        v.sources = Said::default();
         (v, player, cam)
     }
 
@@ -1510,6 +2014,21 @@ mod tests {
     }
 
     #[test]
+    fn a_wrong_flask_is_reacted_to_rather_than_the_heart_it_cost() {
+        let (mut v, ..) = out_on_road();
+        // `submit_answer` hurts first, then cues the reaction.
+        v.cue(VillainCue::PlayerHurt);
+        assert!(v
+            .cue_with(VillainCue::FlaskWrong, live_beat("Hee hee!"))
+            .is_some());
+        assert_eq!(
+            v.pending.as_ref().map(|p| p.cue),
+            Some(VillainCue::FlaskWrong)
+        );
+        assert_eq!(v.pending_line().as_deref(), Some("Hee hee!"));
+    }
+
+    #[test]
     fn bubbles_keep_their_distance_and_stale_cues_lapse() {
         let (mut v, player, cam) = out_on_road();
         let dt = 1.0 / 60.0;
@@ -1569,7 +2088,7 @@ mod tests {
             health: 6,
         };
         v.observe(base);
-        let cue_of = |v: &Villain| v.pending.map(|(c, _)| c);
+        let cue_of = |v: &Villain| v.pending.as_ref().map(|p| p.cue);
 
         v.observe(Snapshot { streak: 4, ..base });
         assert_eq!(cue_of(&v), None, "4 is not a streak");
@@ -1642,10 +2161,7 @@ mod tests {
 
     #[test]
     fn every_pose_stays_in_bounds() {
-        use VillainAction::*;
-        for action in [
-            Pace, Tinker, Brew, Cackle, Scribble, Spy, Fluster, Gloat, Scurry, Appear, Vanish,
-        ] {
+        for action in VillainAction::ALL {
             for i in 0..400 {
                 let (t, clock, travel) = (i as f32 * 0.02, i as f32 * 0.037, i as f32 * 3.0);
                 let q = pose(action, t, clock, travel);
@@ -1668,6 +2184,187 @@ mod tests {
                 ] {
                     assert!((lo..=hi).contains(&v), "{action:?} {name} = {v} at t={t}");
                 }
+            }
+        }
+    }
+
+    fn live_beat(line: &str) -> Beat {
+        Beat {
+            line: line.into(),
+            mood: Mood::Gleeful,
+            action: VillainAction::Cackle,
+            scheme: None,
+        }
+    }
+
+    #[test]
+    fn with_live_lines_on_a_due_cue_waits_a_moment_for_its_line() {
+        let (mut v, player, cam) = out_on_road();
+        let dt = 1.0 / 60.0;
+        v.set_live(true);
+        v.since_bubble = MIN_GAP_S;
+        let id = v.cue(VillainCue::BattleWon).unwrap();
+        assert_eq!(v.wants_line(), Some((id, VillainCue::BattleWon)));
+        v.mark_asked(id);
+        assert_eq!(v.wants_line(), None, "asked once");
+        for _ in 0..30 {
+            v.update(dt, cam, VH, player);
+        }
+        assert!(v.saying().is_none(), "held for the live line");
+        assert!(v.offer(id, live_beat("Live and furious!")));
+        v.update(dt, cam, VH, player);
+        assert_eq!(v.saying().as_deref(), Some("Live and furious!"));
+        assert_eq!(v.action(), VillainAction::Cackle);
+        assert_eq!(v.sources(), Said { live: 1, bank: 0 });
+    }
+
+    #[test]
+    fn a_live_line_that_never_comes_gives_way_to_the_bank() {
+        let (mut v, player, cam) = out_on_road();
+        let dt = 1.0 / 60.0;
+        v.set_live(true);
+        v.since_bubble = MIN_GAP_S;
+        let id = v.cue(VillainCue::BattleWon).unwrap();
+        v.mark_asked(id);
+        for _ in 0..((LIVE_WAIT_S + 0.2) / dt) as usize {
+            v.update(dt, cam, VH, player);
+        }
+        let said = v.saying().expect("a bank line after the wait");
+        assert!(v.bank.lines("battle_won").iter().any(|l| l.line == said));
+        // A failed ask doesn't wait at all.
+        v.bubble = None;
+        v.since_bubble = MIN_GAP_S;
+        let id = v.cue(VillainCue::BattleWon).unwrap();
+        v.give_up(id);
+        v.update(dt, cam, VH, player);
+        assert!(v.saying().is_some());
+        // And with live lines off nothing waits either.
+        v.set_live(false);
+        v.bubble = None;
+        v.since_bubble = MIN_GAP_S;
+        v.cue(VillainCue::BattleWon);
+        v.update(dt, cam, VH, player);
+        assert!(v.saying().is_some());
+        assert_eq!(v.sources().live, 0);
+        // A line for a cue that's no longer waiting is refused.
+        assert!(!v.offer(id, live_beat("too late")));
+    }
+
+    #[test]
+    fn a_scheme_every_300_m_starts_with_a_topic_that_fits_the_level() {
+        let (mut v, ..) = out_on_road();
+        let base = Snapshot {
+            level: 3,
+            streak: 0,
+            meters: 290,
+            health: 6,
+        };
+        v.observe(base);
+        v.observe(Snapshot {
+            meters: 301,
+            ..base
+        });
+        let cue = v.pending.as_ref().map(|p| p.cue);
+        assert_eq!(
+            cue,
+            Some(VillainCue::Scheme { n: 1 }),
+            "outranks the milestone"
+        );
+        v.pending = None;
+        v.cue_now(VillainCue::Scheme { n: 1 });
+        let s = v.take_announced().expect("announced");
+        assert!(crate::content::prompts::topics_for_level(3).contains(&s.topic.as_str()));
+        assert_eq!(v.scheme(), Some(&s));
+        assert!(
+            v.saying().unwrap().contains(&s.name),
+            "the bank line names it"
+        );
+        assert!(v.take_announced().is_none(), "once");
+        // No new scheme while one runs.
+        v.observe(Snapshot {
+            meters: 601,
+            ..base
+        });
+        assert_ne!(
+            v.pending.as_ref().map(|p| p.cue),
+            Some(VillainCue::Scheme { n: 2 })
+        );
+        // Over: it goes, and the doctor says so by name.
+        v.pending = None;
+        v.end_scheme();
+        assert!(v.scheme().is_none());
+        v.cue_now(VillainCue::SchemeFoiled);
+        assert!(v.saying().unwrap().contains(&s.name));
+    }
+
+    #[test]
+    fn a_live_scheme_is_used_and_a_live_line_without_one_is_not() {
+        let (mut v, ..) = out_on_road();
+        let scheme = Scheme {
+            name: "Operation Soggy Sums".into(),
+            topic: "division".into(),
+            gadget: Gadget::BubbleRain,
+        };
+        v.speak(
+            VillainCue::Scheme { n: 2 },
+            Some(Beat {
+                scheme: Some(scheme.clone()),
+                ..live_beat("Behold, Operation Soggy Sums!")
+            }),
+        );
+        assert_eq!(v.take_announced(), Some(scheme));
+        assert_eq!(v.saying().as_deref(), Some("Behold, Operation Soggy Sums!"));
+        // A scheme line that lost its scheme: the bank and a fallback scheme.
+        v.scheme = None;
+        v.speak(VillainCue::Scheme { n: 2 }, Some(live_beat("Behold!")));
+        let s = v.take_announced().unwrap();
+        assert!(v.saying().unwrap().contains(&s.name));
+    }
+
+    #[test]
+    fn a_new_creation_is_shown_off_by_name_and_the_workshop_keeps_them_busy() {
+        let (mut v, player, cam) = out_on_road();
+        v.since_bubble = MIN_GAP_S;
+        v.creation("Fizzwick");
+        v.update(1.0 / 60.0, cam, VH, player);
+        assert!(v.saying().unwrap().contains("Fizzwick"));
+        assert_eq!(v.action(), VillainAction::Unveil);
+
+        v.set_workshop(true);
+        for _ in 0..40 {
+            v.next_action();
+            assert!(WORKSHOP_ACTIONS.contains(&v.action()), "{:?}", v.action());
+        }
+    }
+
+    #[test]
+    fn the_new_cues_placeholders_are_checked() {
+        let ok = include_str!("../../assets/villain_lines.json");
+        let line = "Behold my newest plan: {scheme}! Hee hee!";
+        // A scheme's name is counted at its widest, so a long line can't overflow.
+        let long = format!("{{scheme}} {}", "x".repeat(MAX_LINE_CHARS - 20));
+        assert!(check_bank(&ok.replacen(line, &long, 1)).is_err());
+        // {name} on a scheme line, {scheme} on an idle one: no.
+        assert!(check_bank(&ok.replacen(line, "Hello {name}", 1)).is_err());
+        let idle = "La la la, nothing suspicious here. Just me and my wrench.";
+        assert!(check_bank(&ok.replacen(idle, "{scheme} la la", 1)).is_err());
+    }
+
+    #[test]
+    fn every_topic_a_scheme_can_pick_has_offline_questions_and_a_fallback() {
+        // A scheme steers flasks onto its topic (FR23 C); offline, the bank has to
+        // have that topic or the scheme would steer nothing.
+        let bank = crate::llm::fallback_bank();
+        for level in 1..=5 {
+            for topic in crate::content::prompts::topics_for_level(level) {
+                assert!(
+                    bank.iter()
+                        .any(|t| crate::llm::buffer::same_topic(&t.topic, topic)),
+                    "no offline question on {topic}"
+                );
+                let s = villain_gen::fallback_scheme(topic);
+                assert!(s.name.chars().count() <= MAX_SCHEME_CHARS);
+                assert!(crate::content::vet::vet_text(&s.name).is_ok());
             }
         }
     }

@@ -47,6 +47,7 @@ src/
     expr.rs               a tiny arithmetic evaluator that checks a generated problem's answer against its own sum
     cerebras_client.rs    OpenAI-compatible chat-completions call to Cerebras, async wrapper
     task_gen.rs           prompt templates + JSON extraction helpers
+    villain_gen.rs        the mad scientist's prompt and the pure checks on a live line or scheme (moods, actions, gadgets) (FR23)
     usage.rs              per-call tokens, speed + timing, calls in flight, windowed usage rate (feeds the token panel)
   game/
     world.rs              the cobbled road to the castle gate (1,500 m), camera view, chunked scenery, potion-flask triggers, encounter zones and road-blocking monsters, region borders, lake/ground/road drawing, light pools, mist, bats and fireflies
@@ -55,7 +56,8 @@ src/
     regions.rs            the table of regions along the road (forest, fields, village, castle grounds): names, map colours, scenery knobs (FR27)
     castle.rs             the castle at the road's end: curtain wall, gatehouse towers, portcullis, with the manor's keep behind it (FR27)
     manor.rs              the gothic manor backdrop across the lake (and on the battle horizon), its lightning, bats
-    villain.rs            the mad scientist at the top of the road: movement, animation, cues and a speech bubble, with lines from assets/villain_lines.json (FR23)
+    villain.rs            the mad scientist at the top of the road: movement, animation, cues, schemes and a speech bubble; lines live or from assets/villain_lines.json (FR23)
+    villain_voice.rs      the doctor's live voice: one model call at a time behind the questions, a per-minute cap, a flask's two reactions asked ahead (FR23)
     gfx.rs                shared drawing helpers (night palette, ink outline, shadows, ribbons, stars, glows, vignette, potion flask, speech bubble)
     player.rs             WASD/arrow movement along the path, speed multiplier from upgrades and Shift sprint, player sprite, jump/roll/shoot
     skills.rs             roll charges and sprint stamina, and the skill bar at the bottom centre
@@ -104,7 +106,7 @@ content/
 assets/
   tasks_fallback.json      hand-written fallback math tasks (used if no API key, or the live call fails)
   dialogue.json            NPC flavor lines; Professor Pebble says one after the hub tutorial. Regenerate with gen_content
-  villain_lines.json       what the mad scientist says for each cue (level-up, streak, flask right or wrong, ...), with a mood and an action
+  villain_lines.json       what the mad scientist says for each cue (level-up, streak, flask right or wrong, scheme, ...) when no live line comes, with a mood and an action
 ```
 
 ## Setup
@@ -165,7 +167,9 @@ hunting required.
    `wrong` answers through the real submit path, `e` presses E, and
    teleports `toflask`/`tozone`/`toblocker`/`topebble`/`toroad`/`neargoal`/`atgoal`, `nohud` hides the side panels,
    `calm` turns on reduce flashing, `curse`/`cursefull` set the curse to
-   the fever stage or full) at those frames, stepping a
+   the fever stage or full, `tovillain` puts the doctor on screen,
+   `villain:<cue>` / `say:<cue>` make them react from the bank or the live path,
+   `scheme:<topic>` starts a scheme, `nochatter` hides their bubble) at those frames, stepping a
    fixed 1/60 s per frame. At the shot it prints a `STATE ...` line of run
    state to stderr.
 
@@ -257,8 +261,14 @@ without re-checking this.
 - **The mad scientist** — past the gate, Dr. Nullwell potters around at the top
   of the road, always just out of reach, and reacts to what you do with a speech
   bubble: a right answer flusters them, a level-up or a streak makes their frizz
-  stand on end (`game/villain.rs`). They only talk; nothing they do changes the
-  game.
+  stand on end (`game/villain.rs`). With an API key Cerebras writes their lines
+  live from what just happened in the run, behind the questions and capped at
+  `JEKO_VILLAIN_RPM` (6) a minute; with none, or with `JEKO_VILLAIN=off`, they use
+  the reviewed lines in `assets/villain_lines.json`. Every 300 m they announce a
+  scheme ("Operation Fraction Fog") with a gadget on their cart, and the next three
+  flasks ask about its topic. When the studio finishes a monster they show it off.
+  Apart from a scheme's topic, nothing they do changes the game. Settings has a
+  "Villain chatter" switch.
 - **Creation bar** — circles at the top centre show the model writing as it
   happens: live questions, look-ahead questions, and the studio's monsters,
   lesson packs and tips. A ring turns while it writes, closes when it lands, and
