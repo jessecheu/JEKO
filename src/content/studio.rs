@@ -409,8 +409,7 @@ fn ask(
     match client.fake_delay() {
         // The stand-in model (`JEKO_DEV=fakemodel`): made-up content after a pause.
         Some(delay) => {
-            std::thread::sleep(delay);
-            client.record_fake(job.kind(), tokens.0, tokens.1, delay);
+            client.fake_call(job.kind(), tokens.0, tokens.1, delay);
             Ok(fake())
         }
         None => {

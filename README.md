@@ -47,7 +47,7 @@ src/
     expr.rs               a tiny arithmetic evaluator that checks a generated problem's answer against its own sum
     cerebras_client.rs    OpenAI-compatible chat-completions call to Cerebras, async wrapper
     task_gen.rs           prompt templates + JSON extraction helpers
-    usage.rs              per-request token counts + tokens/sec, session totals (feeds the token panel)
+    usage.rs              per-call tokens, speed + timing, calls in flight, windowed usage rate (feeds the token panel)
   game/
     world.rs              the cobbled road to the castle gate (1,500 m), camera view, chunked scenery, potion-flask triggers, encounter zones and road-blocking monsters, region borders, lake/ground/road drawing, light pools, mist, bats and fireflies
     decor.rs              forest props (pines, gravestones, pumpkins, cottages, lampposts...) and the hub camp — per-chunk generation + drawing
@@ -89,7 +89,7 @@ src/
     game_over_panel.rs       Game Over screen: run stats, try again
     dialogue_panel.rs        NPC dialogue box
     task_panel.rs            problem text, hint, answer input, submit
-    token_panel.rs           model + API address, latest tokens/sec, per-request speed graph, token totals
+    token_panel.rs           model + API address, live usage rate, 60 s call timeline, recent calls, speed graph, totals
   bin/
     gen_content.rs          offline batch generator for NPC dialogue and monsters (not called at runtime)
     validate_content.rs     offline checker: loads the dialogue bank and the content dir the way the game does (`make validate`)

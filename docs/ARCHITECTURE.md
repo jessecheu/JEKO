@@ -130,7 +130,7 @@ The layering holds today, and new code should keep it:
 | `llm/buffer.rs` | `QuestionBuffer` (ready questions per difficulty, with an optional strict topic), `plan_prefetch` (the pure look-ahead policy and its `PrefetchCaps`), and `WaitStats` (where each shown question came from and how long the player waited). |
 | `llm/cerebras_client.rs` | `CerebrasClient`: the async wrappers (live and look-ahead), the blocking chat-completions call with its `RequestKind` tag, the shared token stats, and the `fakemodel` stand-in. |
 | `llm/task_gen.rs` | The prompt templates (`build_prompt(difficulty, topic)` for a live question, `build_pack_prompt` for a lesson pack) and lenient JSON extraction (`extract_json_object` / `_array`). |
-| `llm/usage.rs` | `RequestKind` (question, prefetch, monster, lesson, line), `RequestUsage` (one call's tokens and speed) and `TokenStats` (session totals, per-kind totals, and the last 24 requests). |
+| `llm/usage.rs` | `RequestKind` (question, prefetch, monster, lesson, line), `RequestUsage` (one call's tokens, generation speed and finish time), `CallRecord` / `InFlight` (a finished or still-out call) and `TokenStats` (session totals, per-kind totals, the last 24 requests, a timeline of the last 128 calls, the calls in flight, and the time-windowed `window` / `bins` / `idle_for` queries). |
 | `game/mod.rs` | `Game`: run state, the per-frame update and draw, the mode precedence, the damage, answer and reset entry points, and the dev events. |
 | `game/task_trigger.rs` | `TriggerState`, the question state machine (§4), `Arrival` (how a `Loading` request ended), and `pick_fallback`. |
 | `game/prefetch.rs` | `Prefetch`: the question buffer, the look-ahead requests in flight and their per-minute budget; `demand` (what the road ahead needs); `plan_lesson` (which pack the studio writes next); the soft deadlines; `Ask` (a question asked for and not yet shown). |
@@ -343,13 +343,21 @@ the game asks before the player needs the answer:
   answer. Difficulty 1 means single-digit addition and 5 means multi-step word problems.
   `extract_json_object` slices from the first `{` to the last `}`, so stray prose or
   code fences around the object don't matter. serde then parses it into `MathTask`.
-- **Usage accounting.** Every clone shares one `Arc<Mutex<TokenStats>>`. A response
-  with a `usage` block is recorded, tagged with its `RequestKind` (the panel splits the
-  session's requests and tokens by it). Tokens per second come from Cerebras'
-  `time_info.completion_time` when present, and from the HTTP round trip otherwise.
-  The round trip reads lower, and the panel says which one it used. A transport or
-  HTTP error is counted with `record_failure`. A poisoned lock is ignored, because the
-  numbers only feed a readout.
+- **Usage accounting.** Every clone shares one `Arc<Mutex<TokenStats>>`. A call is
+  marked with `begin` as it goes out and `end` when it's back, so the panel can show
+  calls in flight. A response with a `usage` block is recorded with its start and finish
+  time, tagged with its `RequestKind` (the panel splits the session's requests and tokens
+  by it). A transport or HTTP error is counted with `record_failure`, also timed. Both
+  go on the timeline. A poisoned lock is ignored, because the numbers only feed a readout.
+- **Two different rates.** *Generation speed* (`RequestUsage::tokens_per_sec`) is one
+  answer's output tokens over Cerebras' `time_info.completion_time`, or over the HTTP
+  round trip when that's missing (it reads lower, and the panel says which). It describes
+  the model, so it doesn't move while the game is quiet. *Usage rate*
+  (`TokenStats::window`) is the tokens (in and out) of the calls that *finished* in the
+  last `LIVE_WINDOW` (10 s) of wall clock, divided by the window. It falls to zero when
+  nothing is being asked. `bins` cuts the last `TIMELINE_SPAN` (60 s, the unit Cerebras'
+  rate limits use) into equal bins for the timeline graph. The stand-in model goes
+  through the same path (`CerebrasClient::fake_call`).
 
 **The fallback bank.** `assets/tasks_fallback.json` is compiled in with
 `include_str!` (`llm::fallback_bank`) and parsed at startup, where a malformed file panics.
@@ -884,7 +892,7 @@ values passed to it as `&mut`.
 | `goalpost_panel::draw` | top centre | `game.goalpost.view()` (`TrackerView`) | none |
 | `creation_bar::draw` | top centre, under the badge | `game.creation_view()` (`BarView`), reduce flashing | none; returns its height |
 | `task_panel::draw` | left centre (bottom centre in a battle); the explanation card below (above) it | `TriggerState`, `Game.explain` | `input_buffer`, `focus_answer`; returns `Submit` |
-| `token_panel::draw` | bottom right | `CerebrasClient::token_stats()`, model, base URL | none |
+| `token_panel::draw` | bottom right | `CerebrasClient::token_stats()`, model, base URL. Shows the usage rate over the last 10 s, calls out or how long it's been idle, the last minute's tokens and calls, a 60 s timeline (tokens per 2 s bin, plus a strip of when calls were out; hover a bin for its calls by kind), and session totals. Two sections start collapsed, with their key number in the header: the four latest calls, and the per-request generation-speed graph | none |
 | `dialogue_panel::draw` | | `Dialogue` | none |
 | `settings_panel::draw` | modal | | `Settings`, `settings_open`, `guide_open` |
 | `field_guide_panel::draw` | modal | the guide's cards | `guide_open` |
@@ -1028,7 +1036,7 @@ driving the window:
 | `game/gfx.rs` (2) | `wrap_text` breaks at spaces, loses nothing and gives a long word its own line. |
 | `game/manor.rs` (1) | Lightning strikes now and then (under 12% of frames), stays in 0..1, and is the same every run. |
 | `llm/activity.rs` (13) | A job writes, then is ready and remembers how long it took; a failure shows as fallback; ending twice keeps the first ending; a finished job leaves after lingering; one nobody ended goes stale; cancel; the bar shows three circles and counts the rest; the pop and fade; an instant job; a scripted job ends by itself; a job is renamed once made; the view can leave jobs out and counts only the rest; the view carries the stock. |
-| `llm/usage.rs` (6) | Provider-timed vs round-trip speed, zero time ignored, no usage block, the capped history, totals split by kind. |
+| `llm/usage.rs` (10) | Provider-timed vs round-trip speed, zero time ignored, no usage block, the capped history, totals split by kind; the usage rate falls to zero once calls stop while the last generation speed stays; bins place calls (and failures) by when they finished; calls in flight are tracked until they end; the timeline is capped. |
 | `llm/expr.rs` (5) | The evaluator follows the usual rules (precedence, parentheses, unary minus, `×` `÷` `−`), rejects anything that isn't plain arithmetic (powers, functions, division by zero, `1 2` as 12), bounds hostile input (nesting, length), and `verify` passes a problem only when its answer matches its expression. |
 | `llm/mod.rs` (2) | The compiled-in bank loads, every answer in it checks out and has an explanation; a task without the FR22 fields still loads. |
 | `llm/task_gen.rs` (3) | The live prompt asks for an expression and explanation and takes a topic; the pack prompt names count, topic, level and what was missed; JSON is pulled out of chatty replies. |
@@ -1045,7 +1053,7 @@ driving the window:
 | `game/world.rs` (castle, FR27) | The road ends at the gate (clamp, arrival); no flask, monster, gear or stop in the forecourt or past the castle; one Castle goalpost that outranks a Titan and no milestone at the gate; each region border is one goalpost; borders keep clear of stops; the doctor leaves as the castle nears. The placement tests cover the whole 1,500 m. |
 | `game/dialogue.rs` (4) | The shipped bank passes `check_bank`; `check_bank` rejects hostile banks (not a list, no Pebble, too few or too many lines, an empty or over-long line, a blocked word, a missing name, a duplicate); the typewriter reveals, then advances, then closes. |
 | `content/vet.rs` (1) | The blocklist matches whole words only (`Shellfish` and `Bloodroot` pass, `Mario` doesn't). |
-| `ui/token_panel.rs` (1) | Token counts read `1,284` below 10,000, then `12.9K` / `4.2M`. |
+| `ui/token_panel.rs` (2) | Token counts read `1,284` below 10,000, then `12.9K` / `4.2M`; durations read `42 s` / `3 min` / `1 h 5 min` and `850 ms` / `1.2 s`. |
 
 **Build environment.** `flake.nix` provides the dev shell (rustc, cargo, and the
 X11/GL/xkbcommon/ALSA libraries on `LD_LIBRARY_PATH`) and a separate `openclaw`

@@ -166,16 +166,26 @@ impl CerebrasClient {
         });
 
         let started = Instant::now();
-        let resp = match self.post_chat(api_key, &body) {
-            Ok(resp) => resp,
-            Err(e) => {
-                self.stats().record_failure(kind);
-                return Err(e);
+        let id = self.stats().begin(kind, started);
+        let result = self.post_chat(api_key, &body);
+        let finished = Instant::now();
+        let resp = {
+            let mut stats = self.stats();
+            stats.end(id);
+            match result {
+                Ok(resp) => {
+                    if let Some(usage) = RequestUsage::from_response(&resp, started, finished, kind)
+                    {
+                        stats.record(usage);
+                    }
+                    resp
+                }
+                Err(e) => {
+                    stats.record_failure(kind, started, finished);
+                    return Err(e);
+                }
             }
         };
-        if let Some(usage) = RequestUsage::from_response(&resp, started.elapsed(), kind) {
-            self.stats().record(usage);
-        }
 
         resp["choices"][0]["message"]["content"]
             .as_str()
@@ -192,8 +202,7 @@ impl CerebrasClient {
         kind: RequestKind,
         delay: Duration,
     ) -> MathTask {
-        let started = Instant::now();
-        std::thread::sleep(delay);
+        self.fake_call(kind, 140, 60, delay);
         let bank = fallback_bank();
         let mut task = bank
             .choose(&mut rand::thread_rng())
@@ -203,27 +212,35 @@ impl CerebrasClient {
         if let Some(topic) = topic {
             task.topic = topic.to_string();
         }
-        self.record_fake(kind, 140, 60, started.elapsed());
         task
     }
 
-    /// Books a made-up call into the token stats (the stand-in model has no
-    /// `usage` block to read), so the panel and the studio's budget see it.
-    pub fn record_fake(
+    /// The stand-in model's call: shows as in flight for `delay`, then books
+    /// a made-up token count into the stats (there is no `usage` block to
+    /// read), so the panel and the studio's budget see it.
+    pub fn fake_call(
         &self,
         kind: RequestKind,
         prompt_tokens: u64,
         completion_tokens: u64,
-        round_trip: Duration,
+        delay: Duration,
     ) {
+        let started = Instant::now();
+        let id = self.stats().begin(kind, started);
+        std::thread::sleep(delay);
+        let finished = Instant::now();
+        let round_trip = finished - started;
         let secs = round_trip.as_secs_f64().max(0.001);
-        self.stats().record(RequestUsage {
+        let mut stats = self.stats();
+        stats.end(id);
+        stats.record(RequestUsage {
             kind,
             prompt_tokens,
             completion_tokens,
             tokens_per_sec: completion_tokens as f64 / secs,
             provider_timed: false,
             round_trip,
+            finished,
         });
     }
 
