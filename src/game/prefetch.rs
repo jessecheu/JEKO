@@ -12,8 +12,10 @@ use crate::content::lessons::normalize_topic;
 use crate::content::prompts::topics_for_level;
 use crate::content::studio::LessonJob;
 use crate::game::world::{GoalKind, Upcoming};
+use crate::llm::activity::{GenActivity, JobState};
 use crate::llm::buffer::{plan_prefetch, PrefetchCaps, QuestionBuffer, Source, LEVELS};
 use crate::llm::cerebras_client::CerebrasClient;
+use crate::llm::usage::RequestKind;
 use crate::llm::MathTask;
 use std::collections::VecDeque;
 use std::sync::mpsc::{Receiver, TryRecvError};
@@ -78,6 +80,9 @@ pub struct Ask {
 
 struct Flight {
     difficulty: u32,
+    /// Its circle on the creation bar. A request adopted from a live one has
+    /// none: that one's circle was ended or taken off already.
+    job: Option<u32>,
     rx: Receiver<anyhow::Result<MathTask>>,
 }
 
@@ -118,18 +123,30 @@ impl Prefetch {
     /// Moves answers that have landed into the buffer. Runs every frame,
     /// paused or not, so one that lands mid-pause is kept, not lost. A failed
     /// call is just dropped: the buffer stays short and `request_task` asks
-    /// live as it always did.
-    pub fn poll(&mut self) {
+    /// live as it always did. Each look-ahead's circle on the creation bar
+    /// closes as it lands (FR33); a failed one is taken off quietly, since
+    /// nothing was shown in its place.
+    pub fn poll(&mut self, activity: &mut GenActivity) {
         let buffer = &mut self.buffer;
-        self.flying.retain(|f| match f.rx.try_recv() {
-            Ok(Ok(task)) => {
-                if task.answer.is_finite() {
-                    buffer.push(f.difficulty, task);
+        self.flying.retain(|f| {
+            let landed = match f.rx.try_recv() {
+                Ok(Ok(task)) => {
+                    if task.answer.is_finite() {
+                        buffer.push(f.difficulty, task);
+                    }
+                    true
                 }
-                false
+                Ok(Err(_)) | Err(TryRecvError::Disconnected) => false,
+                Err(TryRecvError::Empty) => return true,
+            };
+            if let Some(job) = f.job {
+                if landed {
+                    activity.finish(job, JobState::Ready);
+                } else {
+                    activity.cancel(job);
+                }
             }
-            Ok(Err(_)) | Err(TryRecvError::Disconnected) => false,
-            Err(TryRecvError::Empty) => true,
+            false
         });
     }
 
@@ -137,13 +154,23 @@ impl Prefetch {
     /// after the soft deadline, a battle that ended first): it goes into the
     /// buffer when it lands instead of being thrown away.
     pub fn adopt(&mut self, difficulty: u32, rx: Receiver<anyhow::Result<MathTask>>) {
-        self.flying.push(Flight { difficulty, rx });
+        self.flying.push(Flight {
+            difficulty,
+            job: None,
+            rx,
+        });
     }
 
     /// Starts whatever look-ahead requests the plan calls for. The caller has
     /// already ruled out the times it must not: while paused, while a live
     /// question is loading.
-    pub fn tick(&mut self, client: &CerebrasClient, wants: &[(u32, usize)], now: Instant) {
+    pub fn tick(
+        &mut self,
+        client: &CerebrasClient,
+        wants: &[(u32, usize)],
+        now: Instant,
+        activity: &mut GenActivity,
+    ) {
         if !self.cfg.enabled || !client.has_api_key() {
             return;
         }
@@ -163,6 +190,9 @@ impl Prefetch {
             self.sent.push_back(now);
             self.flying.push(Flight {
                 difficulty,
+                job: Some(
+                    activity.start(RequestKind::Prefetch, &format!("ahead, level {difficulty}")),
+                ),
                 rx: client.prefetch_task_async(difficulty),
             });
         }
@@ -336,13 +366,57 @@ mod tests {
         assert_eq!(p.in_flight(), 3);
         tx1.send(Ok(task())).unwrap();
         tx2.send(Err(anyhow::anyhow!("boom"))).unwrap();
-        p.poll();
+        p.poll(&mut GenActivity::new());
         // Still waiting on the third.
         assert_eq!(p.in_flight(), 1);
         assert_eq!(p.buffer.counts(), [0, 1, 0, 0, 0]);
         drop(tx3);
-        p.poll();
+        p.poll(&mut GenActivity::new());
         assert_eq!(p.in_flight(), 0);
+    }
+
+    #[test]
+    fn a_look_ahead_has_a_circle_that_closes_when_it_lands_or_goes_quietly_when_it_fails() {
+        let mut p = Prefetch::new(PrefetchConfig::parse(None, None));
+        let mut a = GenActivity::new();
+        let (tx1, rx1) = mpsc::channel();
+        let (tx2, rx2) = mpsc::channel();
+        let j1 = a.start(RequestKind::Prefetch, "ahead, level 2");
+        let j2 = a.start(RequestKind::Prefetch, "ahead, level 3");
+        p.flying.push(Flight {
+            difficulty: 2,
+            job: Some(j1),
+            rx: rx1,
+        });
+        p.flying.push(Flight {
+            difficulty: 3,
+            job: Some(j2),
+            rx: rx2,
+        });
+        p.poll(&mut a);
+        assert_eq!(a.running(), 2, "nothing has landed yet");
+        tx1.send(Ok(task())).unwrap();
+        tx2.send(Err(anyhow::anyhow!("boom"))).unwrap();
+        p.poll(&mut a);
+        assert_eq!(a.running(), 0);
+        assert_eq!(a.jobs().len(), 1, "the failed one is taken off, not shown");
+        assert_eq!(a.jobs()[0].state, JobState::Ready);
+    }
+
+    #[test]
+    fn sending_a_look_ahead_opens_a_circle_for_it() {
+        let mut p = Prefetch::new(PrefetchConfig::parse(None, None));
+        let client = CerebrasClient::new(&crate::config::Config {
+            api_key: Some("k".into()),
+            model: "m".into(),
+            base_url: "http://127.0.0.1:9".into(),
+        })
+        .with_fake_model(Duration::from_millis(5));
+        let mut a = GenActivity::new();
+        p.tick(&client, &[(2, 2)], Instant::now(), &mut a);
+        assert_eq!(p.in_flight(), a.running());
+        assert!(a.running() > 0);
+        assert!(a.jobs().iter().all(|j| j.kind == RequestKind::Prefetch));
     }
 
     #[test]
@@ -353,7 +427,9 @@ mod tests {
             model: "m".into(),
             base_url: "http://127.0.0.1:9".into(),
         });
-        p.tick(&client, &[(1, 3)], Instant::now());
+        let mut a = GenActivity::new();
+        p.tick(&client, &[(1, 3)], Instant::now(), &mut a);
         assert_eq!(p.in_flight(), 0);
+        assert!(a.is_empty());
     }
 }

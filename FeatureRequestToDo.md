@@ -146,7 +146,7 @@ its "help" is animation. It never changes XP, speed, answers or battle outcomes.
 (see [Completed](#completed)), each on a provisional answer so the work could
 land; this entry keeps the questions so they are answered, not settled silently.
 
-## FR16. Confirm the provisional answers from FR1–FR3, FR5–FR15, FR20–FR22, FR24, FR26, FR31 and FR32
+## FR16. Confirm the provisional answers from FR1–FR3, FR5–FR15, FR20–FR22, FR24, FR26, FR31, FR32 and FR33
 
 **Status.** **Waiting on the owner.** Every default below is live in the code.
 Tick an item once the owner confirms it, or replace it with the owner's answer
@@ -275,6 +275,17 @@ recorded here.
   late answer is kept.* An invariant ("the player never waits on the network when a
   buffered or fallback question could be shown")? *Not added; §5 of the architecture
   doc states the rule.*
+
+- [ ] **FR33** Real progress or a stage ring? *A stage ring: an arc turns while it
+  writes and closes when it lands; no streaming, so no percentage.* Share the top centre
+  with the goalpost tracker? *The bar sits under the tracker and pushes the toast down.*
+  How loud? *Shown whenever something is being generated or has just been (2.2 s), hidden
+  in the hub, dialogue and map, and in a battle only the battle's question; a setting turns
+  it off. It stays up while a flask problem is open, so the ready pop shows.* Do failures
+  show? *A fallback question shows quietly as a grey "bank" circle; a failed look-ahead or a
+  turned-down studio job just disappears.* Does the player see what the model wrote?
+  *Only in the hover, and only once it is made: a monster's name, a pack's topic.*
+  Stock line under the circles? *Yes: look-ahead questions and unseen monsters, as counts.*
 
 **Acceptance criteria.**
 
@@ -817,131 +828,6 @@ and gives the player something to steer around.
 - [ ] Solid obstacles are goalposts for the tracker (FR31: a new `GoalKind` in
   `world::goalposts_in_chunk`).
 
-## FR33. A live "creation" bar: show Cerebras generating monsters, questions and lines in real time
-
-**Status.** **Milestone A built (2026-11-21); B and C not started.** `llm/activity.rs`
-(`GenActivity`), `ui/creation_bar.rs`, the `show_creation_bar` setting and the
-`JEKO_DEV=gen:<kind>` hook are in, wired to live flask and battle questions (a buffer hit
-makes no circle; no key shows an instant `Fallback` circle). It sits under the goalpost badge
-and pushes the toast down. Next step: milestone B. Open a `Prefetch` job where
-`Game::tick_prefetch` sends a look-ahead request and end it where `Prefetch::poll` collects it
-(`RequestKind::Prefetch` already exists), then show the buffer's stock. Chosen provisionally
-while building A, pending the owner: stage ring, no streaming; `Fallback` shows quietly as a
-grey "bank" circle; the bar stays visible while a flask problem is open, so the ready pop shows.
-
-**Depends on:** [] _(shows whatever model calls exist. Today that is live questions;
-it fills out as FR32's prefetch, FR21's `GenMonster`, FR22's lesson packs and FR23's
-villain lines land, each one a new kind of creation to show. Shares the top centre
-with FR31's tracker, see open questions)_
-
-**Motivation.** The game's pitch is that Cerebras is fast enough to write content
-while the player walks. Today none of that is visible: a question appears, and the
-player can't tell it was just made, let alone that a new monster is being designed
-up the road. A small bar that shows each creation being generated, with a progress
-circle per job, makes the real-time generation something the player can see. It
-also makes the speed the selling point, because a ring that fills and pops in a
-fraction of a second shows what fast inference is.
-
-**What the owner asked for.**
-
-- The top-centre bar shows the creations being generated as they are prepared.
-- Each one is a progress circle, to show that real-time generation is happening.
-
-**Proposed approach.** *(suggested, not decided)*
-
-- **One model of "what is being made".** A plain-Rust `GenActivity` (new
-  `llm/activity.rs`, no macroquad or egui, invariant 10) holds a small list of
-  `GenJob { id, kind, label, state, started, progress }`.
-  - `kind`: `Question | Monster | Lesson | Line` (the same tag FR21 and FR23 propose
-    for `RequestUsage`, so use one enum for both).
-  - `state`: `Queued → Writing → Checking → Ready`, or `Failed` / `Fallback`.
-  - `Game` updates it from the places that already start and poll requests
-    (`Game::request_task` and the `trigger_state` poll today; FR32's prefetch and
-    FR21's studio later). It is a read-only mirror for the UI: nothing in it
-    gates gameplay (invariants 1, 6 and 7).
-- **What the circle shows.** `progress` is honest, in this order of preference:
-  1. *Streaming:* if `CerebrasClient` gets a streaming mode, progress is tokens
-     received over an expected length for the kind (a monster spec is about N
-     tokens). This is the true "it is being written right now" ring.
-  2. *Stages:* with a non-streaming call, the ring moves through the stages
-     (sent, writing, checking, ready) and sweeps as an indeterminate arc while
-     `Writing`. Never fake a percentage.
-  3. *Stock:* for background work, a ring that fills as the stock builds, such as
-     "monsters ready 2/3" (FR32's buffer, FR21's roster).
-- **How it looks.** In the top-centre bar, each running job is a small circle with an
-  icon for its kind (a flask for a question, a creature silhouette for a monster, a
-  scroll for a lesson, a speech bubble for a line). A ring sweeps around it while it
-  writes. On `Ready` the ring closes, the icon pops with a spark (reuse
-  `gfx::item_get`'s burst), and the circle either slides away or lands in a short
-  "ready" tray (for example, the monster icon waits there until its zone is reached).
-  A hover or the token panel gives the detail: `Monster · "Bramblehog" · 0.6 s ·
-  412 tok · 690 tok/s`. At most 3 circles show at once, with "+2" for the rest.
-- **Show the speed.** When a job finishes, flash how long it took (`0.4 s`) under the
-  circle. This is the number that makes the point. Pair it with the token panel's
-  throughput line (`ui/token_panel.rs`) rather than duplicating it.
-- **Preview what is made.** A generated monster's circle can fill in as its silhouette
-  once the spec parses (the `monster_rig` draw of its `MonsterSpec`, FR21), so the
-  player sees the creature that was just invented. Needs FR21 milestone B.
-- **Where it's drawn.** A view only (invariant 5): `ui/creation_bar.rs`, or an
-  extension of FR31's badge row, reading `GenActivity` and returning no events. It
-  honours the `reduce flashing` setting (no spark, ring still moves slowly) and a new
-  "show creation bar" setting in `ui/settings_panel.rs`.
-- **When it hides.** In a battle and while a flask problem is open (same as the
-  Progress panel), except that a battle's own question can show as a single circle
-  so the wait never looks like a stall. Hidden in the hub before the gate, where
-  nothing is generating.
-- **Dev hook.** FR32's `JEKO_DEV=fakemodel:<ms>` drives it with no key. Add a
-  `JEKO_DEV=gen:<kind>` event that queues a fake job of that kind, so each state
-  can be checked by screenshot.
-
-**Milestones** (each lands on its own):
-
-1. **A: the questions.** `GenActivity`, the bar and the circle for live question
-   requests (flask and battle), the stage ring, the time-to-ready flash, the setting
-   and the dev hook. Works today with no new generation.
-2. **B: background work.** FR32's prefetches and its "ready" stock show as circles;
-   the token panel shares the `kind` enum.
-3. **C: monsters, lessons and lines.** Circles for FR21's `GenMonster`, FR22's
-   packs and FR23's lines, the monster silhouette preview, and the streaming ring if
-   `CerebrasClient` has gained a streaming mode.
-
-**Open questions.**
-
-- **Real progress or a stage ring?** Streaming gives a true fill but is a change to
-  `CerebrasClient` and its 8 s timeout. Is that worth doing for the ring, or is the
-  stage ring enough?
-- **Sharing the top centre with FR31.** Does the goalpost tracker sit in the same bar
-  (goalpost on the left, creation circles on the right), or does one go lower? The
-  toast is also `CENTER_TOP`.
-- **How loud?** Always visible, or only while something is generating? Is it a game
-  feature for the player, or a "show the tech" mode toggled in settings?
-- **Do failures show?** A `Fallback` circle (a bank question was used) is honest but may
-  read as a bug to a child. Show it quietly, or only in the token panel?
-- **Does the player see what the model wrote** (a monster name, a lesson title) before
-  it is needed, or does it stay a surprise until the encounter?
-
-**Acceptance criteria.**
-
-- [x] The top-centre bar shows a circle for each model call that is running, with an
-  icon for its kind and a ring that shows its progress. *(questions only so far)*
-- [x] A finished creation closes its ring, pops, and shows how long it took.
-- [x] With the owner's chosen progress source, the ring never shows a made-up
-  percentage: it is real tokens, real stages or a real stock count.
-- [x] Live questions (flask and battle) appear as circles with no API key too, using
-  the fallback bank and the `Fallback` state.
-- [ ] Prefetches, monsters, lessons and lines appear as their FRs land, without a
-  change to the bar's code beyond a new `kind`.
-- [x] The bar changes no XP, HP, answers or timing (invariant 7), the frame never
-  waits on it (invariant 1), and it honours `reduce flashing`.
-- [ ] It does not overlap the toast or FR31's tracker, and hides in the hub and (apart
-  from the battle question circle) in battles and open problems.
-- [x] `GenActivity` state changes are unit-tested (queue, write, ready, fail, fallback,
-  the 3-circle cap) without a network.
-- [x] *(milestone A)* `docs/ARCHITECTURE.md` (*The question pipeline*: where `GenActivity` is updated;
-  *Progression and the UI layer*: the new panel and what it reads; *Content,
-  configuration and dev hooks*: the setting and the `gen:` event) and the README
-  layout are updated.
-
 ---
 
 # Story — the villain
@@ -1137,7 +1023,9 @@ decided.
    for every cue. Fully playable offline.
 2. **B: live beats from Cerebras.** `villain_gen.rs` prompt and validation,
    `request_villain_async`, polling, coalescing and rate limiting, live-questions-win,
-   prefetching right/wrong reactions, and token tagging.
+   prefetching right/wrong reactions, and token tagging. Each request also opens a
+   `RequestKind::Line` job on `Game.activity` (FR33), so the creation bar shows the doctor's
+   line being written; the kind, its icon and `JEKO_DEV=gen:line` already exist.
 3. **C: schemes** (best after FR21/FR22). Every ~300 m the doctor announces a scheme,
    such as `{"name": "Operation Fraction Fog", "topic": "fractions", "gadget":
    "fog_machine"}`. `gadget` is a closed enum of **cosmetic** effects (fog tint,
@@ -1523,6 +1411,24 @@ monsters for tomorrow").
 When an entry is fully built, delete it above and add one line here, newest
 first: `FR<n> — title — date — why it closed (commit)`. Its number stays retired.
 
+- FR33 — A live "creation" bar: show Cerebras generating monsters, questions and lines in real time —
+  2026-11-21 — all three milestones built. **A:** `llm/activity.rs` (`GenActivity`), `ui/creation_bar.rs`,
+  the `show_creation_bar` setting and `JEKO_DEV=gen:<kind>`, with a circle for each live flask and battle
+  question. **B:** each look-ahead request (`Prefetch::tick` and `poll`) is a circle, and the bar prints the
+  real stock under the circles ("ready: 9 questions · 2 monsters": the buffer's size and the unseen
+  generated monsters for the tier ahead). **C:** the studio reports `StudioEvent`s (started, finished and
+  what it made) that `Game::sync_creation_bar` turns into circles, so a monster, a lesson pack and Pebble's
+  tips each show, and a made monster's circle is renamed to its name; `RequestKind::Line` has its icon and
+  `gen:line`. In a battle the bar keeps only the battle's question. Failed look-aheads and turned-down
+  studio jobs are taken off quietly. Tests for each piece (189 pass); checked by screenshot with the
+  stand-in model and a throwaway content dir (circles writing and closed, "+N", the stock line, no overlap
+  with the toast). **Not built, and why:** nothing opens a `Line` circle yet, because the villain's lines are
+  canned until FR23 B (it should `activity.start(RequestKind::Line, ..)` per request); the streaming ring,
+  because `CerebrasClient` has no streaming mode and the stage ring was the owner's provisional choice; and
+  the monster silhouette preview in the circle, which is optional and would need the monster rig drawn
+  inside egui. **Provisional answers, in FR16:** stage ring, `Fallback` shown quietly as "bank", the bar
+  stays up while a flask problem is open, the name shows only in the hover once made. Hover detail shows
+  the name and time, not tokens. (uncommitted)
 - FR22 — Background-generated education content (lesson packs, explanations, field guide) —
   2026-11-21 — built in one pass on FR21's studio and FR32's buffer. **Checked answers:**
   `llm/expr.rs` (a small pure evaluator, 5 tests with hostile input) and `verify`: a

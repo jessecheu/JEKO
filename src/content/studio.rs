@@ -124,6 +124,47 @@ impl Job {
     }
 }
 
+/// What the creation bar (FR33) is told about the studio's work, in order. The
+/// game drains these each frame; the studio never waits for it to.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum StudioEvent {
+    /// A request has gone out for this job.
+    Started {
+        seq: u64,
+        kind: RequestKind,
+        /// What it is for, e.g. "tier 2 · fractions".
+        label: String,
+    },
+    /// The job is over.
+    Finished {
+        seq: u64,
+        /// What was made, by name, or `None` if nothing was (turned down or
+        /// the call failed).
+        made: Option<String>,
+    },
+}
+
+impl Job {
+    /// What the creation bar calls the job while it is being written.
+    fn label(&self) -> String {
+        match self {
+            Job::Monster(m) => format!("tier {} · {}", m.tier, m.topic),
+            Job::Lessons(l) => format!("{} pack", l.topic),
+            Job::Tips(t) => format!("tips: {}", t.topic),
+        }
+    }
+}
+
+impl Made {
+    /// What the creation bar calls it once it exists.
+    fn name(&self, job: &Job) -> String {
+        match self {
+            Made::Monster(_, name) => name.clone(),
+            _ => job.label(),
+        }
+    }
+}
+
 /// What the studio has done, for the token panel and the dev summary.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct StudioStatus {
@@ -153,6 +194,7 @@ struct Shared {
     status: Mutex<StudioStatus>,
     live_busy: AtomicBool,
     stop: AtomicBool,
+    events: Mutex<VecDeque<StudioEvent>>,
 }
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -178,6 +220,7 @@ impl Studio {
             status: Mutex::default(),
             live_busy: AtomicBool::new(false),
             stop: AtomicBool::new(false),
+            events: Mutex::default(),
         });
         let worker = shared.clone();
         let thread = std::thread::Builder::new()
@@ -207,6 +250,11 @@ impl Studio {
             queued,
             ..lock(&self.shared.status).clone()
         }
+    }
+
+    /// What has started and finished since the last call, oldest first.
+    pub fn drain_events(&self) -> Vec<StudioEvent> {
+        lock(&self.shared.events).drain(..).collect()
     }
 
     /// Tells the studio that something that outranks it is using the model
@@ -281,14 +329,23 @@ fn work(shared: &Shared, client: &CerebrasClient, dir: &Path, cfg: StudioConfig)
         }
         sent.push_back(Instant::now());
         seq += 1;
+        lock(&shared.events).push_back(StudioEvent::Started {
+            seq,
+            kind: job.kind(),
+            label: job.label(),
+        });
         let result = run(&job, client, dir, seq);
+        lock(&shared.events).push_back(StudioEvent::Finished {
+            seq,
+            made: result.as_ref().ok().map(|m| m.name(&job)),
+        });
         let mut st = lock(&shared.status);
         st.working = false;
         match result {
             Ok(made) => {
                 st.made += 1;
                 match made {
-                    Made::Monster(_) => {}
+                    Made::Monster(..) => {}
                     Made::Pack { .. } => st.packs += 1,
                     Made::Tips => st.tips += 1,
                 }
@@ -314,8 +371,8 @@ enum Failure {
 
 /// What a finished job produced.
 enum Made {
-    /// A monster, by id.
-    Monster(String),
+    /// A monster, by id and name.
+    Monster(String, String),
     /// A lesson pack: problems kept, and problems turned down.
     #[allow(dead_code)]
     Pack {
@@ -334,7 +391,7 @@ pub fn generate_blocking(
     job: &MonsterJob,
 ) -> Result<String, String> {
     match run(&Job::Monster(job.clone()), client, dir, seed(0)) {
-        Ok(Made::Monster(id)) => Ok(id),
+        Ok(Made::Monster(id, _)) => Ok(id),
         Ok(_) => Err("unexpected result".into()),
         Err(Failure::Rejected(e)) => Err(format!("turned down: {e}")),
         Err(Failure::Call(e)) => Err(format!("the call failed: {e}")),
@@ -375,8 +432,8 @@ fn run(job: &Job, client: &CerebrasClient, dir: &Path, seq: u64) -> Result<Made,
                 (700, 300),
                 || fake_monster_json(seed(seq), m.tier, &m.topic),
             )?;
-            finish_monster(&raw, dir, m.tier, &m.topic)
-                .map(Made::Monster)
+            finish_monster_named(&raw, dir, m.tier, &m.topic)
+                .map(|(id, name)| Made::Monster(id, name))
                 .map_err(Failure::Rejected)
         }
         Job::Lessons(l) => {
@@ -435,6 +492,16 @@ fn seed(seq: u64) -> u64 {
 /// - the name, blurb and fact are vetted ([`vet_text`]);
 /// - the id is made here, from the name, and is unique in the dir.
 pub fn finish_monster(raw: &str, dir: &Path, tier: u32, topic: &str) -> Result<String, String> {
+    finish_monster_named(raw, dir, tier, topic).map(|(id, _)| id)
+}
+
+/// `finish_monster`, also returning the monster's name, for the creation bar.
+fn finish_monster_named(
+    raw: &str,
+    dir: &Path,
+    tier: u32,
+    topic: &str,
+) -> Result<(String, String), String> {
     let slice = extract_json_object(raw).ok_or("no JSON object in the reply")?;
     let mut v: Value = serde_json::from_str(slice).map_err(|e| format!("bad JSON: {e}"))?;
     let obj = v.as_object_mut().ok_or("the reply isn't a JSON object")?;
@@ -477,7 +544,7 @@ pub fn finish_monster(raw: &str, dir: &Path, tier: u32, topic: &str) -> Result<S
     let tmp = monsters.join(format!("{id}.json.tmp"));
     std::fs::write(&tmp, pretty).map_err(|e| e.to_string())?;
     std::fs::rename(&tmp, monsters.join(format!("{id}.json"))).map_err(|e| e.to_string())?;
-    Ok(id)
+    Ok((id, spec.name))
 }
 
 /// `gen-<slug of name>`, with `-2`, `-3`… if the file already exists.
@@ -781,6 +848,63 @@ mod tests {
         let n = std::fs::read_dir(d.join("monsters")).unwrap().count();
         assert_eq!(n, 2);
         let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn each_job_reports_when_it_starts_and_when_it_ends_for_the_creation_bar() {
+        let d = temp_dir("events");
+        let cfg = StudioConfig {
+            enabled: true,
+            rpm: 60,
+            token_budget: u64::MAX,
+        };
+        let studio = Studio::spawn(fake_client(), d.clone(), cfg).unwrap();
+        studio.set_live_busy(true);
+        studio.enqueue(job(2));
+        studio.enqueue(Job::Tips(TipsJob {
+            npc: "Professor Pebble".into(),
+            topic: "division".into(),
+        }));
+        std::thread::sleep(Duration::from_millis(200));
+        assert!(
+            studio.drain_events().is_empty(),
+            "nothing is reported while a live question holds the studio back"
+        );
+        studio.set_live_busy(false);
+        wait_for(&studio, |s| s.made == 2);
+        let events = studio.drain_events();
+        assert_eq!(events.len(), 4, "{events:?}");
+        let StudioEvent::Started { seq, kind, label } = &events[0] else {
+            panic!("{events:?}");
+        };
+        assert_eq!(
+            (*kind, label.as_str()),
+            (RequestKind::Monster, "tier 2 · addition")
+        );
+        let StudioEvent::Finished { seq: done, made } = &events[1] else {
+            panic!("{events:?}");
+        };
+        assert_eq!(done, seq);
+        assert!(
+            made.as_deref().is_some_and(|n| !n.is_empty() && n != label),
+            "a monster comes back by its name: {made:?}"
+        );
+        assert!(matches!(
+            &events[2],
+            StudioEvent::Started { kind: RequestKind::Lesson, label, .. } if label == "tips: division"
+        ));
+        assert!(studio.drain_events().is_empty(), "drained events are gone");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn a_turned_down_reply_finishes_with_nothing_made() {
+        let job = job(1);
+        let made: Result<Made, Failure> = Err(Failure::Rejected("bad".into()));
+        assert_eq!(made.as_ref().ok().map(|m| m.name(&job)), None);
+        let ok = Made::Monster("gen-x".into(), "Xylo".into());
+        assert_eq!(ok.name(&job), "Xylo");
+        assert_eq!(Made::Tips.name(&job), "tier 1 · addition");
     }
 
     #[test]

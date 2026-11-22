@@ -19,9 +19,9 @@ pub mod task_trigger;
 pub mod villain;
 pub mod world;
 
-use crate::content::studio::{self, MonsterJob, Studio, StudioStatus, TipsJob};
+use crate::content::studio::{self, MonsterJob, Studio, StudioEvent, StudioStatus, TipsJob};
 use crate::content::{ContentEvent, Roster};
-use crate::llm::activity::{BarView, GenActivity, JobState};
+use crate::llm::activity::{BarView, GenActivity, JobState, Stock};
 use crate::llm::buffer::{Source, WaitStats};
 use crate::llm::cerebras_client::CerebrasClient;
 use crate::llm::usage::RequestKind;
@@ -222,6 +222,8 @@ pub struct Game {
     studio_made_seen: u32,
     studio_bad_seen: u32,
     studio_settle: f32,
+    /// Studio jobs on the creation bar: the studio's job number and its circle.
+    studio_jobs: Vec<(u64, u32)>,
     /// The roster has been frozen into the world's pool for this run: spec
     /// monsters can stand in zones, and new files join only on the next run.
     roster_frozen: bool,
@@ -255,6 +257,8 @@ const EXPLAIN_PER_STEP_S: f32 = 2.0;
 /// ready. A zone never waits for one (FR32), so the stock has to be built
 /// ahead of the player.
 const STUDIO_STOCK: usize = 3;
+/// What a battle's question calls itself on the creation bar.
+const BATTLE_LABEL: &str = "battle";
 /// Seconds the studio rests after a job the model got wrong.
 const STUDIO_BACKOFF_S: f32 = 20.0;
 
@@ -318,6 +322,7 @@ impl Game {
             studio_made_seen: 0,
             studio_bad_seen: 0,
             studio_settle: 0.0,
+            studio_jobs: Vec::new(),
             roster_frozen: false,
             explain: None,
             packs_loaded: 0,
@@ -464,6 +469,7 @@ impl Game {
     pub fn update(&mut self, dt: f32) {
         self.poll_content();
         self.activity.tick(dt);
+        self.sync_creation_bar();
         if let Some(t) = &mut self.game_over {
             // Only the restart key works once the run is over.
             *t += dt;
@@ -959,6 +965,7 @@ impl Game {
         );
         self.stash_questions();
         self.activity.clear();
+        self.studio_jobs.clear();
         self.player = Player::new(start);
         // A new run takes a new snapshot of the roster, so monsters the studio
         // wrote during the last one can now appear.
@@ -1073,6 +1080,7 @@ impl Game {
             "prefetch" => (RequestKind::Prefetch, 2.5, JobState::Ready),
             "monster" => (RequestKind::Monster, 2.5, JobState::Ready),
             "lesson" => (RequestKind::Lesson, 2.5, JobState::Ready),
+            "line" => (RequestKind::Line, 2.5, JobState::Ready),
             "fallback" => (RequestKind::Question, 2.5, JobState::Fallback),
             "slow" => (RequestKind::Question, 10.0, JobState::Ready),
             _ => return eprintln!("JEKO_DEV: unknown gen kind {what}"),
@@ -1087,8 +1095,15 @@ impl Game {
     }
 
     /// The creation bar's circles (FR33), for the UI to draw.
+    /// In a battle only the battle's own question shows, so a wait never
+    /// looks like a stall; the rest comes back after it.
     pub fn creation_view(&self) -> BarView {
-        self.activity.view()
+        if self.battle.is_some() {
+            self.activity
+                .view_where(|j| matches!(j.kind, RequestKind::Question) && j.label == BATTLE_LABEL)
+        } else {
+            self.activity.view()
+        }
     }
 
     /// Scripted events for the `JEKO_DEV` screenshot hook in `main.rs`.
@@ -1316,7 +1331,7 @@ impl Game {
             job: None,
         };
         let label = if self.battle.is_some() {
-            "battle"
+            BATTLE_LABEL
         } else {
             "flask"
         };
@@ -1364,7 +1379,7 @@ impl Game {
     /// look-ahead answers, polls the shown question and the battle's next one,
     /// and applies the soft deadline.
     fn poll_questions(&mut self, dt: f32) {
-        self.prefetch.poll();
+        self.prefetch.poll(&mut self.activity);
         if let Some((state, ask)) = &mut self.next_question {
             // Back before it was needed: the player never sees a wait.
             if let Some(arrival) = state.poll(&self.fallback_tasks) {
@@ -1433,8 +1448,12 @@ impl Game {
         let range = prefetch::LOOKAHEAD_SCREENS * screen_height();
         let upcoming = self.world.upcoming(self.player.pos.y, range);
         let wants = prefetch::demand(&upcoming, self.progression.level);
-        self.prefetch
-            .tick(&self.client, &wants, std::time::Instant::now());
+        self.prefetch.tick(
+            &self.client,
+            &wants,
+            std::time::Instant::now(),
+            &mut self.activity,
+        );
     }
 
     /// Keeps the studio's stock of unseen generated monsters topped up for the
@@ -1500,19 +1519,64 @@ impl Game {
             }
         }
         // 3. New monsters for the tier ahead (they join the next run, FR21).
-        let tier = crate::content::monster_spec::tier_for_meters(self.distance_m() + 100);
-        let stock = self
-            .roster
+        let tier = self.studio_tier();
+        if self.unseen_generated(tier) < STUDIO_STOCK {
+            self.enqueue_monster(tier);
+        }
+    }
+
+    /// The monster tier the player is heading into, which the studio designs for.
+    fn studio_tier(&self) -> u32 {
+        crate::content::monster_spec::tier_for_meters(self.distance_m() + 100)
+    }
+
+    /// Generated monsters of `tier` the player hasn't met yet: the studio's
+    /// stock, which it keeps at `STUDIO_STOCK`.
+    fn unseen_generated(&self, tier: u32) -> usize {
+        self.roster
             .iter()
             .filter(|s| {
                 studio::is_generated(&s.id)
                     && s.tier == tier
                     && !self.seen_generated.contains(&s.id)
             })
-            .count();
-        if stock < STUDIO_STOCK {
-            self.enqueue_monster(tier);
+            .count()
+    }
+
+    /// Keeps the creation bar (FR33) up to date with the studio: a circle for
+    /// each job it starts, closed (and named, for a monster) when it ends, or
+    /// taken off quietly when the model's answer was turned down. Also tells
+    /// the bar what is ready ahead of need. Runs every frame; a read-only
+    /// mirror, so nothing here touches XP, health or timing (invariant 7).
+    fn sync_creation_bar(&mut self) {
+        if let Some(studio) = &self.studio {
+            for event in studio.drain_events() {
+                match event {
+                    StudioEvent::Started { seq, kind, label } => {
+                        let id = self.activity.start(kind, &label);
+                        self.studio_jobs.push((seq, id));
+                    }
+                    StudioEvent::Finished { seq, made } => {
+                        let Some(at) = self.studio_jobs.iter().position(|(s, _)| *s == seq) else {
+                            continue;
+                        };
+                        let (_, id) = self.studio_jobs.swap_remove(at);
+                        match made {
+                            Some(name) => {
+                                self.activity.rename(id, &name);
+                                self.activity.finish(id, JobState::Ready);
+                            }
+                            None => self.activity.cancel(id),
+                        }
+                    }
+                }
+            }
         }
+        let monsters = self.unseen_generated(self.studio_tier());
+        self.activity.set_stock(Stock {
+            questions: self.prefetch.buffer.len(),
+            monsters,
+        });
     }
 
     /// Tells the studio whether something that outranks it is using the model

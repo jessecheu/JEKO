@@ -249,9 +249,11 @@ without re-checking this.
   bubble: a right answer flusters them, a level-up or a streak makes their frizz
   stand on end (`game/villain.rs`). They only talk; nothing they do changes the
   game.
-- **Creation bar** — circles at the top centre show the model writing a question
-  as it happens: a ring turns while it writes, closes when it lands, and shows how
-  long it took (`ui/creation_bar.rs`, `llm/activity.rs`). Settings can hide it.
+- **Creation bar** — circles at the top centre show the model writing as it
+  happens: live questions, look-ahead questions, and the studio's monsters,
+  lesson packs and tips. A ring turns while it writes, closes when it lands, and
+  shows how long it took, and a line under it says what is already made and
+  waiting (`ui/creation_bar.rs`, `llm/activity.rs`). Settings can hide it.
 - **Streak multiplier** — consecutive correct answers raise XP gain up to
   +100% (`Progression::streak_multiplier`). Getting one wrong resets it to
   zero — this is what makes stopping mid-streak feel costly, which is the

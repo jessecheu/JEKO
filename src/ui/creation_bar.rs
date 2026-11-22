@@ -6,6 +6,10 @@ use egui_macroquad::egui::{self, Color32, Pos2, Stroke};
 pub const CIRCLE_D: f32 = 38.0;
 /// Height of the bar, with the time under each circle.
 pub const BAR_H: f32 = CIRCLE_D + 16.0;
+/// Extra height when the stock caption shows under the circles.
+const CAPTION_H: f32 = 16.0;
+/// The backing's top and bottom margin.
+const FRAME_H: f32 = 4.0;
 const GAP: f32 = 16.0;
 
 const CREAM: Color32 = Color32::from_rgb(246, 238, 216);
@@ -21,28 +25,60 @@ const VIOLET: Color32 = Color32::from_rgb(140, 100, 190);
 /// answered from the local bank closes in grey. A view of `BarView` and
 /// nothing more (invariant 5). `top` is where the bar starts, so it can sit
 /// under the goalpost badge. Returns the bar's height, 0 if nothing is shown.
+///
+/// Under the circles a small line says what is already made and waiting
+/// (look-ahead questions, unseen monsters): the real stock, so the player can
+/// see the generation is running ahead of them.
 pub fn draw(ctx: &egui::Context, view: &BarView, top: f32, reduce_flashing: bool) -> f32 {
     if view.circles.is_empty() {
         return 0.0;
     }
+    let caption = stock_caption(view);
     egui::Area::new(egui::Id::new("creation_bar"))
         .anchor(egui::Align2::CENTER_TOP, egui::vec2(0.0, top))
         .show(ctx, |ui| {
-            ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = GAP;
-                for c in &view.circles {
-                    draw_circle(ui, c, reduce_flashing);
-                }
-                if view.more > 0 {
-                    ui.label(
-                        egui::RichText::new(format!("+{}", view.more))
-                            .strong()
-                            .color(CREAM),
-                    );
-                }
-            });
+            // A dark backing, so the "+N" and the stock line read on any ground.
+            egui::Frame::new()
+                .fill(WOOD_DARK.gamma_multiply(0.72))
+                .corner_radius(10.0)
+                .inner_margin(egui::Margin::symmetric(8, 2))
+                .show(ui, |ui| {
+                    ui.vertical_centered(|ui| {
+                        ui.spacing_mut().item_spacing.y = 0.0;
+                        ui.horizontal(|ui| {
+                            ui.spacing_mut().item_spacing.x = GAP;
+                            for c in &view.circles {
+                                draw_circle(ui, c, reduce_flashing);
+                            }
+                            if view.more > 0 {
+                                ui.label(
+                                    egui::RichText::new(format!("+{}", view.more))
+                                        .strong()
+                                        .color(CREAM),
+                                );
+                            }
+                        });
+                        if let Some(text) = &caption {
+                            ui.label(egui::RichText::new(text).size(12.0).color(CREAM));
+                        }
+                    });
+                });
         });
-    BAR_H
+    BAR_H + FRAME_H + if caption.is_some() { CAPTION_H } else { 0.0 }
+}
+
+/// "ready: 4 questions · 1 monster", or `None` when nothing is waiting.
+fn stock_caption(view: &BarView) -> Option<String> {
+    let s = view.stock;
+    let plural = |n: usize, word: &str| format!("{n} {word}{}", if n == 1 { "" } else { "s" });
+    let mut parts = Vec::new();
+    if s.questions > 0 {
+        parts.push(plural(s.questions, "question"));
+    }
+    if s.monsters > 0 {
+        parts.push(plural(s.monsters, "monster"));
+    }
+    (!parts.is_empty()).then(|| format!("ready: {}", parts.join(" · ")))
 }
 
 fn draw_circle(ui: &mut egui::Ui, c: &CircleView, reduce_flashing: bool) {
@@ -143,6 +179,7 @@ fn kind_name(k: RequestKind) -> &'static str {
         RequestKind::Prefetch => "Question (ahead)",
         RequestKind::Monster => "Monster",
         RequestKind::Lesson => "Lesson",
+        RequestKind::Line => "Line",
     }
 }
 
@@ -216,6 +253,36 @@ fn draw_icon(p: &egui::Painter, kind: RequestKind, c: Pos2, s: f32, a: f32) {
                         c + egui::vec2(dx * s * 1.3, -s * 0.85),
                     ],
                     ink,
+                );
+            }
+        }
+        // A speech bubble with a tail.
+        RequestKind::Line => {
+            let r = egui::Rect::from_center_size(
+                c + egui::vec2(0.0, -s * 0.1),
+                egui::vec2(s * 1.4, s * 1.0),
+            );
+            p.rect(
+                r,
+                s * 0.3,
+                CREAM.gamma_multiply(a),
+                ink,
+                egui::StrokeKind::Middle,
+            );
+            p.add(egui::Shape::convex_polygon(
+                vec![
+                    c + egui::vec2(-s * 0.35, s * 0.35),
+                    c + egui::vec2(-s * 0.5, s * 0.8),
+                    c + egui::vec2(-s * 0.05, s * 0.4),
+                ],
+                CREAM.gamma_multiply(a),
+                ink,
+            ));
+            for dx in [-0.3_f32, 0.0, 0.3] {
+                p.circle_filled(
+                    c + egui::vec2(dx * s, -s * 0.1),
+                    s * 0.08,
+                    WOOD_DARK.gamma_multiply(a),
                 );
             }
         }

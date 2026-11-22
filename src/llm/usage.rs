@@ -21,14 +21,17 @@ pub enum RequestKind {
     Monster,
     /// A lesson pack from the studio (FR22).
     Lesson,
+    /// A line of the villain's, or any other spoken line (FR23, FR33).
+    Line,
 }
 
 impl RequestKind {
-    pub const ALL: [RequestKind; 4] = [
+    pub const ALL: [RequestKind; 5] = [
         RequestKind::Question,
         RequestKind::Prefetch,
         RequestKind::Monster,
         RequestKind::Lesson,
+        RequestKind::Line,
     ];
 
     pub fn label(self) -> &'static str {
@@ -37,6 +40,7 @@ impl RequestKind {
             RequestKind::Prefetch => "prefetch",
             RequestKind::Monster => "monster",
             RequestKind::Lesson => "lesson",
+            RequestKind::Line => "line",
         }
     }
 
@@ -107,7 +111,7 @@ pub struct TokenStats {
     /// Oldest first.
     pub history: VecDeque<RequestUsage>,
     /// Requests and tokens per `RequestKind`, indexed by it.
-    by_kind: [KindTotals; 4],
+    by_kind: [KindTotals; 5],
 }
 
 /// One kind's share of the session.

@@ -116,7 +116,7 @@ The layering holds today, and new code should keep it:
 | `config.rs` | `Config::load()`: reads `CEREBRAS_API_KEY`, `CEREBRAS_MODEL`, `CEREBRAS_BASE_URL` from the environment, after `dotenvy` loads `.env`. An empty key counts as no key. `instance_name()`: `JEKO_INSTANCE`, else the folder the binary was built from (`CARGO_MANIFEST_DIR`), shown in the window title. |
 | `content/mod.rs` | `ContentEvent` (a spec, lesson pack or tips file loaded or reloaded, a monster removed, a file rejected), `Roster` (the loaded specs by id, sorted), and `content_dir()`. |
 | `content/monster_spec.rs` | `MonsterSpec`, a monster as data, and `parse`, the only way in: JSON in, a clamped and validated spec out. `MonsterInfo`, the gameplay numbers every monster has, and the tier table (`MonsterSpec::info`). |
-| `content/studio.rs` | `Studio`, the background designer and writer: one thread, a job queue (`Job::Monster`, `Job::Lessons`, `Job::Tips`), the gate that keeps it behind live questions (`set_live_busy`), the per-minute cap and token budget (`StudioConfig`), and `StudioStatus`. `finish_monster` turns a model reply into a spec file (the only writer of generated specs), `vet_text` (re-exported from `content::vet`) vets what it writes, and `fake_monster_json` is the stand-in model's creature. |
+| `content/studio.rs` | `Studio`, the background designer and writer: one thread, a job queue (`Job::Monster`, `Job::Lessons`, `Job::Tips`), the gate that keeps it behind live questions (`set_live_busy`), the per-minute cap and token budget (`StudioConfig`), `StudioStatus`, and a queue of `StudioEvent`s (a job started, a job finished and what it made) that the game drains for the creation bar. `finish_monster` turns a model reply into a spec file (the only writer of generated specs), `vet_text` (re-exported from `content::vet`) vets what it writes, and `fake_monster_json` is the stand-in model's creature. |
 | `content/prompts.rs` | `monster_prompt`: what the studio asks the model for (a kid-safe, original creature in the spec's own vocabulary, with a shipped spec as the shape to follow), the lists of allowed values, and the maths topics. |
 | `content/vet.rs` | `vet_text`, the whole-word blocklist (other people's characters, anything not for a children's game). Used by `dialogue::check_bank`, `validate_content` and the studio, lesson and tips loaders; a monster spec's own loader doesn't apply it. |
 | `content/lessons.rs` | Lesson packs (FR22): `parse_pack` (verifies every problem when a file loads), `finish_pack` (a model reply to a verified pack file, never overwriting), and the stand-in model's pack. |
@@ -124,11 +124,11 @@ The layering holds today, and new code should keep it:
 | `content/watcher.rs` | `Scanner` (one rescan of `monsters/`, `lessons/` and `tips/`, by modification time and length) and `spawn`, the thread that runs it every `POLL` (0.5 s). |
 | `llm/mod.rs` | `MathTask { topic, problem, answer: f64, hint, difficulty, explanation, expression }`, the one task type every question path produces (the last two are FR22's and default to empty), and `fallback_bank()`, the compiled-in bank. |
 | `llm/expr.rs` | `eval` (a tiny arithmetic evaluator) and `verify` (a generated problem passes only if its `answer` equals its `expression`; FR22). |
-| `llm/activity.rs` | `GenActivity` (FR33): the jobs the creation bar shows, one per model call being written, each `Writing`, then `Ready` or `Fallback`. `view()` gives the bar's circles (oldest three, and the count of the rest). A read-only mirror: nothing reads it to decide anything. |
+| `llm/activity.rs` | `GenActivity` (FR33): the jobs the creation bar shows, one per model call being written, each `Writing`, then `Ready` or `Fallback`, plus the `Stock` ready ahead of need (look-ahead questions, unseen generated monsters). `view()` gives the bar's circles (oldest three, and the count of the rest) and the stock; `view_where` leaves jobs out (a battle). A read-only mirror: nothing reads it to decide anything. |
 | `llm/buffer.rs` | `QuestionBuffer` (ready questions per difficulty, with an optional strict topic), `plan_prefetch` (the pure look-ahead policy and its `PrefetchCaps`), and `WaitStats` (where each shown question came from and how long the player waited). |
 | `llm/cerebras_client.rs` | `CerebrasClient`: the async wrappers (live and look-ahead), the blocking chat-completions call with its `RequestKind` tag, the shared token stats, and the `fakemodel` stand-in. |
 | `llm/task_gen.rs` | The prompt templates (`build_prompt(difficulty, topic)` for a live question, `build_pack_prompt` for a lesson pack) and lenient JSON extraction (`extract_json_object` / `_array`). |
-| `llm/usage.rs` | `RequestKind` (question, prefetch, monster, lesson), `RequestUsage` (one call's tokens and speed) and `TokenStats` (session totals, per-kind totals, and the last 24 requests). |
+| `llm/usage.rs` | `RequestKind` (question, prefetch, monster, lesson, line), `RequestUsage` (one call's tokens and speed) and `TokenStats` (session totals, per-kind totals, and the last 24 requests). |
 | `game/mod.rs` | `Game`: run state, the per-frame update and draw, the mode precedence, the damage, answer and reset entry points, and the dev events. |
 | `game/task_trigger.rs` | `TriggerState`, the question state machine (§4), `Arrival` (how a `Loading` request ended), and `pick_fallback`. |
 | `game/prefetch.rs` | `Prefetch`: the question buffer, the look-ahead requests in flight and their per-minute budget; `demand` (what the road ahead needs); `plan_lesson` (which pack the studio writes next); the soft deadlines; `Ask` (a question asked for and not yet shown). |
@@ -174,7 +174,7 @@ which is why network work goes to a thread (§4). Each iteration does this, in o
 7. **egui pass** (`egui_macroquad::ui`): `ui::style::apply`, then set
    `game.typing = ctx.wants_keyboard_input()`, then draw the panels. The HUD and token
    panel are hidden during a battle, a dialogue or while the map is open. The goalpost badge (`goalpost_panel`, FR31) shows when
-   `game.goalpost.view()` has something, and the toast steps down below it. The creation bar (`creation_bar`, FR33, `settings.show_creation_bar`) sits under the badge and pushes the toast down in turn; it hides in the hub, in a dialogue, on the map and at Game Over, and in a battle it holds only the battle's own question. The map panel (`map_panel::draw`) draws from `game.map_view()`. The minimap (`minimap::draw`, top right, `settings.show_minimap`) draws the same `MapView` as a small window around the player, hidden in the same cases as the HUD, and returns its bottom edge so the HUD sits beneath it. The task panel returns
+   `game.goalpost.view()` has something, and the toast steps down below it. The creation bar (`creation_bar`, FR33, `settings.show_creation_bar`) sits under the badge and pushes the toast down in turn; it hides in the hub, in a dialogue, on the map and at Game Over, and in a battle it holds only the battle's own question (`Game::creation_view`). It stays up while a flask problem is open, so the ready pop shows. The map panel (`map_panel::draw`) draws from `game.map_view()`. The minimap (`minimap::draw`, top right, `settings.show_minimap`) draws the same `MapView` as a small window around the player, hidden in the same cases as the HUD, and returns its bottom edge so the HUD sits beneath it. The task panel returns
    `TaskPanelEvent::Submit`, which calls `game.submit_answer()`. The Game Over panel
    returns `true`, which calls `game.reset()`.
 8. `egui_macroquad::draw()`, then the `JEKO_SHOT` screenshot check, then `next_frame().await`.
@@ -819,17 +819,34 @@ values passed to it as `&mut`.
 | `game_over_panel::draw` | modal | `Game` (run stats, best distance) | returns `true` to restart |
 
 **The creation bar** (FR33). `Game.activity` (`llm::activity::GenActivity`) is advanced in
-`Game::update` and opened and closed where questions are asked and land: `request_task` opens a
-`Question` job (labelled `flask` or `battle`) for a live call, `poll_questions` ends it `Ready`
-when the answer lands or `Fallback` when the call failed or missed the soft deadline, and
-`stash_questions` cancels the ones let go of (their answers still go to the buffer). A question
-taken from the buffer makes no job, since nothing was generated; with no API key the bank's
-answer shows as an instant `Fallback` job. The ring is a stage ring, not a percentage: an arc
-turns while the job is `Writing`, closes when it ends, the icon pops with a spark (no spark and
-a slower arc with reduce flashing), and the time it took shows underneath (`bank` for a
-fallback). A job still open after 12 s is dropped, and an ended one stays 2.2 s. Three circles at
-most, then "+N". Prefetch, monster and lesson kinds are in `RequestKind` but nothing opens
-them yet. It never changes XP, HP, answers or timing (invariant 7).
+`Game::update`, and a job is opened and closed wherever the model is asked and answers:
+
+- *Live questions.* `request_task` opens a `Question` job (labelled `flask` or `battle`),
+  `poll_questions` ends it `Ready` when the answer lands or `Fallback` when the call failed or
+  missed the soft deadline, and `stash_questions` cancels the ones let go of (their answers still
+  go to the buffer). A question taken from the buffer makes no job, since nothing was generated;
+  with no API key the bank's answer shows as an instant `Fallback` job.
+- *Look-ahead.* `Prefetch::tick` opens a `Prefetch` job (`ahead, level N`) for each request it
+  sends and `Prefetch::poll` ends it `Ready` as the answer reaches the buffer. A failed one is
+  taken off quietly (nothing was shown in its place). A request adopted from a live one has no
+  job of its own.
+- *The studio.* The studio thread pushes a `StudioEvent::Started` when a request goes out (after
+  its gate, so a held job shows nothing) and a `Finished` when it ends. `Game::sync_creation_bar`
+  drains them each frame: `Monster` for a monster, `Lesson` for a pack or Pebble's tips; a made
+  monster's circle is renamed to its name, and a turned-down or failed job is taken off.
+  `studio_jobs` maps the studio's job number to its circle.
+- *Stock.* `sync_creation_bar` also sets `Stock`: the buffer's size and the unseen generated
+  monsters for the tier ahead (`unseen_generated`, the same count the studio tops up). The bar
+  prints it under the circles as "ready: 9 questions · 2 monsters".
+- *Lines.* `RequestKind::Line` has its icon and `gen:line`, but nothing opens it: the villain's
+  lines are canned until FR23 B.
+
+The ring is a stage ring, not a percentage: an arc turns while the job is `Writing`, closes when
+it ends, the icon pops with a spark (no spark and a slower arc with reduce flashing), and the time
+it took shows underneath (`bank` for a fallback). A job still open after 12 s is dropped, and an
+ended one stays 2.2 s. Three circles at most, then "+N", on a dark backing. In a battle
+`creation_view` keeps only the `battle` question. It never changes XP, HP, answers or timing
+(invariant 7).
 
 **The goalpost badge** (FR31). `Game::tick_goalpost` asks `World::next_goalpost` for the next
 thing up the road (§6) and feeds it to `goalpost::Tracker`, which owns the animation: a
@@ -900,7 +917,7 @@ driving the window:
   call from the fallback bank after 700 ms, with made-up token counts, so the buffer, the
   soft deadline and the token panel's wait readout can be tried with no key. The studio
   uses it too: it writes made-up creatures, so the whole path from job to a fightable
-  monster runs offline. `genmonster@N` queues one tier 2 job, `gen:question` (also `gen:fallback`, `gen:monster`, `gen:lesson`, `gen:slow`) queues a fake creation-bar job that writes for 2.5 s (10 s for `slow`) and ends, `cards` unlocks four field guide cards and
+  monster runs offline. `genmonster@N` queues one tier 2 job, `gen:question` (also `gen:fallback`, `gen:prefetch`, `gen:monster`, `gen:lesson`, `gen:line`, `gen:slow`) queues a fake creation-bar job that writes for 2.5 s (10 s for `slow`) and ends, `cards` unlocks four field guide cards and
   `guide` opens the guide. `tospec` and `tospecblock` teleport to the first
   zone (or road blocker) that holds a spec monster.
 - With either variable set, the loop steps a fixed 1/60 s, so a run is repeatable
@@ -918,7 +935,7 @@ driving the window:
 | `content/tips.rs` (3) | A good reply becomes a tips file that loads back; bad lines are dropped and an empty result is an error; the prompt names the topic. |
 | `game/field_guide.rs` (4) | Every built-in has a card with a fact; a card unlocks once and stays; spec monsters get cards after the built-ins; ids never collide. |
 | `progression/` (3) | Answers count per topic ignoring case; the weakest topic needs a few tries and a poor score; missed problems come back once, oldest first, and only a few are kept. |
-| `content/studio.rs` (12) | A good reply becomes a loadable file with the tier forced and the special limited. Ids are unique, fit the limit and alphabet. Bad, off-limits and hostile replies are rejected or clamped and write nothing. Whole-word vetting. The stand-in model's creatures always pass. The worker writes one file per job, holds jobs while a live question is loading, obeys the minute cap and stops at the token budget. No key or switched off means no studio. |
+| `content/studio.rs` (14) | A good reply becomes a loadable file with the tier forced and the special limited. Ids are unique, fit the limit and alphabet. Bad, off-limits and hostile replies are rejected or clamped and write nothing. Whole-word vetting. The stand-in model's creatures always pass. The worker writes one file per job, holds jobs while a live question is loading, obeys the minute cap and stops at the token budget. No key or switched off means no studio. Each job reports when it starts and ends, and a held job reports nothing; a monster comes back by its name. |
 | `content/prompts.rs` (5) | The shipped example is valid, every value the prompt lists is accepted by the parser, the prompt carries the tier, topic and names to avoid, and every level has topics that fit a theme. |
 | `content/mod.rs` (1) | A rejected file keeps the last good version in the roster; a delete removes it. |
 | `game/monster_rig.rs` (2) | The palette check's `INK_RGB` matches `gfx::INK`; parts spread evenly. |
@@ -927,13 +944,13 @@ driving the window:
 | `game/villain.rs` (15) | The shipped line bank passes its own check and a bad one (unknown cue, missing cue, too long once a number is filled in, a blocked word, a placeholder on the wrong cue, `vanish`, an unknown mood, too few lines) is rejected. The doctor's target is always at least 150 px north of the player and near the road, a player sprinting for 40 s never reaches them, and one who gains on them makes them scurry. They arrive at the gate, are away in the hub (cues dropped) and don't greet twice in a run. The biggest waiting cue is the one said, bubbles keep 8 s apart, a stale small cue lapses and a big one waits. Lines rotate and fill in numbers. A level, a streak of 5, each 100 m and low hearts each become one cue. The same run plays the same every time. A reset goes back to before the first sighting. Every pose stays in bounds for every action. |
 | `game/gfx.rs` (2) | `wrap_text` breaks at spaces, loses nothing and gives a long word its own line. |
 | `game/manor.rs` (1) | Lightning strikes now and then (under 12% of frames), stays in 0..1, and is the same every run. |
-| `llm/activity.rs` (10) | A job writes, then is ready and remembers how long it took; a failure shows as fallback; ending twice keeps the first ending; a finished job leaves after lingering; one nobody ended goes stale; cancel; the bar shows three circles and counts the rest; the pop and fade; an instant job; a scripted job ends by itself. |
+| `llm/activity.rs` (13) | A job writes, then is ready and remembers how long it took; a failure shows as fallback; ending twice keeps the first ending; a finished job leaves after lingering; one nobody ended goes stale; cancel; the bar shows three circles and counts the rest; the pop and fade; an instant job; a scripted job ends by itself; a job is renamed once made; the view can leave jobs out and counts only the rest; the view carries the stock. |
 | `llm/usage.rs` (6) | Provider-timed vs round-trip speed, zero time ignored, no usage block, the capped history, totals split by kind. |
 | `llm/expr.rs` (5) | The evaluator follows the usual rules (precedence, parentheses, unary minus, `×` `÷` `−`), rejects anything that isn't plain arithmetic (powers, functions, division by zero, `1 2` as 12), bounds hostile input (nesting, length), and `verify` passes a problem only when its answer matches its expression. |
 | `llm/mod.rs` (2) | The compiled-in bank loads, every answer in it checks out and has an explanation; a task without the FR22 fields still loads. |
 | `llm/task_gen.rs` (3) | The live prompt asks for an expression and explanation and takes a topic; the pack prompt names count, topic, level and what was missed; JSON is pulled out of chatty replies. |
 | `llm/buffer.rs` (11) | The buffer gives the exact difficulty, else one below, never a harder one, and prefers a topic. `plan_prefetch` asks for what's missing nearest first, counts ready and in-flight questions, and obeys the in-flight, per-difficulty and per-minute caps. `WaitStats` reads out as the panel shows it. A topic takes only that topic; a question isn't added twice. |
-| `game/prefetch.rs` (7) | A flask wants one question and a monster its hits plus a spare, clamped to difficulty 5. Env switches parse. Landed answers reach the buffer and failures vanish. A disabled prefetcher asks for nothing. A missed problem comes back first as similar practice; a thin buffer asks for the weakest topic, else the rotation; a stocked one asks for nothing. |
+| `game/prefetch.rs` (9) | A flask wants one question and a monster its hits plus a spare, clamped to difficulty 5. Env switches parse. Landed answers reach the buffer and failures vanish. A look-ahead has a circle that closes when it lands and goes quietly when it fails, and sending one opens it. A disabled prefetcher asks for nothing. A missed problem comes back first as similar practice; a thin buffer asks for the weakest topic, else the rotation; a stocked one asks for nothing. |
 | `game/bow.rs` (2) | The shot draws, then releases, then lowers. An arrow flies the way it was loosed, comes down a believable distance away, then goes away. |
 | `game/health.rs` (4) | Starts full; damage, heal and refill clamping. |
 | `game/curse.rs` (8) | Nothing happens in the hub before the road. It starts the first time the player is past the gate. Standing still fills it, then drains on the interval. Walking north holds it back, even at the far end of the ramp. Old ground gives no relief. The hub lifts it. Stage toasts replay only after it clears. Cleanse and speed clamp. |

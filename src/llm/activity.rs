@@ -75,11 +75,29 @@ pub struct CircleView {
     pub alpha: f32,
 }
 
+/// What is ready ahead of need (FR33 milestone B): the real stock, never a
+/// guess. Set by `Game` from the question buffer and the roster.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Stock {
+    /// Look-ahead questions waiting in the buffer.
+    pub questions: usize,
+    /// Generated monsters not met yet, for the tier coming up.
+    pub monsters: usize,
+}
+
+impl Stock {
+    pub fn is_empty(&self) -> bool {
+        self.questions == 0 && self.monsters == 0
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct BarView {
     pub circles: Vec<CircleView>,
     /// Jobs beyond `MAX_CIRCLES`.
     pub more: usize,
+    /// What is ready ahead of need, shown under the circles.
+    pub stock: Stock,
 }
 
 #[derive(Debug, Default)]
@@ -87,6 +105,7 @@ pub struct GenActivity {
     jobs: Vec<GenJob>,
     next_id: u32,
     clock: f32,
+    stock: Stock,
 }
 
 impl GenActivity {
@@ -126,6 +145,19 @@ impl GenActivity {
             j.script = Some((self.clock + secs, end));
         }
         id
+    }
+
+    /// Renames a job, for a creation whose name is only known once it is made
+    /// (a monster's, a lesson's title).
+    pub fn rename(&mut self, id: u32, label: &str) {
+        if let Some(j) = self.jobs.iter_mut().find(|j| j.id == id) {
+            j.label = label.to_string();
+        }
+    }
+
+    /// Sets what is ready ahead of need.
+    pub fn set_stock(&mut self, stock: Stock) {
+        self.stock = stock;
     }
 
     /// Ends a job. Ending one twice, or one that's gone, does nothing.
@@ -184,8 +216,14 @@ impl GenActivity {
     /// What the bar draws: the oldest `MAX_CIRCLES` jobs, then the count of
     /// the rest.
     pub fn view(&self) -> BarView {
-        let circles = self
-            .jobs
+        self.view_where(|_| true)
+    }
+
+    /// The same, for the jobs `keep` lets through (in a battle only the
+    /// battle's own question shows).
+    pub fn view_where(&self, keep: impl Fn(&GenJob) -> bool) -> BarView {
+        let shown: Vec<&GenJob> = self.jobs.iter().filter(|j| keep(j)).collect();
+        let circles = shown
             .iter()
             .take(MAX_CIRCLES)
             .map(|j| {
@@ -204,7 +242,8 @@ impl GenActivity {
             .collect();
         BarView {
             circles,
-            more: self.jobs.len().saturating_sub(MAX_CIRCLES),
+            more: shown.len().saturating_sub(MAX_CIRCLES),
+            stock: self.stock,
         }
     }
 }
@@ -305,6 +344,43 @@ mod tests {
         assert_eq!(a.view().circles[0].alpha, 1.0);
         a.tick(LINGER_S - POP_S * 1.5 - 0.2);
         assert!(a.view().circles[0].alpha < 1.0);
+    }
+
+    #[test]
+    fn a_job_can_be_renamed_once_its_name_is_known() {
+        let mut a = GenActivity::new();
+        let id = a.start(RequestKind::Monster, "tier 2");
+        a.rename(id, "Bramblehog");
+        assert_eq!(a.view().circles[0].label, "Bramblehog");
+        // A job that's gone is harmless.
+        a.cancel(id);
+        a.rename(id, "x");
+    }
+
+    #[test]
+    fn the_view_can_leave_jobs_out_and_counts_only_the_rest() {
+        let mut a = GenActivity::new();
+        a.start(RequestKind::Prefetch, "ahead");
+        a.start(Q, "battle");
+        for _ in 0..4 {
+            a.start(RequestKind::Prefetch, "ahead");
+        }
+        let v = a.view_where(|j| j.label == "battle");
+        assert_eq!(v.circles.len(), 1);
+        assert_eq!(v.more, 0);
+        assert_eq!(a.view().more, 3);
+    }
+
+    #[test]
+    fn the_view_carries_the_stock() {
+        let mut a = GenActivity::new();
+        assert!(a.view().stock.is_empty());
+        a.set_stock(Stock {
+            questions: 4,
+            monsters: 1,
+        });
+        assert_eq!(a.view().stock.questions, 4);
+        assert!(!a.view().stock.is_empty());
     }
 
     #[test]
