@@ -17,6 +17,35 @@ use jeko::content::{self, monster_spec};
 use jeko::llm::{cerebras_client::CerebrasClient, task_gen};
 use serde_json::json;
 use std::fs;
+use std::time::Duration;
+
+/// Cerebras answers 429 when its queue is full or a quota window is used up, and
+/// both clear within a minute. This is a batch tool, so wait and retry instead of
+/// failing the whole bank over one busy moment.
+const MAX_ATTEMPTS: u32 = 8;
+
+fn is_transient(e: &anyhow::Error) -> bool {
+    let text = format!("{e:#}");
+    ["429", "500", "502", "503", "504", "timed out", "timeout"]
+        .iter()
+        .any(|needle| text.contains(needle))
+}
+
+fn request_with_retry(client: &CerebrasClient, system: &str, user: &str) -> anyhow::Result<String> {
+    let mut wait = 5;
+    for attempt in 1..=MAX_ATTEMPTS {
+        match client.request_raw_blocking(system, user) {
+            Ok(raw) => return Ok(raw),
+            Err(e) if attempt < MAX_ATTEMPTS && is_transient(&e) => {
+                eprintln!("attempt {attempt}/{MAX_ATTEMPTS} failed ({e:#}); retrying in {wait} s");
+                std::thread::sleep(Duration::from_secs(wait));
+                wait = (wait * 2).min(60);
+            }
+            Err(e) => return Err(e),
+        }
+    }
+    unreachable!("the last attempt returns above")
+}
 
 const NPC_NAMES: &[&str] = &["Professor Pebble", "Wanderer Finch", "Old Lantern"];
 
@@ -53,7 +82,7 @@ no markdown fences, no extra prose.";
 encourages a student exploring a math-themed overworld. Keep it upbeat and age-appropriate."
         );
 
-        let raw = client.request_raw_blocking(system, &user)?;
+        let raw = request_with_retry(&client, system, &user)?;
         let json_slice = task_gen::extract_json_array(&raw)
             .ok_or_else(|| anyhow::anyhow!("no JSON array in response: {raw}"))?;
         let lines: Vec<String> = serde_json::from_str(json_slice)?;

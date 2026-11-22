@@ -32,15 +32,16 @@ up)
   if pgrep -f "openclaw.*(agent --local|gateway)" >/dev/null 2>&1; then
     echo "note: another OpenClaw process is running; if it is a --local run the Gateway cannot start until it ends" >&2
   fi
-  setsid nohup "$oc" gateway > "$state/gateway.log" 2>&1 < /dev/null &
+  setsid nohup "$oc" gateway --allow-unconfigured > "$state/gateway.log" 2>&1 < /dev/null &
   echo $! > "$state/gateway.pid"
-  # Wait for it to answer, up to 60 s.
-  for _ in $(seq 60); do
+  # Wait for it to answer. If a --local run holds the state lock the Gateway waits up to
+  # 300 s for it, so allow 330 s.
+  for _ in $(seq 330); do
     "$oc" gateway status 2>/dev/null | grep -qiE "running|reachable|listening" && { echo "Gateway up (pid $(cat "$state/gateway.pid")), log $state/gateway.log"; exit 0; }
     kill -0 "$(cat "$state/gateway.pid")" 2>/dev/null || die "Gateway exited; see $state/gateway.log"
     sleep 1
   done
-  die "Gateway did not come up in 60 s; see $state/gateway.log"
+  die "Gateway did not come up in 330 s; see $state/gateway.log"
   ;;
 run)
   agent="${2:-}"; [ -n "$agent" ] || die "usage: run AGENT MESSAGE"
@@ -48,7 +49,8 @@ run)
   gateway_pid >/dev/null || die "Gateway is not running; start it with: $0 up"
   log="$state/$agent-$(date +%Y%m%d-%H%M%S).log"
   # No --local: the call goes to the Gateway, so runs of different agents overlap.
-  setsid nohup "$oc" agent --agent "$agent" --message "$msg" > "$log" 2>&1 < /dev/null &
+  # A fresh session per run: reusing one grows its history, and every turn resends it.
+  setsid nohup "$oc" agent --agent "$agent" --session-id "$agent-$(date +%s)" --message "$msg" > "$log" 2>&1 < /dev/null &
   echo $! > "${log%.log}.pid"
   echo "started $agent (pid $!), log $log"
   ;;

@@ -10,6 +10,13 @@ JEKO is a kids' math exploration game. Its NPCs (Professor Pebble, Wanderer Finc
 Old Lantern) say one-sentence lines from `assets/dialogue.json`. You refresh that
 file. You don't edit it by hand, you don't commit, and you never push.
 
+## Act, don't ask
+
+Start with step 1 straight away using your `exec` tool. Do not ask the owner for an
+API key or for permission first: the checkout's `.env` holds the key, and `make
+gen-content` reads it. Ask only after `make gen-content` itself prints
+`set CEREBRAS_API_KEY`. A reply with no command run is wrong.
+
 ## Where the repo is
 
 This skill lives at `openclaw/skills/jeko-dialogue/` inside the JEKO checkout, so the
@@ -33,7 +40,8 @@ git rev-parse --show-toplevel   # must print the JEKO checkout; if not, stop and
      read, print, copy or create `.env` or any other secret file.
    - If it fails for any other reason, report the error text as it is. Don't retry in
      a loop: one retry for a network error is enough.
-3. **Check.** Run `make validate`. It must end with `ok` for the dialogue file and the
+3. **Check.** Run `make validate 2>&1 | tail -4` (the build prints long compiler
+   warnings you don't need). It must end with `ok` for the dialogue file and the
    content dir and exit 0. If it fails, run `git checkout -- assets/dialogue.json` to
    put the old file back and report the failure.
 4. **Read the lines yourself.** Open `assets/dialogue.json` and read every line. These
@@ -41,14 +49,17 @@ git rev-parse --show-toplevel   # must print the JEKO checkout; if not, stop and
    the game, with no real people, brands or characters from other games. If any line
    isn't, restore the old file as in step 3 and report which line and why. The word
    check is a floor, not a review.
-5. **Show the diff.** Run `git diff --stat assets/dialogue.json` and
-   `git diff assets/dialogue.json`, and summarise: how many lines changed per NPC and
+5. **Show the diff.** Run `git diff --stat assets/dialogue.json` (you
+   already read the new lines in step 4, so skip the full diff), and summarise: how many lines changed per NPC and
    two or three examples of the new lines.
 6. **Stop.** Leave the change uncommitted in the working tree. Tell the owner that the
    file is compiled into the game, so the new lines show up after a rebuild
    (`make run`), and that `git checkout -- assets/dialogue.json` undoes it.
 
 ## Rules
+
+- Keep tool output small: the model provider rate-limits tokens per minute, and every
+  tool result is sent again on each turn. Pipe long output through `tail`.
 
 - Touch only `assets/dialogue.json`. Don't change code, other assets or `content/`.
 - Don't add or rename NPCs. The game looks up Professor Pebble by name.
