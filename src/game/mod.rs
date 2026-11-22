@@ -1217,12 +1217,7 @@ impl Game {
                 self.damage_player(self.health.current, None);
             }
             "jump" => self.player.action = player::Action::Jump { t: 0.0 },
-            "roll" => {
-                self.player.action = player::Action::Roll {
-                    t: 0.0,
-                    dir: self.player.facing,
-                }
-            }
+            "roll" => self.player.start_roll(Vec2::ZERO),
             "shoot" => self.player.shoot(),
             // Spends every roll charge and the stamina (FR26), for a shot
             // of the skill bar recovering.

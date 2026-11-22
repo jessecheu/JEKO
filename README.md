@@ -139,8 +139,8 @@ hunting required.
    open its task (you stay put until it's answered). Press E again to jump
    into the answer field, type the number, and hit Enter. **M** opens the map of the road you've walked (the world pauses). At a safe stop's cottage (every 250 m), **E** opens the gear shop. No mouse needed
    (clicking the field and Submit still works). **Space** jumps,
-   **Ctrl** rolls (3 in a row, then a short wait) and **F** shoots an arrow from your bow (all cosmetic for
-   now; in a battle, a right answer is shown as a bow shot). **P** pauses,
+   **Ctrl** rolls the way you're steering (3 in a row, then a short wait) and **F** shoots an arrow from your bow (the
+   shot is cosmetic for now; in a battle, a right answer is shown as a bow shot). **P** pauses,
    **G** opens the field guide (a card for each monster you've beaten) and **O** opens settings
    (O or Esc closes them).
    The run starts in Professor Pebble's camp at the forest edge (press E by

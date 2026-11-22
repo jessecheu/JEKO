@@ -139,7 +139,7 @@ The layering holds today, and new code should keep it:
 | `game/decor.rs` | Per-chunk forest scenery generation (`generate_chunk`), the hand-placed hub camp (`hub_layout`) and each safe stop's furnishings (`stop_layout`), how each prop draws, and which props cast light (`Decoration::lights`). |
 | `game/manor.rs` | The gothic manor backdrop (`draw`, with an optional lake reflection), its lightning timing (`lightning`), and the shared `bat` silhouette. |
 | `game/gfx.rs` | The shared drawing vocabulary: the `INK`, `SHADOW`, `MOON`, `LANTERN`, `LAB_GREEN` and `NIGHT` colours, shading, ellipses, ribbons, stars, gradient meshes (`gradient_ring`, `glow`, `vignette`), the potion flask, hearts, the key prompt, the speech bubble (`speech_bubble`, with `wrap_text`), the item-get burst and the sparkle it's made of (`sparkle_burst`, also used for a gear picked up), and `hash01`. |
-| `game/player.rs` | `Player`: movement, the cosmetic `Action`s (jump, roll, shoot), the arrows it has loosed, its `Skills`, stun, cheer, death, the stolen hat, and the sprite drawn through a render target. |
+| `game/player.rs` | `Player`: movement, the `Action`s (jump, roll, shoot; only the roll moves the player), the arrows it has loosed, its `Skills`, stun, cheer, death, the stolen hat, and the sprite drawn through a render target. |
 | `game/skills.rs` | Movement skills (FR26): `RollCharges` (3 rolls, a trickle, a lockout) and `Stamina` (sprint drain, regen, winded), held together in `Skills`, and `draw_bar`, the skill bar at the bottom centre. |
 | `game/bow.rs` | The bow: the shot's timing (`aim`, `SHOOT_S`, `RELEASE_S`), drawing the bow slung and held and an arrow (`draw_arrow`), and `Arrow`, a cosmetic projectile that arcs, then sticks in the ground or splashes in the lake. |
 | `game/map.rs` | The discovery map (FR27): `Discovery` (the furthest `y` reached, kept on `Game`) and `snapshot`, which samples the world functions and the flasks and zones for the discovered stretch and returns a `MapView` (landmarks, the road's centreline, the player). No egui. |
@@ -745,9 +745,14 @@ unless `JEKO_STUDIO=off`, `main` starts one long-lived thread that designs monst
   cycle advances by the distance actually moved, so it stops against the railing. A
   stun or the cheer pose blocks movement. `Player::stop(dt)` holds the player in place
   but keeps effects ticking.
-- **Cosmetic actions.** `Action::Jump` (Space), `Action::Roll` (Ctrl) and
-  `Action::Shoot` (F, `SHOOT_KEY`) change only how the sprite is drawn. They never
-  change position, speed or anything gameplay reads. Only one runs at a time.
+- **Actions.** `Action::Jump` (Space), `Action::Roll` (Ctrl) and
+  `Action::Shoot` (F, `SHOOT_KEY`). Jump and shoot change only how the sprite is drawn.
+  The roll also moves the player: `Player::start_roll` takes the held WASD/arrow
+  direction (the way they face, sideways, if none is held) as the roll's `heading`,
+  and while it plays `Player::update` slides the player `ROLL_DISTANCE` (90 px) along
+  it over `ROLL_S` (0.4 s), through the same `constrain` closure as walking. The keys
+  don't steer a roll, and it ignores the Speed Boost and the curse. Only one action
+  runs at a time.
 - **Skills** (`game/skills.rs`, FR26). `Player.skills` limits the roll and the sprint.
   The roll has `ROLL_CHARGES` (3): Ctrl spends one (`RollCharges::try_use`) and does
   nothing with none left. A spent charge comes back after `ROLL_RECHARGE_S` (1.0 s)
@@ -1043,8 +1048,10 @@ the owner, and update this section if it goes ahead.
 6. **One door per rule.** HP changes go through `damage_player`, `Health::heal`,
    `Health::refill` and `Health::add_heart` (the shop, through `Game::buy`, the one way gears are spent). Questions start through `request_task`. Answers are judged in
    `submit_answer`.
-7. **Cosmetic means cosmetic.** `Action`s, the bow's arrows, the mad scientist (FR23), the planned pet cat (FR34)
-   and visual effects never change XP, speed, answers or battle results.
+7. **Cosmetic means cosmetic.** The jump and shoot `Action`s, the bow's arrows, the mad scientist (FR23), the planned pet cat (FR34)
+   and visual effects never change XP, speed, answers or battle results. The one
+   exception is the roll, which moves the player along its heading (the owner's call,
+   2026-11-21); it still changes no XP, answers or battle results.
 8. **Animation runs on the game clock.** Use `Game.time` or per-object timers advanced
    by `dt`, so pausing freezes everything.
 9. **Reduce flashing is honoured** by every flicker, flash and shake.

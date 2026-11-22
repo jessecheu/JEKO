@@ -12,6 +12,9 @@ pub const SPAWN_FLICKER_S: f32 = 2.0;
 const JUMP_S: f32 = 0.45;
 const JUMP_HEIGHT: f32 = 22.0;
 const ROLL_S: f32 = 0.4;
+/// How far a roll carries the player, in world px, before the road's edges
+/// stop it short. Not scaled by upgrades or the curse: it's a dash.
+const ROLL_DISTANCE: f32 = 90.0;
 /// Holding Shift multiplies walking speed by this, while there's stamina
 /// for it (FR26). It stacks with the Speed Boost upgrade.
 const SPRINT_MULTIPLIER: f32 = 1.6;
@@ -34,18 +37,20 @@ const SPRITE_RES: f32 = 2.0;
 /// Height of the body's center above the feet: what a roll spins around.
 const BODY_CENTER: f32 = 24.0;
 
-/// Cosmetic moves (FR5). They change only how the player is drawn, never
-/// position, speed or anything gameplay reads.
+/// Moves with a timer (FR5). Jump and shoot change only how the player is
+/// drawn; a roll also carries the player along `heading` (see `Player::update`).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Action {
     None,
     Jump {
         t: f32,
     },
-    /// `dir` is +1 rolling right, -1 rolling left.
+    /// `dir` is +1 rolling right, -1 rolling left (the spin). `heading` is the
+    /// unit vector the roll travels along, in world space.
     Roll {
         t: f32,
         dir: f32,
+        heading: Vec2,
     },
     /// Raising the bow and loosing an arrow (FR19), facing `dir`.
     /// `volley` is false in a battle, whose view draws its own arrow.
@@ -213,7 +218,11 @@ impl Player {
         }
         self.action = match self.action {
             Action::Jump { t } if t + dt < JUMP_S => Action::Jump { t: t + dt },
-            Action::Roll { t, dir } if t + dt < ROLL_S => Action::Roll { t: t + dt, dir },
+            Action::Roll { t, dir, heading } if t + dt < ROLL_S => Action::Roll {
+                t: t + dt,
+                dir,
+                heading,
+            },
             Action::Shoot { t, dir, volley } if t + dt < bow::SHOOT_S => Action::Shoot {
                 t: t + dt,
                 dir,
@@ -256,22 +265,6 @@ impl Player {
             self.skills.update(dt, false);
             return;
         }
-        if self.action == Action::None {
-            if is_key_pressed(KeyCode::Space) {
-                self.action = Action::Jump { t: 0.0 };
-            } else if (is_key_pressed(KeyCode::LeftControl)
-                || is_key_pressed(KeyCode::RightControl))
-                && self.skills.roll.try_use()
-            {
-                self.action = Action::Roll {
-                    t: 0.0,
-                    dir: self.facing,
-                };
-            } else if is_key_pressed(SHOOT_KEY) {
-                self.shoot();
-            }
-        }
-
         let mut dir = Vec2::ZERO;
         if is_key_down(KeyCode::W) || is_key_down(KeyCode::Up) {
             dir.y -= 1.0;
@@ -284,6 +277,34 @@ impl Player {
         }
         if is_key_down(KeyCode::D) || is_key_down(KeyCode::Right) {
             dir.x += 1.0;
+        }
+
+        if self.action == Action::None {
+            if is_key_pressed(KeyCode::Space) {
+                self.action = Action::Jump { t: 0.0 };
+            } else if (is_key_pressed(KeyCode::LeftControl)
+                || is_key_pressed(KeyCode::RightControl))
+                && self.skills.roll.try_use()
+            {
+                self.start_roll(dir);
+            } else if is_key_pressed(SHOOT_KEY) {
+                self.shoot();
+            }
+        }
+
+        // A roll commits the player to its heading: the keys don't steer it.
+        if let Action::Roll { t, heading, .. } = self.action {
+            self.skills.update(dt, false);
+            let before = self.pos;
+            // The speed curve is the derivative of the roll's smoothstep spin,
+            // so the distances add up to `ROLL_DISTANCE` over `ROLL_S`.
+            let u = (t / ROLL_S).clamp(0.0, 1.0);
+            let step = ROLL_DISTANCE * 6.0 * u * (1.0 - u) / ROLL_S * dt;
+            self.pos = constrain(self.pos + heading * step);
+            let moved = self.pos.distance(before);
+            self.moving = false;
+            self.walk_phase += moved * 0.16;
+            return;
         }
 
         // Mid-shot the archer keeps aiming the same way, even strafing.
@@ -305,6 +326,24 @@ impl Player {
         let moved = self.pos.distance(before);
         self.moving = moved > 0.01;
         self.walk_phase += moved * 0.16;
+    }
+
+    /// Starts a roll along the held direction `dir` (zero: the way the player
+    /// faces, sideways).
+    pub fn start_roll(&mut self, dir: Vec2) {
+        let heading = if dir == Vec2::ZERO {
+            vec2(self.facing, 0.0)
+        } else {
+            dir.normalize()
+        };
+        if heading.x != 0.0 {
+            self.facing = heading.x.signum();
+        }
+        self.action = Action::Roll {
+            t: 0.0,
+            dir: self.facing,
+            heading,
+        };
     }
 
     /// Freezes the walk cycle while the player is held in place (e.g. a
@@ -348,7 +387,7 @@ impl Player {
                 };
                 (hop, 1.0 - squash, 1.0 + squash, 0.0)
             }
-            Action::Roll { t, dir } => {
+            Action::Roll { t, dir, .. } => {
                 let u = t / ROLL_S;
                 // Ease in/out so the tumble starts and ends cleanly.
                 let eased = u * u * (3.0 - 2.0 * u);
