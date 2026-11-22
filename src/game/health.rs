@@ -21,6 +21,11 @@ pub const START_HEARTS: u32 = 5;
 pub const REGEN_DELAY_S: f32 = 4.0;
 /// Then it restores half a heart this often (a full heart every 16 s).
 pub const REGEN_EVERY_S: f32 = 8.0;
+/// At a safe stop (FR28) regeneration runs this many times faster: the delay
+/// and the wait both shrink, so a half-heart comes back every 2 s.
+pub const REST_REGEN_RATE: f32 = 4.0;
+/// The most hearts the shop can grow the player to (FR17).
+pub const MAX_HEARTS: u32 = 8;
 
 impl Health {
     pub fn new(hearts: u32) -> Self {
@@ -50,6 +55,13 @@ impl Health {
     /// keeps what it has. Heals through [`Health::heal`] and returns true on
     /// the frame a half-heart comes back.
     pub fn tick(&mut self, dt: f32, allowed: bool) -> bool {
+        self.tick_rate(dt, allowed, 1.0)
+    }
+
+    /// [`Health::tick`] with time running `rate` times faster, for resting at a
+    /// safe stop (FR28, [`REST_REGEN_RATE`]).
+    pub fn tick_rate(&mut self, dt: f32, allowed: bool, rate: f32) -> bool {
+        let dt = dt * rate;
         if self.is_dead() || self.current >= self.max {
             self.regen = 0.0;
             return false;
@@ -80,6 +92,17 @@ impl Health {
     /// Restores `halves` half-hearts, never going above `max`.
     pub fn heal(&mut self, halves: u32) {
         self.current = (self.current + halves).min(self.max);
+    }
+
+    /// Adds one heart to the maximum and fills it, up to [`MAX_HEARTS`]
+    /// (FR17's shop). Returns false when already at the cap.
+    pub fn add_heart(&mut self) -> bool {
+        if self.hearts() >= MAX_HEARTS {
+            return false;
+        }
+        self.max += 2;
+        self.heal(2);
+        true
     }
 
     pub fn refill(&mut self) {
@@ -178,6 +201,38 @@ mod tests {
             2
         );
         assert_eq!(h.current, 8);
+    }
+
+    #[test]
+    fn resting_mends_several_times_faster() {
+        let mut slow = Health::new(5);
+        slow.damage(8);
+        let mut rested = slow;
+        let secs = REGEN_DELAY_S + REGEN_EVERY_S * 2.0;
+        let a = (0..(secs / DT) as u32)
+            .filter(|_| slow.tick(DT, true))
+            .count();
+        let b = (0..(secs / DT) as u32)
+            .filter(|_| rested.tick_rate(DT, true, REST_REGEN_RATE))
+            .count();
+        assert_eq!(a, 1);
+        assert!(b >= 7, "rested mended {b} half-hearts in {secs} s");
+        // It still stops when the fever holds it off.
+        let mut held = Health::new(5);
+        held.damage(4);
+        assert!(!(0..300).any(|_| held.tick_rate(DT, false, REST_REGEN_RATE)));
+    }
+
+    #[test]
+    fn a_heart_can_be_added_up_to_the_cap() {
+        let mut h = Health::new(START_HEARTS);
+        h.damage(3);
+        assert!(h.add_heart());
+        assert_eq!((h.max, h.hearts()), (12, 6));
+        assert_eq!(h.current, 9);
+        while h.add_heart() {}
+        assert_eq!(h.hearts(), MAX_HEARTS);
+        assert!(!h.add_heart());
     }
 
     #[test]

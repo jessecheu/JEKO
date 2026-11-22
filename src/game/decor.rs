@@ -124,6 +124,8 @@ pub enum Kind {
     },
     /// Professor Pebble's covered wagon in the hub camp.
     Wagon,
+    /// The sign at a safe stop (FR28): a lantern board reading "REST".
+    RestSign,
 }
 
 pub struct Decoration {
@@ -419,9 +421,78 @@ fn hub_layout() -> Vec<(Vec2, f32, Kind)> {
     v
 }
 
+/// A safe stop's furnishings (FR28), laid by hand around the clearing and
+/// varied a little by the stop's number so no two are the same:
+/// `(position, keep-clear radius, kind)`. Everything sits on the clearing's
+/// flat part, on the woods side of the road.
+fn stop_layout(stop: &world::SafeStop) -> Vec<(Vec2, f32, Kind)> {
+    let h = |n: u64| gfx::hash01(stop.n as u64 * 53 + n);
+    // Each prop is placed from the road's edge at its own y, so a bend in the
+    // road doesn't push one onto it.
+    let at = |dx: f32, dy: f32| {
+        let y = stop.y + dy;
+        vec2(world::path_center(y) + PATH_HALF_W + dx, y)
+    };
+    let house = stop.house();
+    let mut v = vec![
+        // The cottage, its door facing the road.
+        (house, 50.0, Kind::Cottage { flip: h(1) < 0.5 }),
+        // The fire in the middle, with stumps to sit on.
+        (at(44.0, 32.0), 22.0, Kind::Campfire { phase: h(2) * TAU }),
+        (
+            at(22.0, 44.0),
+            14.0,
+            Kind::Stump {
+                size: 8.0 + h(3) * 2.0,
+            },
+        ),
+        (
+            at(66.0, 52.0),
+            14.0,
+            Kind::Stump {
+                size: 8.0 + h(4) * 2.0,
+            },
+        ),
+        // Lamps at the clearing's two ends, where the fence stops.
+        (at(16.0, -62.0), 14.0, Kind::Lamppost { phase: h(5) * TAU }),
+        (at(16.0, 64.0), 14.0, Kind::Lamppost { phase: h(6) * TAU }),
+        // The sign, by the road so it's seen from the south.
+        (at(30.0, 100.0 + h(7) * 8.0), 18.0, Kind::RestSign),
+    ];
+    // A little extra to tell one stop from the next.
+    if h(8) < 0.5 {
+        v.push((
+            at(112.0, 40.0),
+            14.0,
+            Kind::Pumpkin {
+                lit: h(9) < 0.5,
+                phase: h(9) * TAU,
+            },
+        ));
+    } else {
+        v.push((at(116.0, 38.0), 14.0, Kind::Toadstools { glow: true }));
+    }
+    v
+}
+
+/// True if `pos` falls inside a safe stop's clearing (with a margin for the
+/// props' own size), where random scenery must not grow.
+fn in_stop_box(pos: Vec2, stop: &world::SafeStop) -> bool {
+    let c = world::path_center(pos.y);
+    (pos.y - stop.y).abs() < world::STOP_HALF_LEN + 20.0
+        && pos.x > c + PATH_HALF_W - 4.0
+        && pos.x < c + PATH_HALF_W + world::STOP_EXTRA_W + 36.0
+}
+
 /// All scenery for chunk `k`. `spot` is where this chunk's flask sits (if
-/// it has one) so it can be framed by a pair of lampposts.
-pub fn generate_chunk(k: i64, spot: Option<Vec2>) -> Vec<Decoration> {
+/// it has one) so it can be framed by a pair of lampposts. `stop` is the safe
+/// stop (FR28) the chunk holds, if any: its clearing is kept free of random
+/// scenery and furnished by hand.
+pub fn generate_chunk(
+    k: i64,
+    spot: Option<Vec2>,
+    stop: Option<world::SafeStop>,
+) -> Vec<Decoration> {
     let (north, south) = world::chunk_span(k);
     let seed = 0xBEAC_4000_u64 ^ (k as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15);
     let mut g = Gen {
@@ -642,6 +713,13 @@ pub fn generate_chunk(k: i64, spot: Option<Vec2>) -> Vec<Decoration> {
         );
     }
 
+    if let Some(stop) = stop {
+        g.out.retain(|d| !in_stop_box(d.pos, &stop));
+        for (pos, _, kind) in stop_layout(&stop) {
+            g.push(pos, kind);
+        }
+    }
+
     g.out
 }
 
@@ -696,6 +774,7 @@ impl Decoration {
                 }
             }
             Kind::Wagon => out.push((p + vec2(34.0, 4.0), 52.0, gfx::with_alpha(LANTERN, 0.20))),
+            Kind::RestSign => out.push((p, 50.0 * flicker(p.y), gfx::with_alpha(LANTERN, 0.20))),
             Kind::Mushroom { cap, .. } if cap == CAP_TEAL => {
                 out.push((p, 44.0, gfx::with_alpha(CAP_TEAL, 0.18)))
             }
@@ -757,6 +836,7 @@ impl Decoration {
             Kind::Pebble => draw_pebble(s, t),
             Kind::Campfire { phase } => draw_campfire(s, phase, t),
             Kind::Wagon => draw_wagon(s, t),
+            Kind::RestSign => draw_rest_sign(s, t),
         }
     }
 }
@@ -1792,6 +1872,22 @@ fn draw_signpost(s: Vec2) {
         a + vec2(0.0, -10.0),
         CAP_RED,
     );
+}
+
+/// The sign at a safe stop (FR28): a board hung from a post with a lantern,
+/// reading "REST".
+fn draw_rest_sign(s: Vec2, t: f32) {
+    gfx::ground_shadow(s + vec2(5.0, 2.0), 22.0, 5.0);
+    draw_rectangle(s.x - 2.5, s.y - 56.0, 5.0, 56.0, WOOD);
+    draw_rectangle_lines(s.x - 2.5, s.y - 56.0, 5.0, 56.0, 1.0, INK);
+    wood_board(s.x - 26.0, s.y - 54.0, 52.0, 22.0);
+    centered_text("REST", s.x, s.y - 38.0, 18, CARVED);
+    // The lantern swinging from the arm.
+    let lamp = s + vec2(20.0 + 1.2 * (t * 1.7 + s.y).sin(), -22.0);
+    gfx::line(s + vec2(0.0, -26.0), lamp + vec2(0.0, -4.0), 1.0, IRON);
+    gfx::glow(lamp, 14.0, 14.0, gfx::with_alpha(LANTERN, 0.35));
+    draw_rectangle(lamp.x - 3.0, lamp.y - 4.0, 6.0, 7.0, LANTERN);
+    draw_rectangle_lines(lamp.x - 3.0, lamp.y - 4.0, 6.0, 7.0, 1.0, IRON);
 }
 
 /// The hub's gate: two stone pillars with lanterns either side of the

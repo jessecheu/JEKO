@@ -14,6 +14,7 @@ pub mod monster;
 pub mod monster_rig;
 pub mod player;
 pub mod prefetch;
+pub mod shop;
 pub mod skills;
 pub mod task_trigger;
 pub mod villain;
@@ -111,6 +112,8 @@ pub const DEATH_ANIM_S: f32 = 1.2;
 pub struct RunStats {
     pub flasks_solved: u32,
     pub monsters_beaten: u32,
+    /// Gears picked up and not yet spent (FR17). They reset with the run.
+    pub gears: u32,
 }
 
 pub struct Game {
@@ -136,6 +139,20 @@ pub struct Game {
     /// The discovery map is open (FR27). It freezes the world like the
     /// settings modal, and only opens when nothing else has the screen.
     pub map_open: bool,
+    /// The shop at a safe stop is open (FR17, FR28). It freezes the world like
+    /// the map does.
+    pub shop_open: bool,
+    /// What the player last tried to buy and why it was refused, shown in the
+    /// shop until the next purchase.
+    pub shop_note: Option<String>,
+    /// The player is at a safe stop's cottage door: E opens the shop.
+    stop_target: bool,
+    /// The safe stop the player was last told about (FR28), by number, so its
+    /// welcome toast plays once on arrival; 0 when outside any stop.
+    in_stop: u32,
+    /// Sparkle bursts where gears were picked up (FR17): world position and
+    /// seconds since.
+    sparks: Vec<(Vec2, f32)>,
     /// How far up the road the player has been (FR27).
     pub discovery: map::Discovery,
     pub settings: Settings,
@@ -286,6 +303,11 @@ impl Game {
             guide_open: false,
             guide: Default::default(),
             map_open: false,
+            shop_open: false,
+            shop_note: None,
+            stop_target: false,
+            in_stop: 0,
+            sparks: Vec::new(),
             discovery: map::Discovery::new(),
             settings: Settings::default(),
             health: Health::default(),
@@ -429,7 +451,7 @@ impl Game {
     /// True while the world is frozen: paused with P or the settings
     /// modal is open.
     pub fn is_paused(&self) -> bool {
-        self.paused || self.settings_open || self.guide_open || self.map_open
+        self.paused || self.settings_open || self.guide_open || self.map_open || self.shop_open
     }
 
     /// Every field guide card, found or not, for the panel.
@@ -452,6 +474,7 @@ impl Game {
     fn can_open_map(&self) -> bool {
         !self.settings_open
             && !self.guide_open
+            && !self.shop_open
             && self.battle.is_none()
             && self.dialogue.is_none()
             && matches!(
@@ -483,7 +506,11 @@ impl Game {
         }
 
         if !self.typing {
-            if self.map_open {
+            if self.shop_open {
+                if is_key_pressed(KeyCode::Escape) || is_key_pressed(INTERACT_KEY) {
+                    self.shop_open = false;
+                }
+            } else if self.map_open {
                 if is_key_pressed(MAP_KEY) || is_key_pressed(KeyCode::Escape) {
                     self.map_open = false;
                 }
@@ -530,6 +557,10 @@ impl Game {
                 self.item_get = None;
             }
         }
+        self.sparks.retain_mut(|(_, age)| {
+            *age += dt;
+            *age < 0.9
+        });
         self.tick_goalpost(dt);
         self.watch_villain();
         // The studio works in battles and dialogues too, behind the questions.
@@ -569,10 +600,18 @@ impl Game {
             self.tick_curse(dt);
             // Hearts mend on their own while the player is free to roam,
             // unless the fever is at full (invariant 6: through `heal`).
-            self.health.tick(dt, self.curse.level < 1.0);
+            // At a safe stop they mend several times faster (FR28).
+            let rate = if world::in_safe_stop(self.player.pos.y) {
+                health::REST_REGEN_RATE
+            } else {
+                1.0
+            };
+            self.health.tick_rate(dt, self.curse.level < 1.0, rate);
             if self.game_over.is_some() {
                 return;
             }
+            self.pick_up_gears();
+            self.watch_stop();
         }
         self.discovery.note(self.player.pos.y);
 
@@ -602,9 +641,14 @@ impl Game {
             true => self.world.blocker_in_reach(self.player.pos),
             false => None,
         };
+        self.stop_target = idle
+            && self.interact_target.is_none()
+            && self.blocker_target.is_none()
+            && self.world.stop_in_reach(self.player.pos).is_some();
         self.npc_in_reach = idle
             && self.interact_target.is_none()
             && self.blocker_target.is_none()
+            && !self.stop_target
             && self.player.pos.distance(world::pebble_pos()) < world::NPC_TALK_DIST;
 
         if is_key_pressed(INTERACT_KEY) {
@@ -613,6 +657,7 @@ impl Game {
                 (TriggerState::Idle, None) if self.blocker_target.is_some() => {
                     self.challenge_blocker()
                 }
+                (TriggerState::Idle, None) if self.stop_target => self.open_shop(),
                 (TriggerState::Idle, None) if self.npc_in_reach => self.talk_to_pebble(),
                 (TriggerState::Active(_), _) => self.focus_answer = true,
                 _ => {}
@@ -625,6 +670,46 @@ impl Game {
                 self.trigger_state = TriggerState::Idle;
             }
         }
+    }
+
+    /// Picks up the gears the player is standing on (FR17): counted in the run,
+    /// each with a small sparkle where it lay.
+    fn pick_up_gears(&mut self) {
+        let got = self.world.collect_gears(self.player.pos);
+        self.run.gears += got.len() as u32;
+        self.sparks.extend(got.into_iter().map(|at| (at, 0.0)));
+    }
+
+    /// Greets the player the first time they step into a safe stop (FR28).
+    fn watch_stop(&mut self) {
+        let y = self.player.pos.y;
+        match world::stop_at(y).filter(|_| world::in_safe_stop(y)) {
+            Some(s) if s.n != self.in_stop => {
+                self.in_stop = s.n;
+                self.toast = Some((
+                    "A safe stop. The fever lifts and your hearts mend. E at the cottage: shop."
+                        .into(),
+                    4.5,
+                ));
+            }
+            Some(_) => {}
+            None => self.in_stop = 0,
+        }
+    }
+
+    /// Opens the stop's shop (FR17, FR28).
+    fn open_shop(&mut self) {
+        self.shop_open = true;
+        self.shop_note = None;
+    }
+
+    /// Buys `item` with the run's gears (FR17): the one place a purchase
+    /// happens. A refusal is shown in the shop and changes nothing.
+    pub fn buy(&mut self, item: shop::Item) {
+        self.shop_note = match shop::buy(item, &mut self.run.gears, &mut self.health) {
+            Ok(()) => Some(format!("{}: bought.", item.name())),
+            Err(why) => Some(format!("{}.", why.reason())),
+        };
     }
 
     /// Advances the goalpost tracker (FR31). It steps aside in a battle, a
@@ -926,6 +1011,10 @@ impl Game {
         if self.game_over.is_some() || self.player.flicker.is_some_and(|f| f.active()) {
             return false;
         }
+        // Nothing hurts the player inside a safe stop (FR28).
+        if world::in_safe_stop(self.player.pos.y) {
+            return false;
+        }
         self.health.damage(halves);
         if self.health.is_dead() {
             self.die();
@@ -951,6 +1040,7 @@ impl Game {
         self.paused = false;
         self.settings_open = false;
         self.map_open = false;
+        self.shop_open = false;
         self.best_distance_m = self.best_distance_m.max(self.distance_m());
         if let Some(i) = self.active_spot.take() {
             self.world.spots[i].state = SpotState::Missed;
@@ -982,6 +1072,11 @@ impl Game {
         self.settings_open = false;
         self.guide_open = false;
         self.map_open = false;
+        self.shop_open = false;
+        self.shop_note = None;
+        self.stop_target = false;
+        self.in_stop = 0;
+        self.sparks.clear();
         self.discovery = map::Discovery::new();
         self.health = Health::default();
         self.curse = Curse::new();
@@ -1013,7 +1108,7 @@ impl Game {
         format!(
             "STATE hp={}/{} level={} xp={} streak={} dist={}m flasks={} beaten={} \
              zones_cleared={} battle={:?} trigger={} dialogue={} game_over={} hat_stolen={} \
-             arrows={} roster={} spec_zones={} curse={:.2} blocker_in_reach={} blockers_left={} goalpost={} \
+             arrows={} gears={} stop={} roster={} spec_zones={} curse={:.2} blocker_in_reach={} blockers_left={} goalpost={} \
              questions=[{}] buffered={:?} flying={} packs_loaded={} pebble_tips={} weakest={} explain={} studio={} villain={}",
             self.health.current,
             self.health.max,
@@ -1032,6 +1127,8 @@ impl Game {
             self.game_over.is_some(),
             self.player.hat_stolen,
             self.player.arrows.len(),
+            self.run.gears,
+            self.in_stop,
             self.roster.len(),
             self.world.zones.iter().filter(|z| z.spec.is_some()).count(),
             self.curse.level,
@@ -1240,6 +1337,7 @@ impl Game {
                 (TriggerState::Idle, None) if self.blocker_target.is_some() => {
                     self.challenge_blocker()
                 }
+                (TriggerState::Idle, None) if self.stop_target => self.open_shop(),
                 (TriggerState::Idle, None) if self.npc_in_reach => self.talk_to_pebble(),
                 _ => {}
             },
@@ -1260,6 +1358,40 @@ impl Game {
                 }
             }
             "map" => self.map_open = true,
+            // Beside the first safe stop (FR28), in front of its cottage, with the
+            // camera snapped. `shop` opens the shop; `gears:N` adds gears (FR17).
+            "tostop" => {
+                self.world.ensure_generated(-20_000.0);
+                if let Some(s) = self.world.stops.first().copied() {
+                    self.player.pos = world::clamp_to_path(s.door() + vec2(0.0, 24.0));
+                    self.discovery.note(self.player.pos.y);
+                    self.cam_y = camera_target(self.player.pos.y);
+                }
+            }
+            // Just south of the first stop, on the road, to see it open up.
+            "nearstop" => {
+                self.world.ensure_generated(-20_000.0);
+                if let Some(s) = self.world.stops.first().copied() {
+                    let y = s.y + world::STOP_HALF_LEN + 150.0;
+                    self.player.pos = vec2(world::path_center(y), y);
+                    self.discovery.note(y);
+                    self.cam_y = camera_target(y);
+                }
+            }
+            "shop" => self.open_shop(),
+            // The first trail of gears, close up.
+            "togears" => {
+                self.world.ensure_generated(-20_000.0);
+                if let Some(g) = self.world.gears.iter().find(|g| !g.taken).map(|g| g.pos) {
+                    self.player.pos = world::clamp_to_path(g + vec2(0.0, 170.0));
+                    self.discovery.note(self.player.pos.y);
+                    self.cam_y = camera_target(self.player.pos.y);
+                }
+            }
+            n if n.starts_with("gears:") => match n["gears:".len()..].parse::<u32>() {
+                Ok(count) => self.run.gears += count,
+                Err(_) => eprintln!("JEKO_DEV: {n:?} needs a number"),
+            },
             // 120 m up the road, discovered, for a shot of a filled-in map.
             "far" => {
                 let y = world::ROAD_START_Y - 120.0 * world::PX_PER_METER;
@@ -1829,6 +1961,18 @@ impl Game {
             let base = view.to_screen(z.pos);
             gfx::key_prompt(base - vec2(0.0, world::ROAD_LIFT + tall), "E", t);
         }
+        if let Some(s) = self
+            .world
+            .stop_in_reach(self.player.pos)
+            .filter(|_| self.stop_target)
+        {
+            let base = view.to_screen(s.house());
+            gfx::key_prompt(base - vec2(0.0, world::ROAD_LIFT + 70.0), "E", t);
+        }
+        for &(at, age) in &self.sparks {
+            let c = view.to_screen(at) - vec2(0.0, world::ROAD_LIFT + 13.0);
+            gfx::sparkle_burst(c, age / 0.9);
+        }
         if self.npc_in_reach && self.dialogue.is_none() {
             let base = view.to_screen(world::pebble_pos());
             gfx::key_prompt(base - vec2(0.0, 58.0), "E", t);
@@ -1901,7 +2045,7 @@ impl Game {
         }
         let (w, h) = (screen_width(), screen_height());
         draw_rectangle(0.0, 0.0, w, h, Color::new(0.0, 0.0, 0.0, 0.5));
-        if self.settings_open || self.map_open {
+        if self.settings_open || self.map_open || self.shop_open {
             // The modal says what's going on; the dim alone is enough.
             return;
         }

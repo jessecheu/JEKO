@@ -46,6 +46,15 @@ fn icon(painter: &egui::Painter, at: Pos2, l: &Landmark) {
                 Color32::from_rgb(120, 120, 110),
             );
         }
+        LandmarkKind::Stop => {
+            painter.text(
+                at,
+                Align2::CENTER_CENTER,
+                "⌂",
+                FontId::proportional(16.0),
+                Color32::from_rgb(60, 120, 70),
+            );
+        }
         LandmarkKind::Boss { beaten } => {
             let c = if beaten {
                 Color32::from_rgb(120, 120, 110)

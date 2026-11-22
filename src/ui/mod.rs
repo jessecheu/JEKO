@@ -7,6 +7,7 @@ pub mod hud;
 pub mod map_panel;
 pub mod minimap;
 pub mod settings_panel;
+pub mod shop_panel;
 pub mod style;
 pub mod task_panel;
 pub mod token_panel;

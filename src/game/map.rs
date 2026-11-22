@@ -34,6 +34,8 @@ pub enum LandmarkKind {
     Boss {
         beaten: bool,
     },
+    /// A safe stop (FR28).
+    Stop,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -141,6 +143,17 @@ impl Discovery {
                 kind,
                 meters: meters_at(s.pos.y),
                 dx: dx_at(s.pos.y),
+                label: None,
+            });
+        }
+        for s in &world.stops {
+            if !self.is_discovered(s.y) {
+                continue;
+            }
+            landmarks.push(Landmark {
+                kind: LandmarkKind::Stop,
+                meters: meters_at(s.y),
+                dx: dx_at(s.y),
                 label: None,
             });
         }

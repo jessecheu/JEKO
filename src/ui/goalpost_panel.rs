@@ -165,6 +165,21 @@ fn draw_icon(painter: &egui::Painter, kind: GoalKind, c: Pos2, s: f32) {
                 Color32::from_rgb(150, 50, 60),
             );
         }
+        // A little house, for a safe stop.
+        GoalKind::Stop => {
+            let l = s * 0.8;
+            let walls = egui::Rect::from_min_max(
+                c + egui::vec2(-l * 0.8, -l * 0.1),
+                c + egui::vec2(l * 0.8, l * 0.8),
+            );
+            painter.rect(walls, 1.0, CREAM, ink, egui::StrokeKind::Middle);
+            let roof = vec![
+                c + egui::vec2(-l, -l * 0.1),
+                c + egui::vec2(0.0, -l * 0.9),
+                c + egui::vec2(l, -l * 0.1),
+            ];
+            painter.add(egui::Shape::convex_polygon(roof, LANTERN, ink));
+        }
         // A crown, for the boss.
         GoalKind::Titan => {
             let l = s * 0.85;

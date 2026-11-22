@@ -98,7 +98,13 @@ async fn main() {
                 right_top = ui::minimap::draw(ctx, &game.map_view()) + 8.0;
             }
             if game.settings.show_hud && !in_battle {
-                ui::hud::draw(ctx, &game.progression, game.distance_m(), right_top);
+                ui::hud::draw(
+                    ctx,
+                    &game.progression,
+                    game.distance_m(),
+                    game.run.gears,
+                    right_top,
+                );
             }
             // The goalpost tracker (FR31) and the toast share the top centre,
             // so the toast steps down while the tracker is up.
@@ -153,6 +159,18 @@ async fn main() {
                     &mut game.settings_open,
                     &mut game.guide_open,
                 );
+            }
+            if game.shop_open {
+                let note = game.shop_note.clone();
+                if let Some(item) = ui::shop_panel::draw(
+                    ctx,
+                    game.run.gears,
+                    &game.health,
+                    note.as_deref(),
+                    &mut game.shop_open,
+                ) {
+                    game.buy(item);
+                }
             }
             if game.guide_open {
                 ui::field_guide_panel::draw(ctx, &game.guide_cards(), &mut game.guide_open);

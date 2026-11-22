@@ -86,6 +86,39 @@ pub const BLOCKER_REACH: f32 = BLOCK_GAP + 26.0;
 /// Size of a road-blocking monster on the road, relative to its sprite.
 const BLOCKER_SCALE: f32 = 1.15;
 
+/// A safe stop (FR28) stands every this many meters up the road...
+pub const STOP_EVERY_M: u32 = 250;
+/// ...each one this many meters short of the round mark, so the ones at the
+/// 500 m marks sit three chunks before that mark's Tide Titan and the player
+/// can mend before the boss.
+const STOP_BEFORE_M: u32 = 40;
+/// Half the length of the stop's flat clearing along the road.
+const STOP_FLAT_HALF: f32 = 80.0;
+/// How far the road eases in and out of the clearing on each end.
+const STOP_EASE: f32 = 70.0;
+/// Half the stop's whole span: the clearing and its two eased ends. Inside it
+/// the curse lifts, hearts mend faster and nothing can hurt the player. It
+/// fits inside the stop's own chunk (half a chunk is 160 px).
+pub const STOP_HALF_LEN: f32 = STOP_FLAT_HALF + STOP_EASE;
+/// How far the clearing reaches out past the road's edge, on the woods side.
+pub const STOP_EXTRA_W: f32 = 130.0;
+/// The fence opens where the road has widened past this much (0 to 1).
+const FENCE_OPEN_FROM: f32 = 0.1;
+/// How close to the cottage's door E opens the shop.
+pub const STOP_SHOP_REACH: f32 = 64.0;
+
+/// A trail of gears (FR17) is tried in this share of the road's chunks. Those
+/// with no room beside the flask or monster go without, so about a third end
+/// up with one.
+const GEAR_CHUNK_CHANCE: f32 = 0.75;
+/// Gears in a trail sit this far apart along the road.
+const GEAR_STEP: f32 = 30.0;
+/// The player picks a gear up from this close.
+pub const GEAR_PICKUP_R: f32 = 24.0;
+/// A gear keeps this far from a flask on the road, and a monster's zone keeps
+/// this much of the road's length clear of gears.
+const GEAR_CLEAR: f32 = 40.0;
+
 fn smoothstep(edge0: f32, edge1: f32, x: f32) -> f32 {
     let t = ((x - edge0) / (edge1 - edge0)).clamp(0.0, 1.0);
     t * t * (3.0 - 2.0 * t)
@@ -126,7 +159,7 @@ pub fn walkable_x(y: f32) -> (f32, f32) {
     let c = path_center(y);
     let reach = PATH_HALF_W - WALK_MARGIN;
     if y <= ROAD_SOUTH_END {
-        return (c - reach, c + reach);
+        return (c - reach, c + reach + stop_bulge(y) * STOP_EXTRA_W);
     }
     let t = smoothstep(ROAD_SOUTH_END, ROAD_SOUTH_END + HUB_FUNNEL, y);
     let left = bank_x(y) + 48.0;
@@ -171,6 +204,78 @@ pub fn chunk_of(y: f32) -> i64 {
 /// `(north, south)` world-y bounds of chunk `k`; chunk 0 starts at y = 0.
 pub fn chunk_span(k: i64) -> (f32, f32) {
     (-(k + 1) as f32 * CHUNK_H, -k as f32 * CHUNK_H)
+}
+
+/// A safe stop (FR28): a lantern-lit clearing the road opens onto, with a
+/// cottage, a fire and a shop. It sits on the woods side.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SafeStop {
+    /// Which stop this is up the road, from 1.
+    pub n: u32,
+    /// World y of the clearing's middle: the middle of its chunk.
+    pub y: f32,
+    /// Distance carved on its sign, in meters from the gate.
+    pub meters: u32,
+}
+
+impl SafeStop {
+    /// World position of the cottage's base.
+    pub fn house(&self) -> Vec2 {
+        let y = self.y - 26.0;
+        vec2(path_center(y) + PATH_HALF_W + 96.0, y)
+    }
+
+    /// Where the player stands to use the shop: in front of the cottage.
+    pub fn door(&self) -> Vec2 {
+        self.house() + vec2(0.0, 18.0)
+    }
+}
+
+/// Which stop, if any, stands in chunk `k`. Pure, like `spot_for_chunk`
+/// (invariant 3): stop `n` is at `STOP_EVERY_M * n - STOP_BEFORE_M` meters, and
+/// its clearing is centred in the chunk that holds that mark. Never in the hub.
+pub fn safe_stop_for_chunk(k: i64) -> Option<SafeStop> {
+    if k < 0 {
+        return None;
+    }
+    let (north, south) = chunk_span(k);
+    let d_south = (ROAD_START_Y - south) / PX_PER_METER;
+    let d_north = (ROAD_START_Y - north) / PX_PER_METER;
+    let n = (((d_south + STOP_BEFORE_M as f32) / STOP_EVERY_M as f32).ceil() as i64).max(1);
+    let meters = STOP_EVERY_M as i64 * n - STOP_BEFORE_M as i64;
+    let d = meters as f32;
+    (d > d_south && d <= d_north).then_some(SafeStop {
+        n: n as u32,
+        y: north + CHUNK_H * 0.5,
+        meters: meters as u32,
+    })
+}
+
+/// The stop whose chunk holds `y`, if there is one.
+pub fn stop_at(y: f32) -> Option<SafeStop> {
+    safe_stop_for_chunk(chunk_of(y))
+}
+
+/// How far the road has opened onto a stop's clearing at `y`: 0 on the plain
+/// road, 1 across the flat part, easing between (continuous, like the hub's
+/// funnel).
+pub fn stop_bulge(y: f32) -> f32 {
+    match stop_at(y) {
+        Some(s) => 1.0 - smoothstep(STOP_FLAT_HALF, STOP_HALF_LEN, (y - s.y).abs()),
+        None => 0.0,
+    }
+}
+
+/// True while `y` is inside a safe stop's span (FR28): the curse lifts, hearts
+/// mend faster, and nothing can hurt the player.
+pub fn in_safe_stop(y: f32) -> bool {
+    stop_at(y).is_some_and(|s| (y - s.y).abs() <= STOP_HALF_LEN)
+}
+
+/// A stop's chunk and the two beside it hold no monster, so none is ever near
+/// a clearing.
+fn near_a_stop(k: i64) -> bool {
+    (k - 1..=k + 1).any(|j| safe_stop_for_chunk(j).is_some())
 }
 
 /// The camera. Projection is a pure translation (pixel-rounded so edges
@@ -228,6 +333,8 @@ pub enum Tall<'a> {
         base: Vec2,
         next: Vec2,
         lantern: bool,
+        /// False when the next post is gone, for a stop's opening (FR28).
+        rail: bool,
     },
     Flask(&'a Spot),
     /// A monster standing on the road, blocking it (FR2).
@@ -251,7 +358,8 @@ impl Tall<'_> {
                 base,
                 next,
                 lantern,
-            } => draw_post(view, *base, *next, *lantern, t),
+                rail,
+            } => draw_post(view, *base, *next, *lantern, *rail, t),
             Tall::Flask(s) => draw_flask(view, s, t),
             Tall::Blocker(z) => draw_blocker(view, z, t),
         }
@@ -330,7 +438,7 @@ pub struct Encounter {
 /// whether it blocks the road. Deterministic per chunk, like the flasks,
 /// and never in the spawn hub.
 pub fn encounter_for_chunk(k: i64) -> Option<Encounter> {
-    if k < 1 || k % 2 == 0 {
+    if k < 1 || k % 2 == 0 || near_a_stop(k) {
         return None;
     }
     // A Tide Titan guards each 500 m milestone: the first odd chunk at or
@@ -376,6 +484,8 @@ pub enum GoalKind {
     Blocker,
     /// The Tide Titan at each 500 m mark.
     Titan,
+    /// A safe stop (FR28): somewhere to rest.
+    Stop,
 }
 
 impl GoalKind {
@@ -383,8 +493,9 @@ impl GoalKind {
     /// the bigger event, so the tracker isn't always "flask in 12 m".
     fn rank(self) -> u8 {
         match self {
-            GoalKind::Titan => 4,
-            GoalKind::Blocker => 3,
+            GoalKind::Titan => 5,
+            GoalKind::Blocker => 4,
+            GoalKind::Stop => 3,
             GoalKind::Milestone => 2,
             GoalKind::Patch => 1,
             GoalKind::Flask => 0,
@@ -446,6 +557,15 @@ pub fn goalposts_in_chunk(k: i64) -> Vec<Goalpost> {
         }
         m += step;
     }
+    if let Some(stop) = safe_stop_for_chunk(k) {
+        // Arrived at the clearing's south edge, where the road has opened.
+        out.push(Goalpost {
+            kind: GoalKind::Stop,
+            y: stop.y + STOP_FLAT_HALF,
+            at: stop.house(),
+            meters: stop.meters,
+        });
+    }
     if let Some(pos) = spot_for_chunk(k) {
         out.push(Goalpost {
             kind: GoalKind::Flask,
@@ -482,6 +602,59 @@ pub fn pick_goalpost(posts: &[Goalpost], y: f32) -> Option<Goalpost> {
         // Highest rank first; among equals the nearer one (larger y).
         .max_by(|a, b| a.kind.rank().cmp(&b.kind.rank()).then(a.y.total_cmp(&b.y)))
         .copied()
+}
+
+/// The gears lying in chunk `k` (FR17): about `GEAR_CHUNK_CHANCE` of the road's
+/// chunks hold a short trail of three to five along the road, sitting well
+/// clear of the chunk's flask and monster. Pure, like `spot_for_chunk`
+/// (invariant 3). None in the hub or at a safe stop.
+pub fn gears_for_chunk(k: i64) -> Vec<Vec2> {
+    if k < 1 || safe_stop_for_chunk(k).is_some() {
+        return Vec::new();
+    }
+    let h = |n: u64| gfx::hash01((k as u64).wrapping_mul(17).wrapping_add(n) ^ 0x6EA5);
+    if h(0) >= GEAR_CHUNK_CHANCE {
+        return Vec::new();
+    }
+    let (north, south) = chunk_span(k);
+    let count = 3 + (h(1) * 3.0) as usize;
+    let len = (count - 1) as f32 * GEAR_STEP;
+    let flask = spot_for_chunk(k);
+    let zone = encounter_for_chunk(k);
+    // Keep the whole trail 50 px inside the chunk, so a neighbour's flask
+    // (60 px in) or monster (80 px in) is never near it. A chunk holds a flask or a zone, never both;
+    // the trail goes on whichever side of it has room, or is left out.
+    let (lo, hi) = (north + 50.0, south - 50.0 - len);
+    let obstacle = flask
+        .map(|f| (f.y, GEAR_CLEAR))
+        .or(zone.map(|e| (e.pos.y, ZONE_HALF_H + GEAR_CLEAR)));
+    let y0 = match obstacle {
+        None => lo + h(2) * (hi - lo),
+        Some((o, clear)) => {
+            let before = (lo, o - clear - len);
+            let after = (o + clear, hi);
+            let mut sides: Vec<(f32, f32)> = [before, after]
+                .into_iter()
+                .filter(|(a, b)| b >= a)
+                .collect();
+            if h(4) < 0.5 {
+                sides.reverse();
+            }
+            match sides.first() {
+                Some(&(a, b)) => a + h(2) * (b - a),
+                None => return Vec::new(),
+            }
+        }
+    };
+    let lean = (h(3) * 2.0 - 1.0) * (PATH_HALF_W - 40.0);
+    (0..count)
+        .map(|i| {
+            let y = y0 + i as f32 * GEAR_STEP;
+            vec2(path_center(y) + lean + 10.0 * (i as f32 * 1.3).sin(), y)
+        })
+        .filter(|g| flask.is_none_or(|f| f.distance(*g) > GEAR_CLEAR))
+        .filter(|g| zone.is_none_or(|e| (e.pos.y - g.y).abs() > ZONE_HALF_H + GEAR_CLEAR))
+        .collect()
 }
 
 /// Something up the road that will need questions (FR32): a flask, or a
@@ -524,7 +697,7 @@ pub fn upcoming_in(y: f32, range_px: f32) -> Vec<Upcoming> {
                         None => continue,
                     }
                 }
-                GoalKind::Milestone => continue,
+                GoalKind::Milestone | GoalKind::Stop => continue,
             };
             out.push(Upcoming {
                 kind: g.kind,
@@ -548,6 +721,18 @@ pub struct World {
     chunks: Vec<Vec<Decoration>>,
     pub spots: Vec<Spot>,
     pub zones: Vec<EncounterZone>,
+    /// Every gear generated so far (FR17), with whether it's been picked up.
+    pub gears: Vec<Gear>,
+    /// Every safe stop generated so far (FR28), south to north.
+    pub stops: Vec<SafeStop>,
+}
+
+/// A gear lying on the road (FR17): the forest's coin, dropped from the mad
+/// scientist's lab.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Gear {
+    pub pos: Vec2,
+    pub taken: bool,
 }
 
 impl Default for World {
@@ -569,6 +754,8 @@ impl World {
             chunks: Vec::new(),
             spots: Vec::new(),
             zones: Vec::new(),
+            gears: Vec::new(),
+            stops: Vec::new(),
         };
         world.ensure_generated(-CHUNK_H * 2.0);
         world
@@ -582,7 +769,14 @@ impl World {
         while FIRST_CHUNK + (self.chunks.len() as i64) <= want {
             let k = FIRST_CHUNK + self.chunks.len() as i64;
             let spot = spot_for_chunk(k);
-            self.chunks.push(decor::generate_chunk(k, spot));
+            let stop = safe_stop_for_chunk(k);
+            self.chunks.push(decor::generate_chunk(k, spot, stop));
+            self.stops.extend(stop);
+            self.gears.extend(
+                gears_for_chunk(k)
+                    .into_iter()
+                    .map(|pos| Gear { pos, taken: false }),
+            );
             if let Some(pos) = spot {
                 self.spots.push(Spot {
                     pos,
@@ -676,7 +870,7 @@ impl World {
     /// the monster. Milestones are never done; they're just passed.
     fn goal_done(&self, g: &Goalpost) -> bool {
         match g.kind {
-            GoalKind::Milestone => false,
+            GoalKind::Milestone | GoalKind::Stop => false,
             GoalKind::Flask => self
                 .spots
                 .iter()
@@ -716,6 +910,28 @@ impl World {
         })
     }
 
+    /// Picks up every gear within reach of `pos` (FR17) and returns how many,
+    /// where each one was, for the sparkle.
+    pub fn collect_gears(&mut self, pos: Vec2) -> Vec<Vec2> {
+        let mut got = Vec::new();
+        for g in self.gears.iter_mut().filter(|g| !g.taken) {
+            if g.pos.distance(pos) < GEAR_PICKUP_R {
+                g.taken = true;
+                got.push(g.pos);
+            }
+        }
+        got
+    }
+
+    /// The safe stop (FR28) whose cottage door the player at `pos` is close
+    /// enough to use: what pressing E would open.
+    pub fn stop_in_reach(&self, pos: Vec2) -> Option<SafeStop> {
+        self.stops
+            .iter()
+            .find(|s| s.door().distance(pos) < STOP_SHOP_REACH)
+            .copied()
+    }
+
     /// Keeps `p` south of every undefeated road blocker (FR2): the road is
     /// shut until the monster is beaten. Only acts within a band just past
     /// the blocking line, far more than a frame's movement or a knockback,
@@ -748,24 +964,34 @@ impl World {
 
     /// Fence posts on screen: a fixed spacing measured north from the
     /// road's south end, both sides. Every third pair carries a lantern.
-    fn posts(view: &View) -> impl Iterator<Item = (Vec2, Vec2, bool)> {
+    fn posts(view: &View) -> impl Iterator<Item = (Vec2, Vec2, bool, bool)> {
         let first = ROAD_SOUTH_END - 6.0;
         let j_min = ((first - (view.bottom() + 40.0)) / POST_SPACING)
             .ceil()
             .max(0.0) as i64;
         let j_max = ((first - (view.top() - 40.0)) / POST_SPACING).floor() as i64;
         let post_inset = PATH_HALF_W - 2.0;
-        (j_min..=j_max).flat_map(move |j| {
-            let y = first - j as f32 * POST_SPACING;
-            let ny = y - POST_SPACING;
-            [-1.0f32, 1.0].map(|side| {
-                (
-                    vec2(path_center(y) + side * post_inset, y),
-                    vec2(path_center(ny) + side * post_inset, ny),
-                    j % 3 == 1,
-                )
+        (j_min..=j_max)
+            .flat_map(move |j| {
+                let y = first - j as f32 * POST_SPACING;
+                let ny = y - POST_SPACING;
+                [-1.0f32, 1.0].map(|side| {
+                    // The fence opens onto a stop's clearing (FR28), on the woods
+                    // side: no post where the road has widened, and no rail
+                    // running into the gap.
+                    let open = |y: f32| side > 0.0 && stop_bulge(y) > FENCE_OPEN_FROM;
+                    (
+                        vec2(path_center(y) + side * post_inset, y),
+                        vec2(path_center(ny) + side * post_inset, ny),
+                        j % 3 == 1,
+                        open(y),
+                        open(ny),
+                    )
+                })
             })
-        })
+            .filter_map(|(base, next, lantern, gone, next_gone)| {
+                (!gone).then_some((base, next, lantern, !next_gone))
+            })
     }
 
     pub fn tall_items(&self, view: &View) -> Vec<Tall<'_>> {
@@ -789,11 +1015,14 @@ impl World {
                 .filter(|z| z.pos.y > view.top() - 40.0 && z.pos.y < view.bottom() + 160.0)
                 .map(Tall::Blocker),
         );
-        items.extend(Self::posts(view).map(|(base, next, lantern)| Tall::Post {
-            base,
-            next,
-            lantern,
-        }));
+        items.extend(
+            Self::posts(view).map(|(base, next, lantern, rail)| Tall::Post {
+                base,
+                next,
+                lantern,
+                rail,
+            }),
+        );
         items
     }
 
@@ -897,6 +1126,16 @@ impl World {
                 draw_spot_pad(view, spot, t);
             }
         }
+        for stop in &self.stops {
+            if stop.y + STOP_HALF_LEN > view.top() && stop.y - STOP_HALF_LEN < view.bottom() {
+                draw_stop_pad(view, stop);
+            }
+        }
+        for g in self.gears.iter().filter(|g| !g.taken) {
+            if g.pos.y > view.top() - 30.0 && g.pos.y < view.bottom() + 30.0 {
+                draw_gear(view, g.pos, t);
+            }
+        }
     }
 
     /// Pools of light on the ground (FR24): lanterns on the fence, the
@@ -908,7 +1147,7 @@ impl World {
         for d in self.visible_decor(view) {
             d.lights(t, &mut lights);
         }
-        for (base, _, lantern) in Self::posts(view) {
+        for (base, _, lantern, _) in Self::posts(view) {
             if lantern {
                 let flick = 0.9 + 0.1 * (t * 9.0 + base.y).sin() * (t * 5.3 + base.x).sin();
                 lights.push((base, 64.0 * flick, gfx::with_alpha(LANTERN, 0.22)));
@@ -996,7 +1235,7 @@ impl World {
 /// Decides whether chunk `k` gets a flask and where. Deterministic per
 /// chunk, like the scenery.
 fn spot_for_chunk(k: i64) -> Option<Vec2> {
-    if k < 0 || k % SPOT_EVERY_N_CHUNKS != 0 {
+    if k < 0 || k % SPOT_EVERY_N_CHUNKS != 0 || safe_stop_for_chunk(k).is_some() {
         return None;
     }
     let (north, _) = chunk_span(k);
@@ -1290,7 +1529,7 @@ fn draw_cobbles(view: &View, north: f32, south: f32) {
 
 /// An iron fence post with a spear tip, and two iron rails to the next
 /// post north. `lantern` posts carry a hanging lantern.
-fn draw_post(view: &View, base: Vec2, next: Vec2, lantern: bool, t: f32) {
+fn draw_post(view: &View, base: Vec2, next: Vec2, lantern: bool, rail: bool, t: f32) {
     const POST_H: f32 = 28.0;
     let iron = Color::new(0.11, 0.11, 0.15, 1.0);
     let lift = vec2(0.0, -ROAD_LIFT);
@@ -1298,7 +1537,7 @@ fn draw_post(view: &View, base: Vec2, next: Vec2, lantern: bool, t: f32) {
     let top = s + vec2(0.0, -POST_H);
     let next_s = view.to_screen(next) + lift;
 
-    for h in [POST_H - 5.0, 9.0] {
+    for h in [POST_H - 5.0, 9.0].into_iter().filter(|_| rail) {
         let a = s + vec2(0.0, -h);
         let b = next_s + vec2(0.0, -h);
         gfx::line(a, b, 3.0, gfx::with_alpha(INK, 0.6));
@@ -1335,6 +1574,107 @@ fn draw_post(view: &View, base: Vec2, next: Vec2, lantern: bool, t: f32) {
             lamp + vec2(5.0, -4.0),
             lamp + vec2(0.0, -8.0),
             iron,
+        );
+    }
+}
+
+/// The brass of a gear (FR17), and its dark edge.
+const BRASS: Color = Color::new(0.90, 0.68, 0.24, 1.0);
+const BRASS_DARK: Color = Color::new(0.50, 0.33, 0.12, 1.0);
+
+/// A gear lying on the road (FR17), bobbing and turning about its vertical
+/// axis like a spinning coin. It animates on the game clock `t`.
+fn draw_gear(view: &View, pos: Vec2, t: f32) {
+    let phase = gfx::hash01((pos.x as i64 * 31 + pos.y as i64 * 17) as u64) * std::f32::consts::TAU;
+    let bob = (t * 2.2 + phase).sin();
+    let base = view.to_screen(pos) + vec2(0.0, -ROAD_LIFT);
+    gfx::ground_shadow(base + vec2(0.0, 1.0), 9.0 - bob, 3.0);
+    let c = base + vec2(0.0, -15.0 - 2.5 * bob);
+    // Squash across the turn; never quite edge-on, so it never vanishes.
+    let sx = (t * 2.6 + phase).cos().abs().max(0.2);
+    gfx::glow(c, 20.0, 13.0, gfx::with_alpha(BRASS, 0.22));
+    // Drawn 30% larger than its unit design so it reads from across the road.
+    const U: f32 = 1.3;
+    let at = |r: f32, a: f32| c + vec2(a.cos() * r * U * sx, a.sin() * r * U);
+    // Eight teeth around the rim, then the body, the hub and the glint.
+    for i in 0..8 {
+        let a = i as f32 / 8.0 * std::f32::consts::TAU;
+        gfx::quad(
+            at(6.0, a - 0.2),
+            at(9.0, a - 0.14),
+            at(9.0, a + 0.14),
+            at(6.0, a + 0.2),
+            BRASS_DARK,
+        );
+    }
+    gfx::ellipse(c, (7.4 * sx + 0.8) * U, 7.6 * U, BRASS_DARK);
+    gfx::ellipse(c, 6.6 * sx * U, 6.8 * U, BRASS);
+    gfx::ellipse(c, 2.6 * sx * U, 2.8 * U, BRASS_DARK);
+    gfx::ellipse(
+        c + vec2(-2.0 * sx * U, -2.6 * U),
+        1.6 * sx * U,
+        1.1 * U,
+        gfx::with_alpha(WHITE, 0.55),
+    );
+}
+
+/// The clearing off the road at a safe stop (FR28): packed earth with a stone
+/// edging, laid over the road's curb, widening and narrowing with
+/// `stop_bulge` so it joins the road without a seam.
+fn draw_stop_pad(view: &View, stop: &SafeStop) {
+    let lift = vec2(0.0, -ROAD_LIFT);
+    let earth = Color::new(0.24, 0.20, 0.17, 1.0);
+    let edging = Color::new(0.30, 0.31, 0.36, 1.0);
+    let p = |x: f32, y: f32| view.to_screen(vec2(x, y));
+    const ROW: f32 = 6.0;
+    let rows = (STOP_HALF_LEN * 2.0 / ROW) as i32;
+    let edge = |y: f32| path_center(y) + PATH_HALF_W + STOP_EXTRA_W * stop_bulge(y);
+    let inner = |y: f32| path_center(y) + PATH_HALF_W - 8.0;
+    for pass in 0..3 {
+        for i in 0..rows {
+            let y0 = stop.y - STOP_HALF_LEN + i as f32 * ROW;
+            let y1 = y0 + ROW;
+            if edge(y0) - inner(y0) < 10.0 && edge(y1) - inner(y1) < 10.0 {
+                continue;
+            }
+            let (a, b, c, d) = (
+                p(inner(y0), y0),
+                p(edge(y0), y0),
+                p(edge(y1), y1),
+                p(inner(y1), y1),
+            );
+            match pass {
+                // The cast shadow, down and to the right.
+                0 => gfx::quad(
+                    a + vec2(8.0, 4.0),
+                    b + vec2(8.0, 4.0),
+                    c + vec2(8.0, 4.0),
+                    d + vec2(8.0, 4.0),
+                    gfx::with_alpha(SHADOW, 0.45),
+                ),
+                1 => gfx::quad(a + lift, b + lift, c + lift, d + lift, earth),
+                // The edging along the outer side.
+                _ => gfx::quad(
+                    b + lift - vec2(4.0, 0.0),
+                    b + lift,
+                    c + lift,
+                    c + lift - vec2(4.0, 0.0),
+                    edging,
+                ),
+            }
+        }
+    }
+    // Pebbles in the earth, fixed to the stop.
+    for i in 0..26u64 {
+        let h = |n: u64| gfx::hash01(stop.n as u64 * 977 + i * 13 + n);
+        let y = stop.y - STOP_FLAT_HALF + h(1) * STOP_FLAT_HALF * 2.0;
+        let x = path_center(y) + PATH_HALF_W + 8.0 + h(2) * (STOP_EXTRA_W - 16.0);
+        let c = p(x, y) + lift;
+        gfx::ellipse(
+            c,
+            1.6 + h(3) * 1.6,
+            1.1 + h(3),
+            gfx::with_alpha(edging, 0.7),
         );
     }
 }
@@ -1645,7 +1985,7 @@ mod tests {
     #[test]
     fn scenery_never_lands_on_the_road() {
         for k in CHUNKS {
-            for d in decor::generate_chunk(k, spot_for_chunk(k)) {
+            for d in decor::generate_chunk(k, spot_for_chunk(k), safe_stop_for_chunk(k)) {
                 if d.pos.y >= ROAD_SOUTH_END {
                     continue; // open ground below the gate
                 }
@@ -1676,11 +2016,11 @@ mod tests {
     #[test]
     fn generation_is_deterministic() {
         for k in [-1, 0, 7, 123] {
-            let a: Vec<Vec2> = decor::generate_chunk(k, spot_for_chunk(k))
+            let a: Vec<Vec2> = decor::generate_chunk(k, spot_for_chunk(k), safe_stop_for_chunk(k))
                 .iter()
                 .map(|d| d.pos)
                 .collect();
-            let b: Vec<Vec2> = decor::generate_chunk(k, spot_for_chunk(k))
+            let b: Vec<Vec2> = decor::generate_chunk(k, spot_for_chunk(k), safe_stop_for_chunk(k))
                 .iter()
                 .map(|d| d.pos)
                 .collect();
@@ -1711,7 +2051,11 @@ mod tests {
             for x in [-500.0, 0.0, 480.0, 960.0, 2000.0] {
                 let p = clamp_to_path(vec2(x, y as f32));
                 assert!(p.y <= SOUTH_LIMIT);
-                assert!((p.x - path_center(p.y)).abs() <= PATH_HALF_W - WALK_MARGIN + 1e-3);
+                // The road's width, plus the clearing where a safe stop opens it.
+                let reach = PATH_HALF_W - WALK_MARGIN;
+                let dx = p.x - path_center(p.y);
+                assert!(dx >= -reach - 1e-3);
+                assert!(dx <= reach + stop_bulge(p.y) * STOP_EXTRA_W + 1e-3);
             }
         }
     }
@@ -1784,6 +2128,7 @@ mod tests {
             .collect();
         assert!(blockers.len() > 40, "only {} blockers", blockers.len());
         let mut last_m = 0.0;
+        let mut last_k = 0;
         for (k, e) in &blockers {
             assert_eq!(encounter_for_chunk(*k), Some(*e));
             assert!(e.pos.y < ROAD_START_Y, "chunk {k}: blocker in the hub");
@@ -1795,14 +2140,17 @@ mod tests {
                 (e.pos.x - path_center(e.pos.y)).abs() < 1e-3,
                 "chunk {k}: blocker off the middle of the road"
             );
-            // One every ~80 m, never a long empty stretch.
+            // One every ~80 m, never a long empty stretch, unless a safe stop
+            // (FR28) took one of the chunks in between.
             let m = (ROAD_START_Y - e.pos.y) / PX_PER_METER;
+            let stopped = (last_k..*k).any(|j| safe_stop_for_chunk(j).is_some());
             assert!(
-                m - last_m < 100.0,
+                m - last_m < 100.0 || (stopped && m - last_m < 180.0),
                 "chunk {k}: {} m since the last",
                 m - last_m
             );
             last_m = m;
+            last_k = *k;
         }
         // The first one turns up early, so the player meets it soon.
         let first_m = (ROAD_START_Y - blockers[0].1.pos.y) / PX_PER_METER;
@@ -1868,6 +2216,218 @@ mod tests {
             prev = w;
             y += 2.0;
         }
+    }
+
+    // ---- safe stops (FR28) ----
+
+    fn stops() -> Vec<(i64, SafeStop)> {
+        CHUNKS
+            .filter_map(|k| safe_stop_for_chunk(k).map(|s| (k, s)))
+            .collect()
+    }
+
+    #[test]
+    fn stops_come_every_250_m_from_the_first_and_are_deterministic() {
+        let all = stops();
+        assert!(all.len() > 10, "only {} stops", all.len());
+        for (i, (k, s)) in all.iter().enumerate() {
+            assert_eq!(safe_stop_for_chunk(*k), Some(*s));
+            assert_eq!(s.n as usize, i + 1, "no stop skipped");
+            assert_eq!(s.meters, STOP_EVERY_M * s.n - STOP_BEFORE_M);
+            let (north, south) = chunk_span(*k);
+            assert!(s.y > north && s.y < south);
+            let m = (ROAD_START_Y - s.y) / PX_PER_METER;
+            assert!((m - s.meters as f32).abs() < 8.0, "stop {} at {m} m", s.n);
+        }
+        assert_eq!(
+            all[0].1.meters, 210,
+            "the first is a short walk up the road"
+        );
+    }
+
+    #[test]
+    fn nothing_hostile_shares_a_stops_chunk_or_the_ones_beside_it() {
+        for (k, s) in stops() {
+            assert!(
+                spot_for_chunk(k).is_none(),
+                "stop {}: a flask is in its chunk",
+                s.n
+            );
+            for j in k - 1..=k + 1 {
+                assert!(
+                    encounter_for_chunk(j).is_none(),
+                    "stop {}: a zone at {j}",
+                    s.n
+                );
+            }
+            assert!(gears_for_chunk(k).is_empty());
+            // No chunk with a stop is in the hub.
+            assert!(s.y < ROAD_START_Y);
+        }
+    }
+
+    #[test]
+    fn the_stop_before_each_500_m_titan_leaves_room_to_heal() {
+        let titans: Vec<i64> = CHUNKS
+            .filter(|&k| encounter_for_chunk(k).is_some_and(|e| e.kind == MonsterKind::TideTitan))
+            .collect();
+        assert!(titans.len() >= 4);
+        for t in titans {
+            let before = (t - 6..t)
+                .filter(|&k| safe_stop_for_chunk(k).is_some())
+                .count();
+            assert_eq!(
+                before, 1,
+                "one stop in the six chunks before the Titan at {t}"
+            );
+            let near = (t - 2..t).any(|k| safe_stop_for_chunk(k).is_some());
+            assert!(!near, "the stop isn't right against the Titan at {t}");
+        }
+    }
+
+    #[test]
+    fn the_road_opens_onto_the_clearing_without_a_seam() {
+        let (_, s) = stops()[0];
+        // Plain road away from a stop.
+        let far = s.y + 400.0;
+        assert_eq!(stop_bulge(far), 0.0);
+        let reach = PATH_HALF_W - WALK_MARGIN;
+        let (lo, hi) = walkable_x(far);
+        assert!((hi - lo - 2.0 * reach).abs() < 1e-3);
+        // Fully open across the flat part, only on the woods side.
+        assert_eq!(stop_bulge(s.y), 1.0);
+        let (lo, hi) = walkable_x(s.y);
+        let c = path_center(s.y);
+        assert!((lo - (c - reach)).abs() < 1e-3);
+        assert!((hi - (c + reach + STOP_EXTRA_W)).abs() < 1e-3);
+        // Continuous all the way through (no step bigger than a pixel or two).
+        let mut prev = walkable_x(s.y + STOP_HALF_LEN + 60.0);
+        let mut y = s.y + STOP_HALF_LEN + 60.0;
+        while y > s.y - STOP_HALF_LEN - 60.0 {
+            y -= 1.0;
+            let w = walkable_x(y);
+            assert!((w.1 - prev.1).abs() < 4.0, "right edge jumps at {y}");
+            assert!((w.0 - prev.0).abs() < 4.0, "left edge jumps at {y}");
+            prev = w;
+        }
+    }
+
+    #[test]
+    fn a_stops_span_is_safe_and_the_road_either_side_is_not() {
+        let (k, s) = stops()[0];
+        assert!(in_safe_stop(s.y));
+        assert!(in_safe_stop(s.y + STOP_HALF_LEN - 1.0));
+        assert!(!in_safe_stop(s.y + STOP_HALF_LEN + 1.0));
+        assert!(!in_safe_stop(chunk_span(k + 2).0 + 100.0));
+        assert!(
+            !in_safe_stop(PLAYER_START_Y),
+            "the hub is its own safe place"
+        );
+        // The whole span fits inside the stop's own chunk.
+        let (north, south) = chunk_span(k);
+        assert!(s.y - STOP_HALF_LEN > north && s.y + STOP_HALF_LEN < south);
+    }
+
+    #[test]
+    fn the_cottage_door_is_reachable_and_opens_the_shop() {
+        let mut w = World::new();
+        w.ensure_generated(-6_000.0);
+        let s = w.stops[0];
+        let door = s.door();
+        let (lo, hi) = walkable_x(door.y);
+        assert!(
+            door.x > lo && door.x < hi,
+            "the door is inside the clearing"
+        );
+        assert_eq!(clamp_to_path(door), door, "and the player can stand there");
+        assert_eq!(w.stop_in_reach(door), Some(s));
+        assert_eq!(
+            w.stop_in_reach(door + vec2(0.0, STOP_SHOP_REACH + 10.0)),
+            None
+        );
+        assert_eq!(w.stop_in_reach(vec2(path_center(0.0), 0.0)), None);
+    }
+
+    #[test]
+    fn a_stop_is_a_goalpost_and_never_done() {
+        let (k, s) = stops()[0];
+        let posts = goalposts_in_chunk(k);
+        let g = posts
+            .iter()
+            .find(|g| g.kind == GoalKind::Stop)
+            .expect("a Stop goalpost");
+        assert_eq!(g.meters, s.meters);
+        assert_eq!(g.at, s.house());
+        assert!(g.y > s.y, "arrived at the clearing's south edge");
+        let w = World::new();
+        assert!(!w.goal_done(g));
+        assert!(upcoming_in(g.y + 100.0, 400.0)
+            .iter()
+            .all(|u| u.kind != GoalKind::Stop));
+    }
+
+    // ---- gears (FR17) ----
+
+    #[test]
+    fn gears_lie_on_the_road_deterministically_and_clear_of_flasks_and_monsters() {
+        let mut total = 0;
+        let mut chunks_with = 0;
+        for k in CHUNKS {
+            let a = gears_for_chunk(k);
+            assert_eq!(a, gears_for_chunk(k));
+            if !a.is_empty() {
+                chunks_with += 1;
+            }
+            let (north, south) = chunk_span(k);
+            for g in &a {
+                total += 1;
+                assert!(k >= 1, "none in the hub");
+                assert!(g.y > north && g.y < south);
+                assert!(
+                    (g.x - path_center(g.y)).abs() <= PATH_HALF_W - WALK_MARGIN,
+                    "chunk {k}: gear {g:?} is off the road"
+                );
+                if let Some(f) = spot_for_chunk(k) {
+                    assert!(f.distance(*g) > GEAR_CLEAR, "chunk {k}: gear on a flask");
+                }
+                if let Some(e) = encounter_for_chunk(k) {
+                    assert!(
+                        (e.pos.y - g.y).abs() > ZONE_HALF_H,
+                        "chunk {k}: gear in a zone"
+                    );
+                }
+            }
+        }
+        let n = CHUNKS.count() as f32;
+        let share = chunks_with as f32 / n;
+        assert!((0.2..0.5).contains(&share), "{share} of chunks hold gears");
+        assert!(total > 100);
+    }
+
+    #[test]
+    fn a_gear_is_picked_up_once_from_close_by() {
+        let mut w = World::new();
+        w.ensure_generated(-6_000.0);
+        let first = w.gears[0];
+        assert!(!first.taken);
+        assert!(w
+            .collect_gears(first.pos + vec2(GEAR_PICKUP_R + 20.0, 0.0))
+            .is_empty());
+        let got = w.collect_gears(first.pos + vec2(GEAR_PICKUP_R - 8.0, 0.0));
+        assert!(got.contains(&first.pos));
+        assert!(w.gears[0].taken);
+        assert!(w.collect_gears(first.pos).is_empty(), "never twice");
+    }
+
+    #[test]
+    fn a_new_world_has_all_its_gears_again() {
+        let mut a = World::new();
+        a.ensure_generated(-6_000.0);
+        a.collect_gears(a.gears[0].pos);
+        let mut b = World::new();
+        b.ensure_generated(-6_000.0);
+        assert!(b.gears.iter().all(|g| !g.taken));
+        assert_eq!(a.gears.len(), b.gears.len());
     }
 
     // ---- goalposts (FR31) ----

@@ -5,7 +5,7 @@ use egui_macroquad::egui;
 /// next level, a streak counter with its live bonus multiplier, and an
 /// upgrade list showing exactly what's locked and what unlocks it — the
 /// student always knows what the next trigger is worth.
-pub fn draw(ctx: &egui::Context, progression: &Progression, distance_m: u32, top: f32) {
+pub fn draw(ctx: &egui::Context, progression: &Progression, distance_m: u32, gears: u32, top: f32) {
     egui::Window::new("Progress")
         .anchor(egui::Align2::RIGHT_TOP, egui::vec2(-12.0, top.max(12.0)))
         .resizable(false)
@@ -24,6 +24,7 @@ pub fn draw(ctx: &egui::Context, progression: &Progression, distance_m: u32, top
             });
             ui.label(format!("Best streak: {}", progression.best_streak));
             ui.label(format!("Distance: {distance_m} m"));
+            ui.label(format!("Gears: {gears}"));
 
             ui.separator();
             ui.label("Upgrades:");

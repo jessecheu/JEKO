@@ -191,6 +191,7 @@ pub fn label(g: &Goalpost) -> String {
         GoalKind::Patch => "Rustling ferns".into(),
         GoalKind::Blocker => "Monster in the road".into(),
         GoalKind::Titan => "Tide Titan".into(),
+        GoalKind::Stop => "Rest stop".into(),
     }
 }
 

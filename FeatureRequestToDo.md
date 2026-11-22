@@ -146,7 +146,7 @@ its "help" is animation. It never changes XP, speed, answers or battle outcomes.
 (see [Completed](#completed)), each on a provisional answer so the work could
 land; this entry keeps the questions so they are answered, not settled silently.
 
-## FR16. Confirm the provisional answers from FR1–FR3, FR5–FR15, FR20–FR22, FR24, FR26, FR31, FR32 and FR33
+## FR16. Confirm the provisional answers from FR1–FR3, FR5–FR15, FR17, FR20–FR22, FR24, FR26, FR28, FR31, FR32 and FR33
 
 **Status.** **Waiting on the owner.** Every default below is live in the code.
 Tick an item once the owner confirms it, or replace it with the owner's answer
@@ -193,7 +193,7 @@ recorded here.
   *Yes* (`Player::spawn_protected`).
 - [ ] **FR9** Hero: refresh or new character? *Refresh* (bolder ink, bigger head and
   eyes, pouch). Pixel font? *No, egui default with chunkier frames.* Collectibles?
-  *Filed as FR17, not built.*
+  *Built as FR17: gears (see the FR17 item below).*
 - [ ] **FR10** Wild encounters vs FR2 blockers? *Both coexist; see FR2 above.*
   Run from a battle? *No.* Catch/befriend? *No.* How often? *~70% of odd road
   chunks; flasks take the even ones.* Roster? *All 7 shipped: Pinchling,
@@ -287,42 +287,28 @@ recorded here.
   *Only in the hover, and only once it is made: a monster's name, a pack's topic.*
   Stock line under the circles? *Yes: look-ahead questions and unseen monsters, as counts.*
 
+- [ ] **FR17** What is the coin in the forest? *Gears: brass cogs dropped from the mad
+  scientist's lab (the owner's pick).* What are they for? *Spending at a safe stop's shop
+  (the owner's pick): hot soup (4 gears, 2 hearts back) and a heart charm (12 gears, one
+  more heart, up to 8), provisional prices.* Do they reset on death? *Yes (the owner's
+  pick): `RunStats.gears`.* How many? *Provisional: a trail of 3 to 5 in about a third of
+  chunks, 1 gear each, so roughly 20 gears between stops; no gear is worth more.* Do they
+  show in the HUD? *Yes, in the progress panel (so hidden with it), and the Game Over panel lists
+  the unspent ones.*
+- [ ] **FR28** Is a "quick mouse" a house? *A small house / rest stop with no mouse and no
+  keeper (the owner's pick).* What does a stop do? *The curse lifts like the hub's
+  (0.05/s), hearts mend 4× faster (½ heart every 2 s), and nothing can hurt the player
+  (the owner's pick).* Checkpoint? *No: dying still restarts at the hub (the owner's
+  pick).* How often? *Provisional: every 250 m, the first at 210 m, each 40 m before a
+  round number so the ones before a Titan leave room to heal.* Can the player linger
+  forever? *Yes, as in the hub: the curse lifts there and nothing hostile comes.* A keeper?
+  *No: an empty cottage whose door is the shop.* Does it change invariant 4? *Yes, extended
+  from the hub to a stop's span (recorded in the architecture doc).*
+
 **Acceptance criteria.**
 
 - [ ] The owner has confirmed or replaced every decision above, and any change
   that needs code is filed as its own FR.
-
----
-
-# Gameplay — collectibles
-
-## FR17. Shells as collectible coins
-
-**Status.** **Not started.**
-
-**Depends on:** [] _(raised by FR9's "World touches"; FR9 itself shipped without it)_
-
-**Motivation.** FR9 suggested bouncy collectibles (shells spinning like coins) and
-a counter in the HUD. FR9 noted collectibles with a *use* would be their own FR.
-
-**Proposed approach.** *(suggested, not decided)* Place shells per chunk
-deterministically like flasks (`spot_for_chunk`), spin and bob them, collect on
-touch with a small sparkle (reuse `gfx::item_get`'s burst), and count them in the
-HUD. Give them a use (e.g. a shop in the FR15 hub, or extra hearts).
-
-**Open questions.**
-
-- What are shells for: score only, a shop, healing?
-- Do they reset on death (FR14)?
-- *(raised by FR24)* Shells are a beach idea and the beach is gone. What should the
-  coin be in the forest: acorns, gears and bolts from the doctor's lab, or glowing
-  mushrooms? (The entry keeps the word "shells" until the owner picks.)
-
-**Acceptance criteria.**
-
-- [ ] Shells appear on the road deterministically, covered by a test.
-- [ ] Walking over one collects it with feedback, and the HUD shows the count.
-- [ ] Shells have the agreed use.
 
 ---
 
@@ -639,105 +625,15 @@ extend, not a hand-drawn picture.
 
 **Goal:** make the road worth walking for its own sake. Today it's one cobbled lane
 with an unbroken fence on both sides, a gentle sway, and nowhere to stop between
-the hub and wherever the player dies. The owner wants places to rest along the way
-(FR28) and a road that bends, narrows and is cluttered with things to walk around
-(FR29).
-
-## FR28. Safe stops along the road: a little house to rest at
-
-**Status.** **Not started.** Requested by the owner; the approach is suggested only.
-The owner's wording was "safe hubs like a quick mouse"; this entry reads it as a
-small house or rest stop. Confirm that reading (see open questions).
-
-**Depends on:** [] _(pairs with FR1, built: a safe stop is where the doctor's curse
-gives the player a breather; FR27's map shows each stop as a landmark; FR17's shells could be spent
-here)_
-
-**Motivation.** Once the player leaves the hub there's no let-up: flasks, monsters
-and the doctor's curse (FR1), which closes in whenever they stop moving, all the
-way up. A safe stop every so often gives the run a
-rhythm (push, rest, push), a place to heal before a Tide Titan, and a goal a little
-way ahead that's closer than the castle.
-
-**What the owner asked for.**
-
-- Safe hubs as part of the road, which the player comes across as they walk.
-- Something like a small house the player can stop at.
-
-**Proposed approach.** *(suggested, not decided)*
-
-- **Placement.** A pure function `world::safe_stop_for_chunk(k)`, like
-  `spot_for_chunk` and `encounter_for_chunk` (invariant 3). A fixed spacing reads
-  best, for example one stop every 250 m, put a chunk or two *before* each 500 m
-  Tide Titan so the player can heal before the boss. A chunk with a stop gets no
-  flask and no encounter zone, and the chunk either side gets no encounter zone.
-- **The clearing.** The road widens into a small lantern-lit clearing at the stop.
-  `walkable_x` and the fence ease out and back in around it the way they already do
-  through the hub funnel, so the fence opens onto the clearing.
-- **The house.** A hand-laid layout per stop (like `decor::hub_layout`, with a
-  seeded variant so stops differ): a small cottage with lit windows, a bench, a
-  lamppost or two, a well or a campfire. New `decor::Kind`s where needed (`Bench`,
-  `Well`). Optionally a keeper NPC who talks through the dialogue bank
-  (`assets/dialogue.json`), the way Professor Pebble does.
-- **What makes it safe.** Inside a stop's span: no encounters spawn, the player
-  can't be damaged, and the curse eases. `Curse::tick` already decides by the
-  player's `y` (rising on the road, lifting at `HUB_LIFT_PER_S` in the hub), so a
-  stop's span can either pause the curse or lift it the way the hub does. That
-  makes a stop the one place up the road where standing still doesn't bring the
-  fever on. Resting there heals:
-  either a full `Health::refill` on arrival, or a slow heal while the player stands
-  in the clearing (one door per rule, invariant 6).
-- **Optional extras** (the owner picks): a checkpoint so dying restarts at the last
-  stop reached instead of the hub (FR14's restart currently goes back to the start);
-  a shop that spends shells (FR17); a "rest" prompt on E that shows the run stats so
-  far.
-- **Invariant 4** says the hub is the safe zone. This extends it: "nothing hostile
-  spawns south of `ROAD_SOUTH_END` or inside a safe stop's span". Changing the
-  invariant is the owner's call; record the answer in `docs/ARCHITECTURE.md`.
-
-**Open questions.**
-
-- **Is "a small house / rest stop" what was meant by "a quick mouse"?** Or was it
-  something else, such as a mouse character who runs the stop?
-- **How often?** Every 250 m, every 500 m before the Titan, or more often early on
-  and less often further up?
-- **What does resting give?** A full heal on arrival, a slow heal while inside, or a
-  heal only once per stop per run?
-- **Checkpoint?** Does dying send the player back to the last stop, or still to the
-  hub?
-- **What does a stop do to the curse?** Pause it, lift it like the hub
-  (0.05/s, about 20 s from full to clear), or only slow its rise?
-- **Can the player linger forever?** On the road the curse fills in 45 s of standing
-  still (`FULL_AFTER_S`). If a stop pauses or lifts it, the player can stand there
-  indefinitely, as they already can in the hub. Is that fine, or does the curse keep
-  rising there, just slower, so the stop is a breather, not a hiding place?
-- **A keeper?** Is there someone at each stop (one recurring character, or a
-  different one each time), or is it an empty house?
-
-**Acceptance criteria.**
-
-- [ ] Safe stops appear along the road at fixed distances, the same every run.
-- [ ] Each stop is a clearing off the road with a small house and props, and the
-  fence and walkable width open onto it smoothly.
-- [ ] No encounter zone or flask threatens the player inside a stop, and the curse
-  behaves there as decided above (covered by a `game/curse.rs` test).
-- [ ] Resting at a stop heals as decided above, through `Health`.
-- [ ] Placement is covered by a test: stops are deterministic, on the road, never
-  share a chunk with a flask or a zone, and never sit next to a zone.
-- [ ] A dev event (for example `tostop`) snaps the player next to the first stop so
-  it can be checked by screenshot.
-- [ ] `docs/ARCHITECTURE.md` (*World model* table, invariant 4, the curse's rule
-  at a stop, the new `decor` kinds, the dev event) is updated.
-- [ ] A safe stop is a goalpost for the tracker (FR31: a new `GoalKind` in
-  `world::goalposts_in_chunk`).
-
----
+the hub and wherever the player dies. Places to rest along the way are built (FR28,
+see Completed); still to come is a road that bends, narrows and is cluttered with
+things to walk around (FR29).
 
 ## FR29. A road that winds, a fence that breaks, and things in the way
 
 **Status.** **Not started.** Requested by the owner; the approach is suggested only.
 
-**Depends on:** [] _(touches FR28's clearings and FR27's map, which both read
+**Depends on:** [] _(touches FR28's clearings (built) and FR27's map, which both read
 `path_center`; FR29's obstacles can share the collision work with FR2's built
 blockers, `World::clamp_blocked`)_
 
@@ -767,7 +663,9 @@ and gives the player something to steer around.
 - **A road that changes width.** Make the half-width a function `path_half_w(y)`:
   narrow stretches between the trees, wide stretches, and the clearings for FR28.
   `walkable_x`, `clamp_to_path`, the cobbles and the fence all read it instead of the
-  `PATH_HALF_W` constant.
+  `PATH_HALF_W` constant. *(FR28 is built without this: a safe stop adds
+  `stop_bulge(y) · STOP_EXTRA_W` to `walkable_x`'s right edge, and the fence and pad read
+  `stop_bulge` too. Fold that into `path_half_w` when this lands.)*
 - **A fence that isn't a ruler line.** In `World::posts`, per post and seeded with
   `gfx::hash01`: a small jitter in spacing and inset, posts that lean, a missing rail,
   a gap of two or three missing posts, a fallen post lying on the verge. Some
@@ -789,7 +687,7 @@ and gives the player something to steer around.
   obstacles need a second one: a simple circle or box per obstacle, pushed out after
   the path clamp, also applied to knockback and rolls. Placement must always leave a
   gap wider than the player (say 60 px of clear cobbles) and never sit on a flask,
-  an encounter zone or a FR28 stop.
+  an encounter zone, a gear trail or a safe stop (FR28).
 - **More ideas (welcome, not required):** a fork where two roads split around an
   island of trees and rejoin; a stretch where the road runs along the lake shore with
   no fence; fog banks that thicken in hollows; a crow that flies off when the player
@@ -805,7 +703,7 @@ and gives the player something to steer around.
 - **Do obstacles block or just decorate?** Solid things to steer round, or
   props the player walks over? Can arrows (FR20) hit them?
 - **Any that interact?** For example, sit on a bench to rest (overlaps FR28), or kick
-  a barrel to find a shell (FR17).
+  a barrel to find a gear (FR17).
 - **Forks.** Wanted, or out of scope? A fork means two walkable lanes at one `y`,
   which `walkable_x` (one range per `y`) can't express today.
 
@@ -1411,6 +1309,27 @@ monsters for tomorrow").
 When an entry is fully built, delete it above and add one line here, newest
 first: `FR<n> — title — date — why it closed (commit)`. Its number stays retired.
 
+- FR28 — Safe stops along the road: a little house to rest at — 2026-11-21 — built in one pass
+  with FR17. `world::safe_stop_for_chunk` places a stop every 250 m (the first at 210 m, each 40 m
+  short of a round mark so the 500 m Titan's has room to heal), suppressing the flask in its chunk
+  and the encounters in it and beside it. The road opens onto a clearing on the woods side
+  (`stop_bulge` in `walkable_x`, a gap in the fence, `draw_stop_pad`), furnished by
+  `decor::stop_layout` (cottage, campfire, stumps, lamps, `RestSign`). Inside a stop the curse lifts like
+  the hub's, hearts mend 4× faster (`Health::tick_rate`) and `damage_player` ignores hits. A stop is a
+  `GoalKind::Stop` goalpost and a map and minimap landmark, with a welcome toast and `tostop`,
+  `nearstop` and `shop` dev events. Tests in `world.rs`, `curse.rs` and `health.rs`; checked by
+  screenshot. **Owner's answers:** a house, not a mouse; lift the curse, slow heal, hub is the respawn
+  (no checkpoint); an empty cottage whose door is the shop. **Left out, and why:** a keeper character
+  and a checkpoint, both declined by the owner; the "rest" run-stats prompt, which was optional.
+  Provisional answers in FR16. (uncommitted)
+- FR17 — Gears as collectible coins — 2026-11-21 — built with FR28. The beach "shell" became a
+  brass gear dropped from the mad scientist's lab (owner's pick): `world::gears_for_chunk` lays trails
+  of 3 to 5 in about a third of chunks (clear of flasks and zones), `World::collect_gears` takes
+  them on touch with a `gfx::sparkle_burst`, they bob and spin in `draw_gear`, and the count
+  (`RunStats.gears`, reset with the run) shows in the HUD and Game Over panel. They're spent in the
+  safe stop's shop (`game/shop.rs`, `ui/shop_panel.rs`, `Game::buy`): hot soup (4, mends two hearts) and a
+  heart charm (12, one more heart up to 8, `Health::add_heart`). Tests in `world.rs`, `shop.rs` and
+  `health.rs`; checked by screenshot (the trail, the shop). Provisional prices and rates in FR16. (uncommitted)
 - FR33 — A live "creation" bar: show Cerebras generating monsters, questions and lines in real time —
   2026-11-21 — all three milestones built. **A:** `llm/activity.rs` (`GenActivity`), `ui/creation_bar.rs`,
   the `show_creation_bar` setting and `JEKO_DEV=gen:<kind>`, with a circle for each live flask and battle

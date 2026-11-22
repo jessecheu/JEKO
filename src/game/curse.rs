@@ -8,7 +8,7 @@
 //! - Nothing happens in the hub until the player first passes the gate.
 //! - On the road it rises steadily, and each metre of new ground (north of
 //!   the furthest point this run) pushes it back, so walking holds it level.
-//! - Back in the hub it slowly lifts.
+//! - Back in the hub it slowly lifts, and so it does inside a safe stop (FR28).
 //! - A correct flask cleanses some of it.
 //! - Above [`SLOW_FROM`] it slows the player; at full it drains health.
 
@@ -94,6 +94,8 @@ impl Curse {
     /// Advances the curse by `dt` with the player at world `y`.
     pub fn tick(&mut self, dt: f32, y: f32) -> Tick {
         let in_hub = world::in_hub(y);
+        // A safe stop calms it the way the hub does (FR28).
+        let calm = in_hub || world::in_safe_stop(y);
         if !self.started {
             if in_hub {
                 return Tick::Nothing;
@@ -103,7 +105,7 @@ impl Curse {
             return Tick::Started;
         }
 
-        if in_hub {
+        if calm {
             self.level = (self.level - HUB_LIFT_PER_S * dt).max(0.0);
         } else {
             let metres = ((world::ROAD_START_Y - y) / world::PX_PER_METER).max(0.0);
@@ -326,6 +328,37 @@ mod tests {
         run(&mut c, 15.0, world::PLAYER_START_Y);
         assert_eq!(c.level, 0.0);
         assert!(c.started, "lifting doesn't reset the run");
+    }
+
+    #[test]
+    fn a_safe_stop_lifts_it_like_the_hub_and_the_road_beside_it_does_not() {
+        let (k, stop) = (15..16)
+            .filter_map(|k| world::safe_stop_for_chunk(k).map(|s| (k, s)))
+            .next()
+            .expect("a stop in chunk 15");
+        let mut c = Curse::new();
+        c.tick(DT, GATE - 10.0);
+        c.force(1.0);
+        run(&mut c, 10.0, stop.y);
+        assert!((c.level - 0.5).abs() < 0.02, "level {}", c.level);
+        // Just past the stop's span it climbs again.
+        let past = stop.y - world::STOP_HALF_LEN - 20.0;
+        assert!(!world::in_safe_stop(past), "chunk {k}");
+        // (The first step north is new ground and relieves it; settle that.)
+        run(&mut c, 0.1, past);
+        c.force(0.5);
+        run(&mut c, 5.0, past);
+        assert!(c.level > 0.5, "level {}", c.level);
+    }
+
+    #[test]
+    fn full_curse_cannot_drain_a_player_resting_at_a_stop() {
+        let stop = world::safe_stop_for_chunk(15).unwrap();
+        let mut c = Curse::new();
+        c.tick(DT, GATE - 10.0);
+        c.force(1.0);
+        assert!(!run(&mut c, 20.0, stop.y).contains(&Tick::Drain) || c.level < 1.0);
+        assert!(c.level < 1.0);
     }
 
     #[test]

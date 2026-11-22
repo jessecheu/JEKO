@@ -365,6 +365,28 @@ fn heart_shape(c: Vec2, half_w: f32, color: Color, full: bool) {
     }
 }
 
+/// A burst of gold sparkles flying outward from `c`: `u` runs 0 to 1 over its
+/// life. The "item get" moment uses it, and so does picking up a gear (FR17).
+pub fn sparkle_burst(c: Vec2, u: f32) {
+    let gold = Color::new(1.0, 0.86, 0.30, 1.0);
+    if !(0.0..1.0).contains(&u) {
+        return;
+    }
+    for i in 0..7 {
+        let a = i as f32 / 7.0 * std::f32::consts::TAU + 0.3;
+        let p = c + vec2(a.cos(), a.sin()) * (10.0 + 34.0 * u);
+        star(
+            p,
+            4.5 * (1.0 - u) + 1.0,
+            1.6,
+            4,
+            a,
+            1.0,
+            with_alpha(gold, 1.0 - u),
+        );
+    }
+}
+
 /// The "item get" moment (FR9): the reward (a potion flask, FR24) held
 /// up at `at`, with turning light rays, a burst of sparkles and a banner
 /// that rises and fades. `t` is seconds since it started.
@@ -404,20 +426,7 @@ pub fn item_get(at: Vec2, t: f32, banner: &str, reduce_flashing: bool) {
     );
     // Sparkle burst flying outward.
     if t < 0.9 {
-        let u = t / 0.9;
-        for i in 0..7 {
-            let a = i as f32 / 7.0 * std::f32::consts::TAU + 0.3;
-            let p = c + vec2(a.cos(), a.sin()) * (10.0 + 34.0 * u);
-            star(
-                p,
-                4.5 * (1.0 - u) + 1.0,
-                1.6,
-                4,
-                a,
-                1.0,
-                with_alpha(gold, 1.0 - u),
-            );
-        }
+        sparkle_burst(c, t / 0.9);
     }
     // The banner.
     let rise = (t * 14.0).min(14.0);

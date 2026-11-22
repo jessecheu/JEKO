@@ -26,6 +26,7 @@ pub fn draw(ctx: &egui::Context, game: &Game) -> bool {
                     ("Best streak", game.progression.best_streak.to_string()),
                     ("Flasks solved", game.run.flasks_solved.to_string()),
                     ("Monsters beaten", game.run.monsters_beaten.to_string()),
+                    ("Gears unspent", game.run.gears.to_string()),
                 ];
                 for (k, v) in rows {
                     ui.label(k);

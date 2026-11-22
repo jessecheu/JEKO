@@ -62,6 +62,7 @@ src/
     flicker.rs            reusable flicker look (spawn ghost, damage blink), honours "reduce flashing"
     health.rs             player HP in half-hearts (damage/heal/refill, clamped, unit-tested)
     curse.rs              the doctor's curse: a fever that starts on the road, worsens while you linger, drains hearts at full
+    shop.rs               the safe stop's shop: what gears buy (hot soup, a heart charm) and the rules for a purchase
     monster.rs            monster roster (stats, rarity by distance), Species (built-in or spec) + per-monster drawing and animations
     monster_rig.rs        draws any JSON-defined monster from its body shape, parts, eyes and accessory
     battle.rs             wild-encounter battle: transition, phases, battle-view drawing (moonlit clearing)
@@ -78,6 +79,7 @@ src/
     goalpost_panel.rs        the goalpost badge at the top centre: a circle that unrolls into "name · N m"
     creation_bar.rs          the creation bar under it: a progress circle per model call being written (FR33)
     field_guide_panel.rs     the field guide (G): a card per monster, filled in once beaten
+    shop_panel.rs           the safe stop's shop (E at the cottage door)
     map_panel.rs            the map (M): discovered road, landmarks, fog
     minimap.rs              the always-on minimap, top right
     settings_panel.rs        settings modal (O): panel toggles, reduce flashing, controls reference
@@ -135,7 +137,7 @@ hunting required.
    screen (run it dry and you're winded until it refills). Walk up to a glowing
    potion flask and an **E** key prompt floats over it; press E to
    open its task (you stay put until it's answered). Press E again to jump
-   into the answer field, type the number, and hit Enter. **M** opens the map of the road you've walked (the world pauses). No mouse needed
+   into the answer field, type the number, and hit Enter. **M** opens the map of the road you've walked (the world pauses). At a safe stop's cottage (every 250 m), **E** opens the gear shop. No mouse needed
    (clicking the field and Submit still works). **Space** jumps,
    **Ctrl** rolls (3 in a row, then a short wait) and **F** shoots an arrow from your bow (all cosmetic for
    now; in a battle, a right answer is shown as a bow shot). **P** pauses,
@@ -244,6 +246,11 @@ without re-checking this.
 - **Goalpost tracker** — a badge at the top centre names the next thing up the
   road (a flask, ferns, a monster, a milestone, the Tide Titan) and counts down
   the metres to it (`ui/goalpost_panel.rs`, `game/goalpost.rs`).
+- **Gears and safe stops** — brass gears lie in trails along the road, and every
+  250 m the road opens onto a lantern-lit clearing with a cottage. There the fever
+  lifts, hearts mend fast and nothing can hurt you, and the cottage door (E) sells
+  hot soup and heart charms for gears (`game/world.rs`, `game/shop.rs`). Gears and
+  hearts bought are lost on death, so it's worth spending them.
 - **The mad scientist** — past the gate, Dr. Nullwell potters around at the top
   of the road, always just out of reach, and reacts to what you do with a speech
   bubble: a right answer flusters them, a level-up or a streak makes their frizz

@@ -27,7 +27,9 @@ timestamp: 2026-11-21
 > studio writes lesson packs ahead of need: every generated problem's answer is checked against
 > its own arithmetic before a child sees it (FR22).
 > Once the player steps onto the road, the doctor's curse (FR1) worsens while they
-> linger, which is what keeps them moving. A mad scientist potters about at the top of the
+> linger, which is what keeps them moving. Every 250 m a safe stop (FR28) opens the road onto a
+> lantern-lit clearing with a cottage: nothing hostile is placed there, the curse lifts, hearts mend
+> faster, and a shop sells hearts for the gears (FR17) that lie in trails along the road. A mad scientist potters about at the top of the
 > road, always out of reach, and remarks on what the player does in a speech bubble (FR23). Their lines are canned today and
 > they are purely cosmetic.
 
@@ -133,10 +135,10 @@ The layering holds today, and new code should keep it:
 | `game/task_trigger.rs` | `TriggerState`, the question state machine (§4), `Arrival` (how a `Loading` request ended), and `pick_fallback`. |
 | `game/prefetch.rs` | `Prefetch`: the question buffer, the look-ahead requests in flight and their per-minute budget; `demand` (what the road ahead needs); `plan_lesson` (which pack the studio writes next); the soft deadlines; `Ask` (a question asked for and not yet shown). |
 | `game/field_guide.rs` | `FieldGuide` (the cards unlocked this session) and `GuideCard`. Pure data; `ui/field_guide_panel.rs` draws it. |
-| `game/world.rs` | Coordinates and camera (`View`), path geometry, chunking, potion flasks (`Spot`), encounter zones and road blockers (`EncounterZone`, `clamp_blocked`), the goalposts the tracker counts down to (`Goalpost`, `goalposts_in_chunk`, `pick_goalpost`, `World::next_goalpost`), what will need a question soon (`Upcoming`, `upcoming_in`, `World::upcoming`), the depth-sorted `Tall` items, and drawing the ground, the cobbled road, the light pools, the mist, the bats and fireflies, and where the manor sits on screen. |
-| `game/decor.rs` | Per-chunk forest scenery generation (`generate_chunk`), the hand-placed hub camp (`hub_layout`), how each prop draws, and which props cast light (`Decoration::lights`). |
+| `game/world.rs` | Coordinates and camera (`View`), path geometry, chunking, potion flasks (`Spot`), encounter zones and road blockers (`EncounterZone`, `clamp_blocked`), safe stops (`SafeStop`, `safe_stop_for_chunk`, `stop_bulge`, `in_safe_stop`, `World::stop_in_reach`), gears (`Gear`, `gears_for_chunk`, `World::collect_gears`), the goalposts the tracker counts down to (`Goalpost`, `goalposts_in_chunk`, `pick_goalpost`, `World::next_goalpost`), what will need a question soon (`Upcoming`, `upcoming_in`, `World::upcoming`), the depth-sorted `Tall` items, and drawing the ground, the cobbled road, the light pools, the mist, the bats and fireflies, and where the manor sits on screen. |
+| `game/decor.rs` | Per-chunk forest scenery generation (`generate_chunk`), the hand-placed hub camp (`hub_layout`) and each safe stop's furnishings (`stop_layout`), how each prop draws, and which props cast light (`Decoration::lights`). |
 | `game/manor.rs` | The gothic manor backdrop (`draw`, with an optional lake reflection), its lightning timing (`lightning`), and the shared `bat` silhouette. |
-| `game/gfx.rs` | The shared drawing vocabulary: the `INK`, `SHADOW`, `MOON`, `LANTERN`, `LAB_GREEN` and `NIGHT` colours, shading, ellipses, ribbons, stars, gradient meshes (`gradient_ring`, `glow`, `vignette`), the potion flask, hearts, the key prompt, the speech bubble (`speech_bubble`, with `wrap_text`), the item-get burst, and `hash01`. |
+| `game/gfx.rs` | The shared drawing vocabulary: the `INK`, `SHADOW`, `MOON`, `LANTERN`, `LAB_GREEN` and `NIGHT` colours, shading, ellipses, ribbons, stars, gradient meshes (`gradient_ring`, `glow`, `vignette`), the potion flask, hearts, the key prompt, the speech bubble (`speech_bubble`, with `wrap_text`), the item-get burst and the sparkle it's made of (`sparkle_burst`, also used for a gear picked up), and `hash01`. |
 | `game/player.rs` | `Player`: movement, the cosmetic `Action`s (jump, roll, shoot), the arrows it has loosed, its `Skills`, stun, cheer, death, the stolen hat, and the sprite drawn through a render target. |
 | `game/skills.rs` | Movement skills (FR26): `RollCharges` (3 rolls, a trickle, a lockout) and `Stamina` (sprint drain, regen, winded), held together in `Skills`, and `draw_bar`, the skill bar at the bottom centre. |
 | `game/bow.rs` | The bow: the shot's timing (`aim`, `SHOOT_S`, `RELEASE_S`), drawing the bow slung and held and an arrow (`draw_arrow`), and `Arrow`, a cosmetic projectile that arcs, then sticks in the ground or splashes in the lake. |
@@ -144,14 +146,15 @@ The layering holds today, and new code should keep it:
 | `game/villain.rs` | The mad scientist (FR23, milestone A): `Villain` (where they stand, what they're doing, the bubble and the cue waiting to be said), `VillainAction`, `Mood` and `Pose` (the animation as pure numbers), `VillainCue` (what happened), `Snapshot` and `Villain::observe` (turns level, streak, distance and hearts into cues), `target_pos` (the pure rule for where they stand), and `load_bank` / `check_bank` for `assets/villain_lines.json`. Draws the doctor and their cart through a 2× canvas, and the bubble. No model call: everything it says is from the bank. |
 | `game/flicker.rs` | `Flicker` / `FlickerKind` (spawn ghost, damage blink). It turns elapsed time into a `Look` (tint and alpha) and honours reduce flashing. |
 | `game/goalpost.rs` | `Tracker` (FR31): which goalpost the top-centre badge shows, the metres left, and its pop, unroll, "Now!" and close animation. It produces a `TrackerView` and draws nothing. |
-| `game/health.rs` | `Health`, counted in half-hearts: damage, heal, refill, clamped, and slow regeneration with its HUD bar. |
+| `game/health.rs` | `Health`, counted in half-hearts: damage, heal, refill, `add_heart` (up to `MAX_HEARTS`, 8), clamped, and slow regeneration (`tick`, or `tick_rate` at a safe stop) with its HUD bar. |
+| `game/shop.rs` | The safe stop's shop (FR17): the `Item`s (hot soup, heart charm), their costs, `check` (why a purchase is refused: `Refusal`) and `buy`. Pure rules; `Game::buy` is the door. |
 | `game/curse.rs` | `Curse` (FR1): the curse level and its rules (`tick` returns a `Tick` for `Game` to act on, `cleanse`, `speed_factor`), its `Stage`s, and its drawing (`draw_tint`, `draw_wisps`, `draw_meter`). |
 | `game/monster.rs` | `Species` (a built-in `MonsterKind` or a `MonsterSpec`), the `MonsterKind` roster and its stats, distance-weighted `pick`, the shared canvas and poses, and per-monster drawing and animation. |
 | `game/monster_rig.rs` | `draw_spec`: draws any `MonsterSpec` from its body shape, parts, eyes, accessory, idle and attack. |
 | `game/battle.rs` | `Battle` and its `Phase`s, the iris transition, and the battle-view drawing. |
 | `game/dialogue.rs` | `Dialogue` (typewriter reveal), the `PEBBLE_TUTORIAL` lines, and `load_bank()` for `assets/dialogue.json`, and `check_bank`, the rule for that file. |
 | `progression/` | `Progression` (XP, level curve, streak multiplier, upgrade unlocks, and FR22's per-topic accuracy and the problems missed) and `upgrades.rs` (upgrade definitions). |
-| `ui/` | One egui function per panel (`hud`, `goalpost_panel`, `creation_bar`, `task_panel`, `token_panel`, `settings_panel`, `field_guide_panel`, `map_panel`, `minimap`, `dialogue_panel`, `game_over_panel`), plus `style::apply`. |
+| `ui/` | One egui function per panel (`hud`, `goalpost_panel`, `creation_bar`, `task_panel`, `token_panel`, `settings_panel`, `field_guide_panel`, `shop_panel`, `map_panel`, `minimap`, `dialogue_panel`, `game_over_panel`), plus `style::apply`. |
 
 ---
 
@@ -174,7 +177,7 @@ which is why network work goes to a thread (§4). Each iteration does this, in o
 7. **egui pass** (`egui_macroquad::ui`): `ui::style::apply`, then set
    `game.typing = ctx.wants_keyboard_input()`, then draw the panels. The HUD and token
    panel are hidden during a battle, a dialogue or while the map is open. The goalpost badge (`goalpost_panel`, FR31) shows when
-   `game.goalpost.view()` has something, and the toast steps down below it. The creation bar (`creation_bar`, FR33, `settings.show_creation_bar`) sits under the badge and pushes the toast down in turn; it hides in the hub, in a dialogue, on the map and at Game Over, and in a battle it holds only the battle's own question (`Game::creation_view`). It stays up while a flask problem is open, so the ready pop shows. The map panel (`map_panel::draw`) draws from `game.map_view()`. The minimap (`minimap::draw`, top right, `settings.show_minimap`) draws the same `MapView` as a small window around the player, hidden in the same cases as the HUD, and returns its bottom edge so the HUD sits beneath it. The task panel returns
+   `game.goalpost.view()` has something, and the toast steps down below it. The creation bar (`creation_bar`, FR33, `settings.show_creation_bar`) sits under the badge and pushes the toast down in turn; it hides in the hub, in a dialogue, on the map and at Game Over, and in a battle it holds only the battle's own question (`Game::creation_view`). It stays up while a flask problem is open, so the ready pop shows. The map panel (`map_panel::draw`) draws from `game.map_view()`. The shop (`shop_panel::draw`, FR17) shows while `game.shop_open` and returns the `Item` bought, which goes to `Game::buy`; the HUD shows the run's gears. The minimap (`minimap::draw`, top right, `settings.show_minimap`) draws the same `MapView` as a small window around the player, hidden in the same cases as the HUD, and returns its bottom edge so the HUD sits beneath it. The task panel returns
    `TaskPanelEvent::Submit`, which calls `game.submit_answer()`. The Game Over panel
    returns `true`, which calls `game.reset()`.
 8. `egui_macroquad::draw()`, then the `JEKO_SHOT` screenshot check, then `next_frame().await`.
@@ -203,8 +206,8 @@ what the frame does:
 |---|---|---|---|
 | 0 | (every frame) | | `poll_content` drains the content watcher into `roster` (§8). It runs before everything else, so an edit shows while paused or after death. |
 | 1 | **Game over** | `game_over.is_some()` | Only the death animation advances. After `DEATH_ANIM_S` (1.2 s), E or Enter calls `reset()`. |
-| 2 | Toggles | not `typing` | With the map open, M or Esc closes it. Otherwise M opens it (`can_open_map`: on the road, no battle, dialogue, open question, settings or field guide). O toggles `settings_open`, and Esc closes it. With settings closed, G toggles the field guide (`guide_open`, Esc closes it) and P toggles `paused`. |
-| 3 | **Paused** | `paused \|\| settings_open \|\| guide_open \|\| map_open` | Only `poll_questions(0.0)` runs (the shown question, the battle's next one and the look-ahead receivers), so a response that arrives isn't lost, and the studio's gate is set to busy. The clock doesn't advance, and neither does the soft deadline. |
+| 2 | Toggles | not `typing` | With the shop open (FR17), E or Esc closes it. With the map open, M or Esc closes it. Otherwise M opens it (`can_open_map`: on the road, no battle, dialogue, open question, settings, field guide or shop). O toggles `settings_open`, and Esc closes it. With settings closed, G toggles the field guide (`guide_open`, Esc closes it) and P toggles `paused`. |
+| 3 | **Paused** | `paused \|\| settings_open \|\| guide_open \|\| map_open \|\| shop_open` | Only `poll_questions(0.0)` runs (the shown question, the battle's next one and the look-ahead receivers), so a response that arrives isn't lost, and the studio's gate is set to busy. The clock doesn't advance, and neither does the soft deadline. |
 | 4 | (every unpaused frame) | | Advance `time`, shake, the toast, the explanation card and the item-get timers, then `tick_goalpost` (the tracker, §10), `watch_villain` (§9) and `tick_studio` (§8), the last two of which also run in battles and dialogues. |
 | 5 | **Battle** | `battle.is_some()` | `update_battle`: the player is held, phases advance (§8), and each question is asked for early and shown when the phase reaches `Question` (§5). |
 | 6 | **Dialogue** | `dialogue.is_some()` | The player is held. E reveals the line, then advances, then closes. |
@@ -217,8 +220,8 @@ The road frame, in order:
 2. Otherwise `player.update(dt, progression.speed_multiplier() × curse.speed_factor(),
    constrain)`, where `constrain` is `world::clamp_to_path` followed by
    `World::clamp_blocked` (an undefeated road blocker shuts the road, §6), then
-   `tick_curse(dt)` (§9). If the curse's drain killed
-   the player, the frame ends here. The curse is ticked only on this branch, so it
+   `tick_curse(dt)` (§9), then `health.tick_rate` (four times faster inside a safe stop, §9). If the curse's drain killed
+   the player, the frame ends here. Then `pick_up_gears` (a gear within `GEAR_PICKUP_R` of the player is taken, counted in `run.gears` and given a sparkle) and `watch_stop` (the welcome toast, once per stop on arrival). The curse is ticked only on this branch, so it
    holds still while a question is loading or open, in a battle, in a dialogue and
    while paused.
 3. `discovery.note(player.y)` records the furthest point reached (FR27). The camera eases toward the player (anchor 0.66 of screen height, rate `1 − e^(−6·dt)`).
@@ -226,25 +229,28 @@ The road frame, in order:
 4. `poll_questions(dt)`, then `tick_prefetch` (§5).
 5. If not busy, stepping into an uncleared fern patch starts a battle.
 6. Interaction targets: the nearest fresh flask in reach (`interact_target`), or else
-   an undefeated road blocker in reach (`blocker_target`), or else Professor Pebble.
+   an undefeated road blocker in reach (`blocker_target`), or else a safe stop's cottage door
+   in reach (`stop_target`, `World::stop_in_reach`), or else Professor Pebble.
    E opens the flask, challenges the blocker (`challenge_blocker`, which starts its
-   battle), talks to Pebble, or focuses the answer field when a task is open.
+   battle), opens the shop (`open_shop`), talks to Pebble, or focuses the answer field when a task is open.
 7. A `Resolved` cooldown counts down to `Idle`.
 
 **Single entry points.** Several systems have exactly one door, so there's one place
 to change each rule:
 
 - `Game::damage_player(halves, from)` is the only way HP goes down. It ignores hits
-  while dead or while a flicker is active, which is the invulnerability window. It
+  while dead, while a flicker is active (the invulnerability window) and while the player is
+  inside a safe stop's span (`world::in_safe_stop`, FR28). It
   starts the damage flicker (`HURT_INVULN_S` = 1 s), knocks the player back 22 px away
   from `from` (clamped to the path and short of any road blocker), shakes the screen unless reduce flashing is on,
   and calls `die()` at 0 HP.
 - `Game::request_task(bias, deadline_s, topic)` is the only way a question starts (§5). Look-ahead
   only fills the buffer it reads from.
 - `Game::submit_answer()` is the only way an answer is judged, for flasks and battles alike.
+- `Game::buy(item)` is the only way gears are spent (FR17): it runs `shop::buy`, which takes the gears and mends or grows `Health` through `heal` and `add_heart`.
 - `Game::reset()` starts a new run without relaunching. It keeps the client, the
   fallback bank, the settings, `best_distance_m`, the question `prefetch` buffer and the content `roster` with its watcher. Everything else is rebuilt (the
-  curse goes back to dormant). Requests in flight aren't thrown away: `stash_questions`
+  curse goes back to dormant, and the gears are gone with the new world and `RunStats`). Requests in flight aren't thrown away: `stash_questions`
   hands their receivers to `prefetch`, so the answers still reach the buffer.
 
 **The game clock.** `Game.time` advances only on unpaused frames, and every animation
@@ -437,12 +443,34 @@ gets:
 
 | What | Where decided | Rule |
 |---|---|---|
-| Scenery | `decor::generate_chunk(k, spot)` | `StdRng` seeded from `k`. Props go in zones relative to the path and the bank (lake, shallows, bank, lakeside, verge, woods, plus `Far*` zones only a wide window shows), and never on the road or around the flask. A pair of lampposts frames each flask, and a stone milestone stands every 50 m. |
+| Scenery | `decor::generate_chunk(k, spot, stop)` | `StdRng` seeded from `k`. Props go in zones relative to the path and the bank (lake, shallows, bank, lakeside, verge, woods, plus `Far*` zones only a wide window shows), and never on the road or around the flask. A pair of lampposts frames each flask, and a stone milestone stands every 50 m. |
 | A potion flask (`Spot`) | `world::spot_for_chunk(k)` | Even chunks with `k ≥ 0`, positioned with `gfx::hash01`. Chunk 0's flask is fixed just past the gate, near the middle of the road. Its potion colour (`flask_color`) is a hash of its position. |
-| An encounter (`Encounter`) | `world::encounter_for_chunk(k)` | Odd chunks with `k ≥ 1`, in the middle of the road. A Tide Titan always guards the first odd chunk at or past each 500 m mark, as a road blocker. Every sixth chunk from chunk 3 (`k % 6 == 3`, about every 80 m, the first at ~48 m) always has a monster, and it blocks the road. Otherwise there's a 70% chance of a fern patch. The monster comes from `MonsterKind::pick(roll, meters)`. |
+| An encounter (`Encounter`) | `world::encounter_for_chunk(k)` | Odd chunks with `k ≥ 1`, in the middle of the road. Never in or beside a safe stop's chunk. A Tide Titan always guards the first odd chunk at or past each 500 m mark, as a road blocker. Every sixth chunk from chunk 3 (`k % 6 == 3`, about every 80 m, the first at ~48 m) always has a monster, and it blocks the road. Otherwise there's a 70% chance of a fern patch. The monster comes from `MonsterKind::pick(roll, meters)`. |
+| A safe stop (`SafeStop`) | `world::safe_stop_for_chunk(k)` | Stop `n` (from 1) is at `250·n − 40` m, in the chunk that holds that mark, centred in it: 210, 460, 710 m and on. The ones at 460, 960… sit three chunks (40 m) before the 500 m Titan. Its chunk has no flask, and it and the chunks either side have no encounter (`near_a_stop`, checked in `encounter_for_chunk`). `decor::generate_chunk(k, spot, stop)` clears the clearing's box of random scenery and lays `stop_layout`. |
+| Gears (`Gear`) | `world::gears_for_chunk(k)` | Chunks `k ≥ 1` without a stop try a trail with 75% (`GEAR_CHUNK_CHANCE`): 3 to 5 gears 30 px apart along the road, kept 50 px inside the chunk and on whichever side of the chunk's flask or zone has room (else no trail), so about a third of chunks end up with one. |
 
 Because flasks take even chunks and monsters take odd ones, they never crowd each
 other.
+
+**Safe stops** (FR28). A stop is a pocket the road opens onto, on the woods side. `stop_bulge(y)`
+is 0 on the plain road, 1 across the clearing's flat part (`STOP_FLAT_HALF`, 80 px either
+side of the stop's `y`) and eases between over `STOP_EASE` (70 px), so a stop spans
+`STOP_HALF_LEN` (150 px) each way and always fits inside its chunk. `walkable_x` adds
+`stop_bulge · STOP_EXTRA_W` (130 px) to its right edge, so the road widens without a seam. The
+fence leaves a gap there (`World::posts` drops the right-hand posts where the bulge passes
+`FENCE_OPEN_FROM`, and the rail running into the gap, via `Tall::Post.rail`), and `draw_stop_pad`
+lays earth with a stone edging over the curb. The house (`SafeStop::house`) and its door
+(`door`) are laid by `decor::stop_layout`: a cottage, a campfire with two stumps, two lampposts
+where the fence stops, a `RestSign`, and a pumpkin or glowing toadstools, varied a little by the
+stop's number. `in_safe_stop(y)` is true inside the span. What it does is in §9: the curse
+lifts, hearts mend faster, and `damage_player` ignores hits. The cottage door is the shop (§10).
+`World.stops` lists the ones generated, for the map and the shop.
+
+**Gears** (FR17). The forest's coin: brass cogs dropped from the doctor's lab. `World.gears`
+holds each with a `taken` flag, and `collect_gears(pos)` takes any within `GEAR_PICKUP_R`
+(24 px) and returns where they lay, for a `gfx::sparkle_burst`. They bob and turn on the game
+clock in `draw_gear` and are drawn with the road. The count is `RunStats.gears`: it resets with
+the run, so death loses them.
 
 **Spec monsters in zones** (FR21). `encounter_for_chunk` still decides *where* a zone is, whether it blocks
 and which built-in (`kind`) it would hold, and none of that depends on the content dir. On top of
@@ -461,7 +489,7 @@ the pool and the zones that hold it).
 **Goalposts** (FR31). `goalposts_in_chunk(k)` lists what the tracker can point at in chunk `k`,
 from the same pure functions that place the things: a milestone stone every
 `GOAL_MILESTONE_EVERY_M` (100 m; the road has a stone every 50 m, too often for a goal), the
-flask, and the encounter as a `Patch`, a `Blocker` or the `Titan`. Each has `y`, the
+flask, a safe stop's clearing as a `Stop` (arrived at its south edge, never "done"; it outranks a milestone but not a blocker or the Titan), and the encounter as a `Patch`, a `Blocker` or the `Titan`. Each has `y`, the
 world y at which the player has *arrived* (a blocker's is its `BLOCK_GAP` line, so the
 count reaches 0 m where the road stops them), and `at`, where the thing stands.
 `World::next_goalpost(y)` scans the next `GOAL_SCAN_CHUNKS` chunks north, drops flasks that
@@ -749,7 +777,7 @@ unless `JEKO_STUDIO=off`, `main` starts one long-lived thread that designs monst
   ticks it (see §4), on the road it rises `1/FULL_AFTER_S` (45 s) per second, ramped
   up to ×1.5 (`RAMP_MAX`) by 2,000 m, and each metre of new ground (north of the
   furthest point this run) takes off `RELIEF_PER_M` (0.006), so walking at base speed
-  holds it level or better. In the hub it lifts by `HUB_LIFT_PER_S` (0.05/s). A correct
+  holds it level or better. In the hub, and inside a safe stop's span (`world::in_safe_stop`, FR28), it lifts by `HUB_LIFT_PER_S` (0.05/s), so a full curse clears in about 20 s there and a stop is the one place up the road where standing still doesn't bring the fever on. A correct
   flask cleanses `FLASK_CLEANSE` (0.25). Stages: *Cursed* from 0.2, *Fever* from
   `SLOW_FROM` (0.5), where speed eases down to `SLOWEST` (×0.85) at full, and
   *Burning* at 1.0, where it drains half a heart every `DRAIN_EVERY_S` (3 s) through
@@ -760,7 +788,7 @@ unless `JEKO_STUDIO=off`, `main` starts one long-lived thread that designs monst
   `Health::tick` (called from `Game::update` on the free-roam frame, beside `tick_curse`,
   so it freezes in a battle, a question, a dialogue and a pause) waits `REGEN_DELAY_S`
   (4 s) after the last hit, then restores ½ heart every `REGEN_EVERY_S` (8 s) through
-  `Health::heal`. A hit empties the progress. It holds, keeping its progress, while the
+  `Health::heal`. Inside a safe stop it runs `REST_REGEN_RATE` (4×) faster (`tick_rate`: the delay and the wait both shrink), so ½ heart comes back every 2 s. The shop's heart charm adds a heart (`Health::add_heart`, up to `MAX_HEARTS`, 8) and its hot soup heals 2 hearts, both from `Game::buy` (§10). A hit empties the progress. It holds, keeping its progress, while the
   curse is full. `draw_regen_bar` shows the progress under the hearts ("Heal", dimmed while
   it waits) only while the player is hurt; the curse meter sits below it. Death sets
   `game_over = Some(0.0)`, clears pause and settings, records `best_distance_m`, and
@@ -812,7 +840,7 @@ values passed to it as `&mut`.
 
 | Panel | Anchor | Reads | Writes / returns |
 |---|---|---|---|
-| `hud::draw` | top right | `Progression`, `distance_m` | none |
+| `hud::draw` | top right | `Progression`, `distance_m`, the run's gears | none |
 | `hud::draw_toast` | top centre (below the badge while it's up) | `game.toast`, a top offset | none |
 | `goalpost_panel::draw` | top centre | `game.goalpost.view()` (`TrackerView`) | none |
 | `creation_bar::draw` | top centre, under the badge | `game.creation_view()` (`BarView`), reduce flashing | none; returns its height |
@@ -821,8 +849,15 @@ values passed to it as `&mut`.
 | `dialogue_panel::draw` | | `Dialogue` | none |
 | `settings_panel::draw` | modal | | `Settings`, `settings_open`, `guide_open` |
 | `field_guide_panel::draw` | modal | the guide's cards | `guide_open` |
+| `shop_panel::draw` | modal | the run's gears, `Health`, `game.shop_note` | `shop_open`; returns the `Item` to buy |
 | `map_panel::draw` | modal | `MapView` from `Game::map_view` (`Discovery` + the world) | none; M or Esc is handled in `Game::update` |
-| `game_over_panel::draw` | modal | `Game` (run stats, best distance) | returns `true` to restart |
+| `game_over_panel::draw` | modal | `Game` (run stats incl. gears unspent, best distance) | returns `true` to restart |
+
+**The shop** (FR17, FR28). At a safe stop, E at the cottage door opens a modal (`Game.shop_open`) that
+freezes the world like the map does. It sells two things for the run's gears, priced in `game/shop.rs`:
+*hot soup* (4 gears, heals 2 hearts; refused at full health) and a *heart charm* (12 gears, one more
+heart, up to 8). `Game::buy` shows the verdict in `shop_note`. A gear's only use is here, and
+gears reset with the run (the owner's answers for FR17, 2026-11-21).
 
 **The creation bar** (FR33). `Game.activity` (`llm::activity::GenActivity`) is advanced in
 `Game::update`, and a job is opened and closed wherever the model is asked and answers:
@@ -913,7 +948,9 @@ driving the window:
   real submit path (`right`, `wrong`), `e` (press E), teleports (`toflask`,
   `tozone` to the first fern patch, `toblocker` to the line in front of the first
   road blocker, `topebble`, `toroad` 40 m up the road, `neargoal` 8 m short of the next
-  goalpost, `atgoal` onto it), the curse (`curse` at 0.75, the fever stage; `cursefull`
+  goalpost, `atgoal` onto it, `tostop` in front of the first safe stop's cottage, `nearstop` on the
+  road just south of it, `togears` just south of the first trail of gears), `shop` (open the shop),
+  `gears:<n>` (add gears), the curse (`curse` at 0.75, the fever stage; `cursefull`
   at 1.0), and display settings: `nohud` (hide both side panels, so
   a shot shows the whole world) and `calm` (turn on reduce flashing). The mad scientist
   (FR23): `tovillain` (40 m up the road with the camera snapped, so they're on screen) and
@@ -945,7 +982,7 @@ driving the window:
 | `content/prompts.rs` (5) | The shipped example is valid, every value the prompt lists is accepted by the parser, the prompt carries the tier, topic and names to avoid, and every level has topics that fit a theme. |
 | `content/mod.rs` (1) | A rejected file keeps the last good version in the roster; a delete removes it. |
 | `game/monster_rig.rs` (2) | The palette check's `INK_RGB` matches `gfx::INK`; parts spread evenly. |
-| `game/world.rs` (30) | Scenery never lands on the road. Every flask is reachable and on the road. Generation is deterministic. Interact reaches only nearby fresh flasks. The clamp keeps the player on the road. Encounters are on the road and deterministic. A Titan guards every 500 m, blocking the road. Monsters block the road regularly (no gap over 100 m, the first under 70 m) and deterministically. A blocker shuts the road, can be challenged but doesn't ambush, and opens once beaten. Tougher monsters appear further up. The hub is wide, dry and bounded. The walkable width is continuous through the gate. Goalposts are deterministic and stand in their chunk, nothing hostile is one in the hub, the pick is always north of the player, nearest first and the bigger event first within 25 m, a solved flask or beaten monster is never offered again, and a blocker counts down to its line. `upcoming_in` is nearest first and in range, matches where the world places things, shows no monster in the hub, takes a monster's hits and bias from its stats, and `World::upcoming` leaves out what's been dealt with. About 40% of zones get a spec monster and never a boss, one far enough up the road; an empty pool changes nothing; the same pool gives the same zones and the layout never depends on it; rebinding a built world matches building it with the pool; an edited spec shows in its zones; `upcoming` uses a held spec's tier. |
+| `game/world.rs` (40) | Scenery never lands on the road. Every flask is reachable and on the road. Generation is deterministic. Interact reaches only nearby fresh flasks. The clamp keeps the player on the road. Encounters are on the road and deterministic. A Titan guards every 500 m, blocking the road. Monsters block the road regularly (no gap over 100 m, the first under 70 m) and deterministically. A blocker shuts the road, can be challenged but doesn't ambush, and opens once beaten. Tougher monsters appear further up. The hub is wide, dry and bounded. The walkable width is continuous through the gate. Safe stops are every 250 m from 210 m and deterministic, never share a chunk with a flask or a zone (or sit next to one, or a gear), leave room before each Titan, open the road continuously onto the clearing on the woods side only, put the cottage door inside the walkable clearing and open the shop only from near it, and are goalposts that are never done. Gears are deterministic, on the road, clear of flasks and monsters and in a plausible share of chunks; one is picked up once, from close by, and a new world has them all again. Goalposts are deterministic and stand in their chunk, nothing hostile is one in the hub, the pick is always north of the player, nearest first and the bigger event first within 25 m, a solved flask or beaten monster is never offered again, and a blocker counts down to its line. `upcoming_in` is nearest first and in range, matches where the world places things, shows no monster in the hub, takes a monster's hits and bias from its stats, and `World::upcoming` leaves out what's been dealt with. About 40% of zones get a spec monster and never a boss, one far enough up the road; an empty pool changes nothing; the same pool gives the same zones and the layout never depends on it; rebinding a built world matches building it with the pool; an edited spec shows in its zones; `upcoming` uses a held spec's tier. |
 | `game/goalpost.rs` (7) | A new goalpost pops in as a circle and then unrolls. The metres go down as the player walks, rounded up, and the ring fills. It pulses under 10 m and says "Now!" on arrival. It closes before the next one appears, hides while a battle or problem is open and comes back, and shows nothing with nothing ahead. Labels. |
 | `game/villain.rs` (15) | The shipped line bank passes its own check and a bad one (unknown cue, missing cue, too long once a number is filled in, a blocked word, a placeholder on the wrong cue, `vanish`, an unknown mood, too few lines) is rejected. The doctor's target is always at least 150 px north of the player and near the road, a player sprinting for 40 s never reaches them, and one who gains on them makes them scurry. They arrive at the gate, are away in the hub (cues dropped) and don't greet twice in a run. The biggest waiting cue is the one said, bubbles keep 8 s apart, a stale small cue lapses and a big one waits. Lines rotate and fill in numbers. A level, a streak of 5, each 100 m and low hearts each become one cue. The same run plays the same every time. A reset goes back to before the first sighting. Every pose stays in bounds for every action. |
 | `game/gfx.rs` (2) | `wrap_text` breaks at spaces, loses nothing and gives a long word its own line. |
@@ -958,8 +995,9 @@ driving the window:
 | `llm/buffer.rs` (11) | The buffer gives the exact difficulty, else one below, never a harder one, and prefers a topic. `plan_prefetch` asks for what's missing nearest first, counts ready and in-flight questions, and obeys the in-flight, per-difficulty and per-minute caps. `WaitStats` reads out as the panel shows it. A topic takes only that topic; a question isn't added twice. |
 | `game/prefetch.rs` (9) | A flask wants one question and a monster its hits plus a spare, clamped to difficulty 5. Env switches parse. Landed answers reach the buffer and failures vanish. A look-ahead has a circle that closes when it lands and goes quietly when it fails, and sending one opens it. A disabled prefetcher asks for nothing. A missed problem comes back first as similar practice; a thin buffer asks for the weakest topic, else the rotation; a stocked one asks for nothing. |
 | `game/bow.rs` (2) | The shot draws, then releases, then lowers. An arrow flies the way it was loosed, comes down a believable distance away, then goes away. |
-| `game/health.rs` (8) | Starts full; damage, heal and refill clamping; regen interval, the delay and reset after a hit, holding while not allowed, and stopping at full or dead. |
-| `game/curse.rs` (8) | Nothing happens in the hub before the road. It starts the first time the player is past the gate. Standing still fills it, then drains on the interval. Walking north holds it back, even at the far end of the ramp. Old ground gives no relief. The hub lifts it. Stage toasts replay only after it clears. Cleanse and speed clamp. |
+| `game/health.rs` (10) | Starts full; damage, heal and refill clamping; regen interval, the delay and reset after a hit, holding while not allowed, and stopping at full or dead. Resting mends several times faster and still holds under the full fever. A heart can be added up to the cap. |
+| `game/shop.rs` (3) | Soup mends two hearts for its price; a refused purchase (too poor, hearts full, at the cap) changes nothing; heart charms grow the maximum up to 8 hearts. |
+| `game/curse.rs` (10) | Nothing happens in the hub before the road. It starts the first time the player is past the gate. Standing still fills it, then drains on the interval. Walking north holds it back, even at the far end of the ramp. Old ground gives no relief. The hub lifts it, and so does a safe stop, while the road just past it doesn't; a full curse can't drain someone resting at a stop. Stage toasts replay only after it clears. Cleanse and speed clamp. |
 | `game/skills.rs` (5) | Three rolls then a lockout that refills all; a spent charge trickles back; sprinting drains and running dry winds; stamina waits, then recovers, and winded ends at the threshold; a short break doesn't refill. |
 | `game/map.rs` (6) | Discovery starts at the gate and only moves north. The range has a floor and grows with progress. Landmarks never sit in the fog, while flasks further up exist but stay hidden. Milestones every 50 m. The same walk gives the same map. Solved flasks show as solved. |
 | `game/dialogue.rs` (4) | The shipped bank passes `check_bank`; `check_bank` rejects hostile banks (not a list, no Pebble, too few or too many lines, an empty or over-long line, a blocked word, a missing name, a duplicate); the typewriter reveals, then advances, then closes. |
@@ -993,15 +1031,17 @@ the owner, and update this section if it goes ahead.
    run is reproducible given the content dir). Generation uses only
    seeded `StdRng` or `gfx::hash01`, never `thread_rng`, so it's the same every run and
    the placement tests stay meaningful. Where things are never depends on the content dir. New placed things (like the road blockers,
-   and the planned cages and shells) should follow `spot_for_chunk` / `encounter_for_chunk` and get a
+   the safe stops and the gears, and the planned cages) should follow `spot_for_chunk` / `encounter_for_chunk` and get a
    determinism test.
-4. **The hub is a safe zone.** Nothing hostile spawns south of `ROAD_SOUTH_END`
+4. **The hub, and a safe stop, are safe zones.** Nothing hostile spawns south of `ROAD_SOUTH_END`
    (chunk `k < 1`), the curse doesn't start until the player first leaves it, and it
-   lifts there rather than growing.
+   lifts there rather than growing. A safe stop (FR28) extends this to its span: no flask or
+   encounter in its chunk, no encounter in the chunks either side, the curse lifts, and
+   `damage_player` ignores hits. The stop rules follow the owner's answers for FR28 (2026-11-21).
 5. **`Game` owns run state, and panels are views.** UI functions take what they need
    and return events. They don't keep gameplay state of their own.
-6. **One door per rule.** HP changes go through `damage_player`, `Health::heal` and
-   `Health::refill`. Questions start through `request_task`. Answers are judged in
+6. **One door per rule.** HP changes go through `damage_player`, `Health::heal`,
+   `Health::refill` and `Health::add_heart` (the shop, through `Game::buy`, the one way gears are spent). Questions start through `request_task`. Answers are judged in
    `submit_answer`.
 7. **Cosmetic means cosmetic.** `Action`s, the bow's arrows, the mad scientist (FR23), the planned pet cat (FR34)
    and visual effects never change XP, speed, answers or battle results.
@@ -1054,6 +1094,9 @@ still to make:
   FR23's milestone A is in; the live Cerebras lines (B) and schemes (C) are not. The name,
   look and lore are the owner's call (FR23's open questions), the speech bubble shows whatever
   the HUD setting is, and there is no "Villain chatter" switch. There's no showdown yet.
-- **The settled-for-now defaults** from FR1–FR3, FR5–FR15, FR20, FR24, FR26 and FR31 are listed for the owner in FR16.
+- **Safe stops are bare-bones.** They have no keeper to talk to and no checkpoint: dying still
+  restarts at the hub, and gears are lost with the run (the owner's answers, FR17 and FR28). How
+  often they come (every 250 m, the first at 210 m) and what resting gives are provisional (FR16).
+- **The settled-for-now defaults** from FR1–FR3, FR5–FR15, FR17, FR20, FR24, FR26, FR28 and FR31 are listed for the owner in FR16.
 
 See [FeatureRequestToDo.md](../FeatureRequestToDo.md) for the backlog.
